@@ -1,5 +1,5 @@
 // wizard/steps/Step3Family.js
-// Adım 3: aile (anne/baba) — ad, soyad, telefon + telefon tekrar (eşleşme uyarısı).
+// Adım 3: aile bilgileri (anne / baba). (çok dilli)
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Field, SectionTitle } from '../../components/fields';
@@ -13,7 +13,8 @@ const withPlus = (t) => {
   return s;
 };
 
-function PersonPhone({ title, person, onChange, t }) {
+function PersonPhone({ title, person, onChange }) {
+  const { t } = useLanguage();
   const p = person || {};
   const phone = p.phone || '';
   const phone2 = p.phoneConfirm || '';
@@ -23,10 +24,10 @@ function PersonPhone({ title, person, onChange, t }) {
   return (
     <View>
       <SectionTitle>{title}</SectionTitle>
-      <Field label={t('f_firstName')} value={p.name} onChangeText={(v) => onChange({ name: v })} />
-      <Field label={t('f_lastName')} value={p.lastName} onChangeText={(v) => onChange({ lastName: v })} />
-      <Field label={t('f_phone')} value={p.phone} onChangeText={(v) => onChange({ phone: withPlus(v) })} keyboardType="phone-pad" />
-      <Field label={t('f_phone2')} value={p.phoneConfirm} onChangeText={(v) => onChange({ phoneConfirm: withPlus(v) })} keyboardType="phone-pad" />
+      <Field label={t('f_parent_name')} value={p.name} onChangeText={(v) => onChange({ name: v })} />
+      <Field label={t('f_parent_lastname')} value={p.lastName} onChangeText={(v) => onChange({ lastName: v })} />
+      <Field label={t('f_parent_phone')} value={p.phone} onChangeText={(v) => onChange({ phone: withPlus(v) })} placeholder="+7 ..." keyboardType="phone-pad" />
+      <Field label={t('f_parent_phone2')} value={p.phoneConfirm} onChangeText={(v) => onChange({ phoneConfirm: withPlus(v) })} placeholder="+7 ..." keyboardType="phone-pad" />
       {mismatch ? (
         <Text style={styles.warn}>{t('phone_mismatch')}</Text>
       ) : matched ? (
@@ -44,8 +45,8 @@ export default function Step3Family({ data, update }) {
 
   return (
     <View>
-      <PersonPhone title={t('parent_mother')} person={fam.mother} onChange={setMother} t={t} />
-      <PersonPhone title={t('parent_father')} person={fam.father} onChange={setFather} t={t} />
+      <PersonPhone title={t('parent_mother')} person={fam.mother} onChange={setMother} />
+      <PersonPhone title={t('parent_father')} person={fam.father} onChange={setFather} />
     </View>
   );
 }

@@ -13,20 +13,64 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.turquz.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Görüntülü mülakat için kameraya erişim gerekir.",
+        "NSMicrophoneUsageDescription": "Görüntülü mülakat için mikrofona erişim gerekir.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bitcode": false
     },
     "android": {
+      "package": "com.turquz.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WAKE_LOCK",
+        "android.permission.BLUETOOTH"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-font"
-    ]
+      "expo-font",
+      "expo-localization",
+      [
+        "expo-notifications",
+        {
+          "color": "#1b2533"
+        }
+      ],
+      "@livekit/react-native-expo-plugin",
+      "@config-plugins/react-native-webrtc",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Pasaport fotoğrafını çekmek için kameraya erişim gerekir."
+        }
+      ],
+      "react-native-document-scanner-plugin",
+      "react-native-compressor"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "5d338e85-b28e-4fb7-84f6-80afc00ebb54"
+      }
+    },
+    "owner": "kurtoglutunc"
   }
 }

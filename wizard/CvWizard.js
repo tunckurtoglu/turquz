@@ -1,12 +1,13 @@
 // wizard/CvWizard.js
 // Adımları sırayla gezdiren kapsayıcı. Veri App'ten gelir (data/onChange).
-// Başlıklar seçili dilden; önizlemeye dil geçer; ilk adımda Geri -> onExit, önizlemeden sonra -> onFinish.
-import React, { useState } from 'react';
+// startStep: hangi adımdan açılacağı (0-6 form, 7 = önizleme).
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Modal,
 } from 'react-native';
 import { useLanguage } from '../i18n/LanguageContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ageFromBirth, MIN_AGE, MAX_AGE } from '../cv/options';
 
 import Step1Personal from './steps/Step1Personal';
 import Step2Profile from './steps/Step2Profile';
@@ -29,26 +30,56 @@ const STEPS = [
 
 const TOTAL = STEPS.length + 1; // +1 = Önizleme
 
-export default function CvWizard({ onExit, onFinish, data: extData, onChange }) {
+export default function CvWizard({ onExit, onFinish, onEdit, data: extData, onChange, startStep = 0, previewOnly = false }) {
   const { t, dir } = useLanguage();
   const insets = useSafeAreaInsets();
   const [localData, setLocalData] = useState({});
   const data = extData || localData;
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(startStep);
+  const [confirmOpen, setConfirmOpen] = useState(false); // onay modalı açık mı
+  const [accepted, setAccepted] = useState(false);       // onay kutusu işaretli mi
+  const [editingFromPreview, setEditingFromPreview] = useState(false); // önizlemeden düzenlemeye geçildi mi
+
+  // startStep dışarıdan değişirse (örn. Home'dan Önizle/Düzenle) adımı senkronla
+  useEffect(() => { setStep(startStep); }, [startStep]);
+
+  // Scroll konumunu koru: bir alan doldurulunca/Select kapanınca RN ScrollView'ı bazen
+  // istem dışı "en üste" atıyor. Kullanıcının konumunu hatırlayıp veri değişiminden sonra
+  // geri getiriyoruz; adım değişince ise bilerek tepeye alıyoruz.
+  const scrollRef = useRef(null);
+  const yRef = useRef(0);
+  const onScroll = (e) => { yRef.current = e.nativeEvent.contentOffset.y; };
+  useEffect(() => {
+    if (yRef.current <= 0) return undefined;
+    const id = requestAnimationFrame(() => scrollRef.current?.scrollTo({ y: yRef.current, animated: false }));
+    return () => cancelAnimationFrame(id);
+  }, [data]);
+  useEffect(() => { yRef.current = 0; scrollRef.current?.scrollTo({ y: 0, animated: false }); }, [step]);
 
   const update = (patch) => {
     if (onChange) onChange(patch);
     else setLocalData((d) => ({ ...d, ...patch }));
   };
 
+  const effPreviewOnly = previewOnly && !editingFromPreview; // saf önizleme (Home'dan açılınca)
   const isPreview = step === STEPS.length;
   const Current = !isPreview ? STEPS[step].Component : null;
 
+  // Step1 yaş kontrolü: aralık dışındaysa ileri gitme engellenir.
+  // (Pasaport CV'den kaldırıldı — teklif sonrası "Belgeler"de yüklenir.)
+  const age = ageFromBirth(data.birthDay, data.birthMonth, data.birthYear);
+  const ageBlocked = age != null && (age < MIN_AGE || age > MAX_AGE);
+  const nextBlocked = step === 0 && ageBlocked;
+
   const goNext = () => {
-    if (isPreview) { onFinish && onFinish(); return; }
+    if (nextBlocked) return;
+    if (isPreview) { setAccepted(false); setConfirmOpen(true); return; } // önce onay al
     setStep((s) => Math.min(s + 1, TOTAL - 1));
   };
   const goPrev = () => {
+    // Önizlemeden düzenlemeye geçilip ilk adımda Geri'ye basılırsa: vazgeç, önizlemeye dön
+    if (editingFromPreview && step === 0) { setEditingFromPreview(false); setStep(STEPS.length); return; }
+    if (effPreviewOnly) { onExit && onExit(); return; }   // saf önizleme: Geri = çıkış (Home)
     if (step === 0) { onExit && onExit(); return; }
     setStep((s) => s - 1);
   };
@@ -59,7 +90,6 @@ export default function CvWizard({ onExit, onFinish, data: extData, onChange }) 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.flex}>
-        {/* Üst başlık + ilerleme */}
         <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
           <Text style={[styles.stepCount, { textAlign: align }]}>
             {t('step')} {step + 1} / {TOTAL}
@@ -72,23 +102,80 @@ export default function CvWizard({ onExit, onFinish, data: extData, onChange }) 
           </View>
         </View>
 
-        {/* İçerik */}
-        <ScrollView style={styles.flex} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          {isPreview ? <CVPreview data={data} /> : <Current data={data} update={update} />}
-        </ScrollView>
+        {isPreview ? (
+          <View style={styles.flex}>
+            <CVPreview data={data} />
+          </View>
+        ) : (
+          <ScrollView
+            ref={scrollRef}
+            style={styles.flex}
+            contentContainerStyle={styles.content}
+            keyboardShouldPersistTaps="handled"
+            onScroll={onScroll}
+            scrollEventThrottle={16}
+          >
+            <Current data={data} update={update} />
+          </ScrollView>
+        )}
 
-        {/* Alt butonlar */}
         <View style={[styles.footer, { flexDirection: rowDir, paddingBottom: insets.bottom + 12 }]}>
-          <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={goPrev}>
-            <Text style={styles.btnGhostText}>{t('back')}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={goNext}>
-            <Text style={styles.btnPrimaryText}>
-              {isPreview ? t('done') : (step === STEPS.length - 1 ? t('preview') : t('next'))}
-            </Text>
-          </TouchableOpacity>
+          {effPreviewOnly ? (
+            <>
+              <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={goPrev}>
+                <Text style={styles.btnGhostText}>{t('back')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={() => { setEditingFromPreview(true); setStep(0); }}>
+                <Text style={styles.btnPrimaryText}>{t('home_edit_short')}</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={goPrev}>
+                <Text style={styles.btnGhostText}>{t('back')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.btn, styles.btnPrimary, nextBlocked && styles.btnDisabled]} onPress={goNext} disabled={nextBlocked}>
+                <Text style={styles.btnPrimaryText}>
+                  {isPreview ? t('save') : (step === STEPS.length - 1 ? t('preview') : t('next'))}
+                </Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </View>
+
+      {/* Onay (disclaimer) modalı — Bitti'ye basınca */}
+      <Modal visible={confirmOpen} transparent animationType="slide" onRequestClose={() => setConfirmOpen(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { paddingBottom: insets.bottom + 16 }]}>
+            <Text style={[styles.modalTitle, { textAlign: align }]}>{t('confirm_title')}</Text>
+
+            <TouchableOpacity
+              style={[styles.checkRow, { flexDirection: rowDir }]}
+              onPress={() => setAccepted((a) => !a)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.checkbox, accepted && styles.checkboxOn]}>
+                {accepted ? <Text style={styles.checkboxTick}>✓</Text> : null}
+              </View>
+              <Text style={[styles.checkLabel, { textAlign: align }]}>{t('confirm_check')}</Text>
+            </TouchableOpacity>
+
+            <View style={[styles.modalBtns, { flexDirection: rowDir }]}>
+              <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={() => setConfirmOpen(false)}>
+                <Text style={styles.btnGhostText}>{t('back')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnPrimary, !accepted && styles.btnDisabled]}
+                onPress={() => { if (accepted) { setConfirmOpen(false); onFinish && onFinish(); } }}
+                disabled={!accepted}
+              >
+                <Text style={styles.btnPrimaryText}>{t('confirm_accept')}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -104,7 +191,22 @@ const styles = StyleSheet.create({
   footer: { gap: 12, padding: 16, backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#e6e8ec' },
   btn: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   btnPrimary: { backgroundColor: '#1b2533' },
+  btnDisabled: { backgroundColor: '#b9bec6' },
   btnPrimaryText: { color: '#fff', fontWeight: '800', fontSize: 15 },
   btnGhost: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#c9ccd2' },
   btnGhostText: { color: '#1b2533', fontWeight: '700', fontSize: 15 },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalCard: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 22 },
+  modalTitle: { fontSize: 19, fontWeight: '800', color: '#1b2533', marginBottom: 12 },
+  modalText: { fontSize: 14, lineHeight: 21, color: '#3a4452', marginBottom: 18 },
+  checkRow: { alignItems: 'flex-start', gap: 12, marginBottom: 20 },
+  checkbox: {
+    width: 26, height: 26, borderRadius: 7, borderWidth: 2, borderColor: '#c2a25a',
+    alignItems: 'center', justifyContent: 'center', marginTop: 1,
+  },
+  checkboxOn: { backgroundColor: '#c2a25a' },
+  checkboxTick: { color: '#1b2533', fontSize: 16, fontWeight: '900' },
+  checkLabel: { flex: 1, fontSize: 14, fontWeight: '600', color: '#1b2533', lineHeight: 20 },
+  modalBtns: { gap: 12 },
 });

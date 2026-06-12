@@ -1,0 +1,20 @@
+{
+  "name": "turquz-interview-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Turquz mülakat çevirmen ajanı: STT (Deepgram) + çeviri (OpenAI) -> canlı altyazı + transkript.",
+  "scripts": {
+    "dev": "node index.js dev",
+    "start": "node index.js start"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@livekit/agents": "^1.4.5",
+    "@livekit/agents-plugin-deepgram": "^1.4.5",
+    "@livekit/rtc-node": "^0.13.29",
+    "@supabase/supabase-js": "^2.107.0",
+    "dotenv": "^16.4.5",
+    "livekit-server-sdk": "^2.9.7"
+  }
+}

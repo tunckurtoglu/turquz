@@ -2,6 +2,7 @@
 // Tüm wizard adımlarının paylaştığı alan bileşenleri.
 import React from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
+import { useLanguage } from '../i18n/LanguageContext';
 
 // Tek satırlık etiketli alan
 export function Field({ label, value, onChangeText, placeholder, ...rest }) {
@@ -58,7 +59,8 @@ export function Toggle({ label, value, onChange }) {
 // Tekrarlanan NESNE grupları (Diller, İş Deneyimleri, Eğitim, Sertifikalar).
 // items: dizi | onChange(yeniDizi) | emptyItem: yeni öğe şablonu
 // renderItem(item, patch) -> patch({ alan: değer }) ile o öğeyi günceller
-export function RepeatableGroup({ items = [], onChange, emptyItem, renderItem, addLabel = '+ Ekle', maxItems, limitLabel }) {
+export function RepeatableGroup({ items = [], onChange, emptyItem, renderItem, addLabel, maxItems, limitLabel }) {
+  const { t } = useLanguage();
   const setAt = (i, patch) =>
     onChange(items.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
   const removeAt = (i) => onChange(items.filter((_, idx) => idx !== i));
@@ -71,21 +73,23 @@ export function RepeatableGroup({ items = [], onChange, emptyItem, renderItem, a
         <View key={i} style={styles.card}>
           <View style={styles.cardHead}>
             <Text style={styles.cardIndex}>{i + 1}.</Text>
-            <TouchableOpacity
-              onPress={() => removeAt(i)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Text style={styles.remove}>Sil</Text>
-            </TouchableOpacity>
+            {items.length > 1 ? (
+              <TouchableOpacity
+                onPress={() => removeAt(i)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={styles.remove}>{t('remove')}</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
           {renderItem(item, (patch) => setAt(i, patch))}
         </View>
       ))}
       {atLimit ? (
-        <Text style={styles.limitNote}>{limitLabel || `En fazla ${maxItems} adet ekleyebilirsin.`}</Text>
+        <Text style={styles.limitNote}>{limitLabel || t('limit_note', { n: maxItems })}</Text>
       ) : (
         <TouchableOpacity style={styles.addBtn} onPress={add}>
-          <Text style={styles.addBtnText}>{addLabel}</Text>
+          <Text style={styles.addBtnText}>{addLabel || t('add')}</Text>
         </TouchableOpacity>
       )}
     </View>
@@ -93,8 +97,9 @@ export function RepeatableGroup({ items = [], onChange, emptyItem, renderItem, a
 }
 
 // Basit METİN listesi
-export function SimpleListEditor({ items = [], onChange, placeholder, addLabel = '+ Ekle' }) {
-  const setAt = (i, t) => onChange(items.map((v, idx) => (idx === i ? t : v)));
+export function SimpleListEditor({ items = [], onChange, placeholder, addLabel }) {
+  const { t } = useLanguage();
+  const setAt = (i, txt) => onChange(items.map((v, idx) => (idx === i ? txt : v)));
   const removeAt = (i) => onChange(items.filter((_, idx) => idx !== i));
   const add = () => onChange([...items, '']);
 
@@ -119,7 +124,7 @@ export function SimpleListEditor({ items = [], onChange, placeholder, addLabel =
         </View>
       ))}
       <TouchableOpacity style={styles.addBtn} onPress={add}>
-        <Text style={styles.addBtnText}>{addLabel}</Text>
+        <Text style={styles.addBtnText}>{addLabel || t('add')}</Text>
       </TouchableOpacity>
     </View>
   );

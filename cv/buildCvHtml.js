@@ -5,8 +5,9 @@
 import { t } from '../i18n/ui';
 import { dirOf } from '../i18n/languages';
 import {
-  labelOf, NATION_LABELS, EDU_LABELS, YESNO_LABELS,
+  labelOf, NATION_LABELS, EDU_LABELS,
   POSITION_LABELS, SKILL_LABELS, LANG_LABELS, LEVEL_LABELS, LICENSE_WORD_LABELS,
+  bloodLabel,
 } from './options';
 
 // --- Filigran (orijinal şablonun .main arka planındaki büyük soluk logo) ---
@@ -40,8 +41,12 @@ const timelineItem = (date, title, sub) => `
           </div>
         </div>`;
 
-export function buildCvHtml(data = {}, lang = 'tr') {
+export function buildCvHtml(data = {}, lang = 'tr', { withLogo = true, masked = false, videoUrl = '' } = {}) {
   const d = data;
+  // Acente görünümü: iletişim + aile bilgileri bulanıklaştırılır (gerçek veri zaten maskelenmiş gelir).
+  const maskCss = masked
+    ? '.contacts .c:not(.candno) .tx, .fam-group .lg{filter:blur(5px);-webkit-filter:blur(5px);user-select:none;}'
+    : '';
   const L = (key, vars) => t(key, lang, vars);     // arayüz metni kısayolu
   const dir = dirOf(lang);                           // 'ltr' | 'rtl'
   const fullName = `${esc(d.firstName || '')}<br>${esc(d.lastName || '')}`;
@@ -90,15 +95,42 @@ export function buildCvHtml(data = {}, lang = 'tr') {
 
   // --- Kontrollü kişisel değerler -> dile çevrilir ---
   const nationalityLabel = labelOf(NATION_LABELS, d.nationality, lang);
-  const criminalLabel = labelOf(YESNO_LABELS, d.criminalRecord, lang);
   const licenseLabel = labelOf(LICENSE_WORD_LABELS, d.driverLicense, lang); // harf kodları aynen döner
+  const bloodTypeLabel = bloodLabel(d.bloodType, d.bloodCountry); // kan grubu ülkesinin stiline göre; CV'de ülke gösterilmez
 
   const fam = d.family || { mother: {}, father: {} };
   const photoTag = d.photo
     ? `<img class="photo" src="${esc(d.photo)}" alt="${esc(d.firstName)} ${esc(d.lastName)}">`
     : `<div class="photo" style="background:#2c3a4e;"></div>`;
 
-  const mainBg = WATERMARK_BG
+  // --- Tanıtım fotoğrafları (boydan / yakın) -> ayrı 2. sayfa. İkisi de boşsa sayfa eklenmez. ---
+  // 2. sayfa: yakın çekim + boydan (vesikalık burada YOK; o 1. sayfada). Alt alta, büyük.
+  const extraShots = [
+    { uri: d.photoClose, cap: L('photo_cap_close') },
+    { uri: d.photoFull, cap: L('photo_cap_full') },
+  ].filter((p) => p.uri);
+  // Tanıtım videosu (20 sn) — yalnız ekranda; PDF'te videoUrl boş gelir.
+  const videoBlock = videoUrl
+    ? `<div style="margin:0 0 22px;">
+      <div class="photos-title" style="margin-bottom:10px;">${esc(L('intro_video_cv_label'))}</div>
+      <video src="${esc(videoUrl)}" controls playsinline preload="metadata" style="width:100%;max-height:360px;border-radius:16px;background:#000;display:block;"></video>
+    </div>`
+    : '';
+  const photosPage = (extraShots.length || videoUrl)
+    ? `
+  <div class="page photos-page">
+    <div class="photos-head">
+      <h1>${esc(d.firstName || '')} ${esc(d.lastName || '')}</h1>
+      <div class="photos-title">${esc(L('sec_photos_extra'))}</div>
+    </div>
+    ${videoBlock}
+    <div class="photos-grid shots-${extraShots.length}">
+      ${extraShots.map((p) => `<figure class="shot"><img src="${esc(p.uri)}" alt="${esc(p.cap)}"><figcaption>${esc(p.cap)}</figcaption></figure>`).join('\n      ')}
+    </div>
+  </div>`
+    : '';
+
+  const mainBg = (withLogo && WATERMARK_BG)
     ? `background-image:url('${WATERMARK_BG}');background-repeat:no-repeat;background-position:center 50%;background-size:80%;`
     : '';
 
@@ -186,6 +218,9 @@ export function buildCvHtml(data = {}, lang = 'tr') {
   .contacts .c{display:flex;align-items:flex-start;gap:9px;font-size:13px;color:#4a4a4a;margin-bottom:9px;justify-content:flex-end;}
   .contacts .c .tx{text-align:right;word-break:break-word;line-height:1.35;}
   .contacts .c .ic{color:var(--ink);font-size:13px;width:16px;text-align:center;flex:0 0 16px;margin-top:1px;}
+  .contacts .c.candno{margin-top:4px;}
+  .contacts .c.candno .tx{font-size:16px;font-weight:800;color:var(--ink);letter-spacing:.3px;}
+  .contacts .c.candno .ic{font-size:15px;}
 
   .section{margin-bottom:18px;}
   .section-head{display:flex;align-items:center;gap:12px;margin-bottom:6px;}
@@ -213,11 +248,42 @@ export function buildCvHtml(data = {}, lang = 'tr') {
   .plist li.ph{color:#9a9a9a;font-weight:500;font-style:italic;}
   .plist li.ph::before{background:#bdbdbd;}
 
-  @media print{
-    @page{size:A4;margin:0;}
-    html,body{background:#fff;}
-    .page{margin:0;box-shadow:none;width:100%;min-height:100vh;}
+  /* ---------- TANITIM FOTOĞRAFLARI SAYFASI ---------- */
+  .photos-page{
+    display:block;grid-template-columns:none;background:var(--main);
+    padding:46px 56px;
   }
+  .photos-head{border-bottom:3px solid var(--ink);padding-bottom:14px;margin-bottom:30px;}
+  .photos-head h1{
+    font-family:'Barlow Semi Condensed',sans-serif;font-weight:800;
+    font-size:40px;line-height:1;color:var(--ink);letter-spacing:.5px;
+  }
+  .photos-title{
+    margin-top:12px;font-weight:700;font-size:14px;letter-spacing:.8px;
+    text-transform:uppercase;color:var(--muted);
+  }
+  /* Alt alta (dikey), büyük: yakın çekim + boydan */
+  .photos-grid{display:flex;flex-direction:column;gap:22px;justify-content:flex-start;align-items:center;}
+  .shot{display:flex;flex-direction:column;align-items:center;width:auto;}
+  .shot img{
+    height:470px;width:auto;aspect-ratio:3/4;object-fit:cover;border-radius:8px;
+    border:4px solid #2c3a4e;box-shadow:0 8px 22px rgba(0,0,0,.32);background:#e9ebee;
+  }
+  .shot figcaption{
+    margin-top:12px;text-align:center;font-weight:700;font-size:15px;
+    letter-spacing:.6px;text-transform:uppercase;color:var(--muted);
+  }
+
+@media print{
+  @page{size:A4;margin:0;}
+  html,body{background:#fff;width:210mm;height:297mm;}
+  .page{margin:0;box-shadow:none;width:210mm;height:297mm;min-height:0;overflow:hidden;}
+  .photos-page{page-break-before:always;break-before:page;}
+  /* İki dikey foto tek A4 sayfaya sığsın */
+  .photos-grid{gap:12px;}
+  .shot img{height:110mm;}
+  .shot figcaption{font-size:11px;margin-top:5px;}
+}
 
   /* ---------- RTL (Farsça): tasarım aynı, yalnızca yön aynalanır ---------- */
   [dir="rtl"] .page{grid-template-columns:1fr 248px;}      /* sidebar sağa */
@@ -233,6 +299,7 @@ export function buildCvHtml(data = {}, lang = 'tr') {
   [dir="rtl"] .tl-body{border-left:none;border-right:2px solid #bdbdbd;padding-left:0;padding-right:22px;}
   [dir="rtl"] .plist li{flex-direction:row-reverse;}
   [dir="rtl"] .section-head{flex-direction:row-reverse;}
+  ${maskCss}
 </style>
 </head>
 <body>
@@ -243,12 +310,11 @@ export function buildCvHtml(data = {}, lang = 'tr') {
         ${photoTag}
       </div>
       <h2>${esc(L('sec_personal'))}</h2>
-${infoItem('&#128188;', L('f_passport'), d.passportNo)}
 ${infoItem('&#128197;', L('sec_birth'), d.birthDate)}
 ${infoItem('&#128207;', L('sec_hw'), d.heightWeight)}
+${bloodTypeLabel ? infoItem('&#129656;', L('f_blood'), bloodTypeLabel) : ''}
 ${infoItem('&#127758;', L('f_nationality'), nationalityLabel)}
 ${infoItem('&#128663;', L('f_lic_class'), licenseLabel)}
-${infoItem('&#128737;', L('f_criminal'), criminalLabel)}
 
       <div class="info-item"><span class="ic">&#9873;</span><div style="width:100%">
         <div class="label" style="margin-bottom:8px;">${esc(L('step_languages'))}</div>
@@ -285,6 +351,7 @@ ${infoItem('&#128737;', L('f_criminal'), criminalLabel)}
           <div class="c"><span class="tx">${esc(d.email)}</span><span class="ic">&#9993;</span></div>
           <div class="c"><span class="tx">${esc(d.phone)}</span><span class="ic">&#9742;</span></div>
           <div class="c"><span class="tx">${esc(d.location)}</span><span class="ic">&#128205;</span></div>
+          ${d.candidateNo ? `<div class="c candno"><span class="tx"><b>${esc(L('candidate_no'))}:</b> ${esc(d.candidateNo)}</span><span class="ic">&#35;</span></div>` : ''}
         </div>
       </div>
 
@@ -328,7 +395,7 @@ ${infoItem('&#128737;', L('f_criminal'), criminalLabel)}
         </ul>
       </section>
     </main>
-  </div>
+  </div>${photosPage}
 </body>
 </html>`;
 }

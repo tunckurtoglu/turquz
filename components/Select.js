@@ -5,31 +5,34 @@
 // options: string dizisi  veya  { label, value } dizisi.
 import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, Modal, FlatList, StyleSheet } from 'react-native';
+import { useLanguage } from '../i18n/LanguageContext';
 
 const norm = (o) => (typeof o === 'string' ? { label: o, value: o } : o);
 
-export function Select({ label, value, options = [], onChange, placeholder = 'Seçiniz' }) {
+export function Select({ label, value, options = [], onChange, placeholder, disabled = false }) {
+  const { t } = useLanguage();
+  const ph = placeholder || t('select');
   const [open, setOpen] = useState(false);
   const opts = options.map(norm);
   const selected = opts.find((o) => o.value === value);
 
   return (
-    <View style={styles.field}>
-      {label ? <Text style={styles.label}>{label}</Text> : null}
-      <TouchableOpacity style={styles.control} onPress={() => setOpen(true)} activeOpacity={0.7}>
-        <Text style={[styles.controlText, !selected && styles.placeholder]} numberOfLines={1}>
-          {selected ? selected.label : placeholder}
+    <View style={[styles.field, disabled && styles.fieldDisabled]}>
+      {label ? <Text style={[styles.label, disabled && styles.labelDisabled]}>{label}</Text> : null}
+      <TouchableOpacity style={[styles.control, disabled && styles.controlDisabled]} onPress={() => !disabled && setOpen(true)} activeOpacity={disabled ? 1 : 0.7} disabled={disabled}>
+        <Text style={[styles.controlText, !selected && styles.placeholder, disabled && styles.textDisabled]} numberOfLines={1}>
+          {selected ? selected.label : ph}
         </Text>
-        <Text style={styles.chev}>▾</Text>
+        <Text style={[styles.chev, disabled && styles.textDisabled]}>▾</Text>
       </TouchableOpacity>
 
       <Modal visible={open} transparent animationType="slide" onRequestClose={() => setOpen(false)}>
         <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={() => setOpen(false)} />
         <View style={styles.sheet}>
           <View style={styles.sheetHead}>
-            <Text style={styles.sheetTitle}>{label || placeholder}</Text>
+            <Text style={styles.sheetTitle}>{label || ph}</Text>
             <TouchableOpacity onPress={() => setOpen(false)}>
-              <Text style={styles.action}>Kapat</Text>
+              <Text style={styles.action}>{t('close')}</Text>
             </TouchableOpacity>
           </View>
           <FlatList
@@ -55,7 +58,9 @@ export function Select({ label, value, options = [], onChange, placeholder = 'Se
   );
 }
 
-export function MultiSelect({ label, values = [], options = [], onChange, placeholder = 'Seçiniz', maxValues }) {
+export function MultiSelect({ label, values = [], options = [], onChange, placeholder, maxValues }) {
+  const { t } = useLanguage();
+  const ph = placeholder || t('select');
   const [open, setOpen] = useState(false);
   const opts = options.map(norm);
   const set = new Set(values);
@@ -69,7 +74,8 @@ export function MultiSelect({ label, values = [], options = [], onChange, placeh
     }
     onChange([...next]);
   };
-  const summary = values.length ? values.join(', ') : placeholder;
+  const labelFor = (v) => { const o = opts.find((x) => x.value === v); return o ? o.label : v; };
+  const summary = values.length ? values.map(labelFor).join(', ') : ph;
 
   return (
     <View style={styles.field}>
@@ -86,11 +92,11 @@ export function MultiSelect({ label, values = [], options = [], onChange, placeh
         <View style={styles.sheet}>
           <View style={styles.sheetHead}>
             <Text style={styles.sheetTitle}>
-              {label || placeholder}
+              {label || ph}
               {typeof maxValues === 'number' ? `  (${values.length}/${maxValues})` : ''}
             </Text>
             <TouchableOpacity onPress={() => setOpen(false)}>
-              <Text style={styles.action}>Bitti</Text>
+              <Text style={styles.action}>{t('done')}</Text>
             </TouchableOpacity>
           </View>
           <FlatList
@@ -120,6 +126,10 @@ export function MultiSelect({ label, values = [], options = [], onChange, placeh
 
 const styles = StyleSheet.create({
   field: { marginBottom: 12 },
+  fieldDisabled: { opacity: 0.55 },
+  labelDisabled: { color: '#9aa1ac' },
+  controlDisabled: { backgroundColor: '#f1f2f4' },
+  textDisabled: { color: '#9aa1ac' },
   label: { fontSize: 13, color: '#1b2533', fontWeight: '600', marginBottom: 5 },
   control: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

@@ -5,7 +5,10 @@
 // Yeni bir başvuru başlarken kullanılacak boş şablon.
 export const emptyCvData = {
   // --- Sidebar: kimlik ---
-  photo: '',            // data URI ("data:image/jpeg;base64,...") veya http URL. Boşsa foto kutusu gizlenir.
+  photo: '',            // vesikalık (1:1). data URI ("data:image/jpeg;base64,...") veya http URL. PDF'e gömülür.
+  photoFull: '',        // boydan tanıtım fotoğrafı (3:4). Otel galerisi + PDF 2. sayfa. Boşsa gizlenir.
+  photoClose: '',       // yakın çekim tanıtım fotoğrafı (3:4). Otel galerisi + PDF 2. sayfa. Boşsa gizlenir.
+  introVideo: '',       // 20 sn tanıtım videosu — storage YOLU (data değil; çok büyük). İmzalı URL ile oynatılır.
   firstName: '',
   lastName: '',
 
@@ -20,8 +23,8 @@ export const emptyCvData = {
   birthDate: '',        // serbest metin, ör. "10.04.2006"
   heightWeight: '',     // ör. "163 cm / 44 kg"
   nationality: '',
+  gender: '',           // 'male' | 'female' | 'unspecified' (filtreleme için)
   driverLicense: '',
-  criminalRecord: '',
 
   // --- Sidebar: Diller ---  [{ name, level }]
   languages: [],        // ör. [{ name: 'Rusça', level: 'Anadil' }]
@@ -50,6 +53,8 @@ export const emptyCvData = {
 // Şablonun orijinaliyle birebir eşleşen örnek veri (test/önizleme için).
 export const sampleCvData = {
   photo: '',            // gerçek fotoğrafı buraya data URI olarak koyabilirsin
+  photoFull: '',
+  photoClose: '',
   firstName: 'Zhansaya',
   lastName: 'Maratova',
   title: 'Turizm & Otelcilik · Misafir İlişkileri',
@@ -62,7 +67,6 @@ export const sampleCvData = {
   heightWeight: '163 cm / 44 kg',
   nationality: 'Kazakistan',
   driverLicense: '',
-  criminalRecord: '',
 
   languages: [
     { name: 'Rusça', level: 'Anadil' },
