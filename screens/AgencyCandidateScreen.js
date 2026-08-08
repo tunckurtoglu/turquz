@@ -3,7 +3,8 @@
 //  CV: 3 fotoğraf + maskeli CV önizleme (+ Teklif Gönder).
 //  Belgeler: adayın yüklediği belgeleri gör/indir + acenta belgesi (sözleşme/bilet) yükle + aşama.
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, Image, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Modal, RefreshControl, FlatList, Dimensions, Animated } from 'react-native';
+import { View, Text, Image, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Modal, RefreshControl, FlatList, Dimensions, Animated, Platform } from 'react-native';
+import * as Print from 'expo-print';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -11,22 +12,37 @@ import { useLanguage } from '../i18n/LanguageContext';
 import CVPreview from './CVPreview';
 import ContractForm from '../components/ContractForm';
 import ContractPreview from '../components/ContractPreview';
-import FlightForm from '../components/FlightForm';
-import FlightPreview from '../components/FlightPreview';
+import EmployerPickerSheet from '../components/EmployerPickerSheet';
+import { mergeEmployerIntoContract } from '../lib/employers';
+import PickupCard from '../components/PickupCard';
 import InterviewModal from '../components/InterviewModal';
 import TranscriptModal from '../components/TranscriptModal';
 import { WebView } from 'react-native-webview';
 import PhotoWatermark from '../components/PhotoWatermark';
-import { offerCandidate, withdrawCandidate } from '../lib/roles';
+import { offerCandidate, withdrawCandidate, endEmployment, getCandidateById, getCandidateContractFields } from '../lib/roles';
+import { translateCvFields, applyCvTranslation, extractCvFields, hasCvFreeText } from '../lib/cvTranslate';
 import { candidateCode, maskedName } from '../lib/candidateCode';
 import { listDocuments, uploadDocument, getSignedUrl, removeAllDocuments, removeDocument, submitDocuments, requestReupload } from '../lib/documents';
 import { getContract, saveContract, deleteContract } from '../lib/contracts';
-import { getFlight, saveFlight, deleteFlight } from '../lib/flights';
+import { deleteFlight } from '../lib/flights';
 import { supabase } from '../lib/supabase';
-import { notifyDocument } from '../lib/push';
+import { notifyDocument, notifyDocumentSubmit, notifyOffer } from '../lib/push';
 import { PIPELINE, kindState, activeStep } from '../lib/pipeline';
-import { getInterview, fromISO } from '../lib/interviews';
+import { getInterview, cancelInterview, markInterviewDone, slotMs, slotDateKey, slotTime, weekdayOf, formatCountdown } from '../lib/interviews';
+import { callWindow, JOIN_PERIOD_MIN, getCallWindowOpts } from '../lib/livekitCall';
 import { getIntroVideoUrl } from '../lib/introVideo';
+import { getMySignature, logContractSignature, sha256Hex, buildAuditLine } from '../lib/esign';
+import { buildContractHtml } from '../cv/buildContractHtml';
+import CvOverrideSheet from '../components/CvOverrideSheet';
+import ProcessChatSheet from '../components/ProcessChatSheet';
+import { loadOverride, saveOverride, clearOverride, normalizePoolCvData, applyCvOverrides } from '../lib/cvOverride';
+import { PROCESS_CHAT_ENABLED } from '../lib/features';
+import CandidateRateSheet from '../components/CandidateRateSheet';
+import RatingBadge from '../components/RatingBadge';
+import RatingBreakdown from '../components/RatingBreakdown';
+import FavoriteEmployerSheet from '../components/FavoriteEmployerSheet';
+import { canRateCandidate, getMyRating, listRatingStats } from '../lib/ratings';
+import { listFavoriteMap } from '../lib/favorites';
 
 // Tanzim/teklif tarihi: bugünün "gg/aa/yyyy" hali
 function todayStr() {
@@ -45,33 +61,46 @@ async function readableJpeg(uri) {
   return out.base64;
 }
 
-export default function AgencyCandidateScreen({ candidate, agencyUserId, accepted, offered: offeredProp, onBack, onAccepted, fontsReady }) {
-  const { t, dir } = useLanguage();
+export default function AgencyCandidateScreen({ candidate, agencyUserId, accepted, offered: offeredProp, hired: hiredProp, openIvJoin, onBack, onAccepted, fontsReady }) {
+  const { t, dir, lang } = useLanguage();
   const insets = useSafeAreaInsets();
   const backChevron = dir === 'rtl' ? '›' : '‹';
   const [busy, setBusy] = useState(false);
   const [isAccepted, setIsAccepted] = useState(!!accepted);
   const [offered, setOffered] = useState(!!offeredProp); // teklif gitti, aday cevabı bekleniyor
+  const [isHired, setIsHired] = useState(!!hiredProp);
+  const [iv, setIv] = useState(null); // mülakat satırı (proposed/scheduled)
+  const [nowTick, setNowTick] = useState(Date.now());
   const [hasInterview, setHasInterview] = useState(false); // bu adayla mülakat YAPILDI mı (transcript butonu için)
   const offerBlink = useRef(new Animated.Value(1)).current;
   const [viewer, setViewer] = useState(null);
   const [viewerPdf, setViewerPdf] = useState(false);
+  const [viewerLoading, setViewerLoading] = useState(false); // belge açılırken yüklenme göstergesi
   const [galleryIndex, setGalleryIndex] = useState(null); // foto galeri (kaydırmalı) açık indeks
   const [introVideoUrl, setIntroVideoUrl] = useState(''); // adayın tanıtım videosu (imzalı url)
   const [videoPlay, setVideoPlay] = useState(false);      // tam ekran video oynatıcı
+  const [contractDownloaded, setContractDownloaded] = useState(false); // sözleşme PDF'i indirildi mi (elle imza yolu)
   const [tab, setTab] = useState('cv');
   const [docs, setDocs] = useState({});
   const [uploading, setUploading] = useState(null);
   const [contract, setContract] = useState(null); // sözleşme verisi (acentenin doldurduğu)
   const [formVisible, setFormVisible] = useState(false);
+  const [employerPickerVisible, setEmployerPickerVisible] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);
   const [sending, setSending] = useState(false);  // "Belgeleri Gönder" sırasında
-  const [flight, setFlight] = useState(null);     // uçuş bilgisi (acentenin doldurduğu)
-  const [flightForm, setFlightForm] = useState(false);
-  const [flightPrev, setFlightPrev] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [interviewOpen, setInterviewOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [cvOverrides, setCvOverrides] = useState({});
+  const [cvEditorOpen, setCvEditorOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [rateOpen, setRateOpen] = useState(false);
+  const [canRate, setCanRate] = useState(false);
+  const [hasMyRating, setHasMyRating] = useState(false);
+  const [ratingSummary, setRatingSummary] = useState(null); // { avg, count }
+  const [favOpen, setFavOpen] = useState(false);
+  const [favEmployerIds, setFavEmployerIds] = useState([]);
+  const overrideSaveTimer = useRef(null);
   // Tüm adımlar (sözleşme dâhil) DOSYA ile tamamlanır. isUploaded: satır var (taslak da olabilir).
   // isSubmitted: gönderilmiş (karşı tarafa geçmiş). İmzalı sözleşme de bir belgedir artık.
   const isUploaded = (k) => !!docs[k];
@@ -81,17 +110,49 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
   // Kabul edilmeden Belgeler sekmesi yok; her zaman CV göster.
   const activeTab = isAccepted ? tab : 'cv';
 
-  // Bu adayla mülakat YAPILDI mı? (slot seçilmiş + zamanı geçmiş) -> Konuşma Kaydı butonu o zaman çıkar.
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const iv = await getInterview(candidate?.user_id);
-      const chosen = iv?.selectedSlot;
-      const done = !!(chosen && new Date(fromISO(chosen)).getTime() < Date.now());
-      if (alive) setHasInterview(done);
-    })();
-    return () => { alive = false; };
+  // Mülakat durumu (seçilen slot / planlandı) — ana şeritte gösterilir.
+  const [callOpts, setCallOpts] = useState({ minutes: JOIN_PERIOD_MIN, extraSecs: 0 });
+  const refreshIv = useCallback(async () => {
+    let row = await getInterview(candidate?.user_id);
+    let opts = { minutes: JOIN_PERIOD_MIN, extraSecs: 0 };
+    if (row?.status === 'scheduled' && row.selectedSlot) {
+      opts = await getCallWindowOpts(row);
+      setCallOpts(opts);
+    } else setCallOpts(opts);
+    // Görüşme penceresi bittiyse aktif scheduled kalmasın → "Mülakat planla" görünsün.
+    if (row?.status === 'scheduled' && row.selectedSlot && callWindow(row.selectedSlot, opts).ended) {
+      try { await markInterviewDone(candidate.user_id); } catch (e) { /* yoksay */ }
+      row = await getInterview(candidate?.user_id);
+    }
+    setIv(row);
+    const chosen = row?.selectedSlot;
+    const ms = chosen ? slotMs(chosen) : NaN;
+    const periodMs = (opts.minutes || JOIN_PERIOD_MIN) * 60 * 1000 + (opts.extraSecs || 0) * 1000;
+    setHasInterview(!!(chosen && !isNaN(ms) && ms + periodMs < Date.now()) || row?.status === 'done');
   }, [candidate?.user_id]);
+
+  useEffect(() => { refreshIv(); }, [refreshIv]);
+
+  useEffect(() => {
+    if (!candidate?.user_id) return undefined;
+    const ch = supabase
+      .channel(`iv-agency-cand-${candidate.user_id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'interviews', filter: `user_id=eq.${candidate.user_id}` }, () => refreshIv())
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [candidate?.user_id, refreshIv]);
+
+  // Geri sayım + "katıl" penceresi için saniyelik tick.
+  useEffect(() => {
+    if (iv?.status !== 'scheduled' || !iv?.selectedSlot) return undefined;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [iv?.status, iv?.selectedSlot]);
+
+  // Listeden "Katıl" ile gelindiyse mülakat modalını (ve uygunsa görüşmeyi) aç.
+  useEffect(() => {
+    if (openIvJoin) setInterviewOpen(true);
+  }, [openIvJoin]);
 
   // Teklif beklerken kutu yanıp sönsün (cevap gelene kadar).
   useEffect(() => {
@@ -104,8 +165,112 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
     return () => loop.stop();
   }, [offered, offerBlink]);
 
-  const data = candidate?.data || {};
+  // Aday profili: gelen veriyle başlar, ekran açılınca GÜNCEL hali çekilir
+  // (ör. aday sonradan pasaport no girdiyse sözleşmeye otomatik düşsün).
+  const [data, setData] = useState(() => normalizePoolCvData(candidate));
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      // 1) güncel havuz verisi (PII gizli) + 2) süreçteyse sözleşme için özel alanlar (passportNo, aile, adres)
+      const [fresh, priv] = await Promise.all([
+        getCandidateById(candidate?.user_id),
+        getCandidateContractFields(candidate?.user_id),
+      ]);
+      if (!alive) return;
+      const base = normalizePoolCvData(fresh || candidate);
+      const merged = priv ? { ...base, ...priv } : base; // özel alanlar havuz verisinin üzerine
+      // Ünvan: priv/data boşsa kolondaki title'ı koru
+      if (!String(merged.title || '').trim()) {
+        merged.title = fresh?.title || candidate?.title || '';
+      }
+      setData(merged);
+    })();
+    return () => { alive = false; };
+  }, [candidate?.user_id]);
   const code = candidateCode(data.nationality, candidate?.reg_no);
+
+  // Adayın serbest CV metinlerini (özet, ünvan, iş deneyimi, eğitim) ACENTENİN diline
+  // yapay zekâ ile çevir (translate-cv; DB'de önbellekli). Orijinal/çeviri arası geçilebilir.
+  const [cvTr, setCvTr] = useState(null);
+  const [showOriginal, setShowOriginal] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setShowOriginal(false);
+    const hasFree = hasCvFreeText(extractCvFields(data));
+    if (!candidate?.user_id || !hasFree) { setCvTr(null); return undefined; }
+    translateCvFields(candidate.user_id, lang, data).then((tr) => { if (alive) setCvTr(tr); });
+    return () => { alive = false; };
+  }, [candidate?.user_id, lang, data]);
+
+  // Gösterilecek CV: çeviri + acente overlay (yalnız bu acente görür).
+  const cvTranslated = (!showOriginal && cvTr) ? applyCvTranslation(data, cvTr) : data;
+  const cvData = applyCvOverrides(cvTranslated, cvOverrides);
+  const hasCvOverrides = Object.keys(cvOverrides).length > 0;
+  // WebView önizleme anahtarı: override (özellikle title) değişince kesin remount.
+  const cvPreviewKey = `${lang}|${cvData.title || ''}|${JSON.stringify(cvOverrides)}`;
+
+  useEffect(() => {
+    let alive = true;
+    setCvOverrides({});
+    if (!agencyUserId || !candidate?.user_id) return undefined;
+    loadOverride(agencyUserId, candidate.user_id).then((o) => { if (alive) setCvOverrides(o); });
+    return () => { alive = false; };
+  }, [agencyUserId, candidate?.user_id]);
+
+  // Puan: havuz özeti + bu acente puanlayabilir mi
+  useEffect(() => {
+    let alive = true;
+    const uid = candidate?.user_id;
+    if (!uid) return undefined;
+    setCanRate(false);
+    setHasMyRating(false);
+    setRatingSummary(null);
+    Promise.all([
+      listRatingStats([uid]),
+      canRateCandidate(uid),
+      agencyUserId ? getMyRating(agencyUserId, uid) : Promise.resolve(null),
+    ]).then(([stats, can, mine]) => {
+      if (!alive) return;
+      setRatingSummary(stats[uid] || null);
+      setCanRate(!!can);
+      setHasMyRating(!!mine);
+    });
+    return () => { alive = false; };
+  }, [candidate?.user_id, agencyUserId, isHired]);
+
+  // Favori: bu aday hangi işletmelerde
+  useEffect(() => {
+    let alive = true;
+    const uid = candidate?.user_id;
+    if (!agencyUserId || !uid) { setFavEmployerIds([]); return undefined; }
+    listFavoriteMap(agencyUserId).then((m) => {
+      if (alive) setFavEmployerIds(m[uid] || []);
+    });
+    return () => { alive = false; };
+  }, [agencyUserId, candidate?.user_id]);
+
+  const handleOverrideChange = (next) => {
+    setCvOverrides(next);
+    clearTimeout(overrideSaveTimer.current);
+    overrideSaveTimer.current = setTimeout(() => {
+      saveOverride(agencyUserId, candidate.user_id, next).catch((e) => console.warn('CV override kaydedilemedi:', e?.message));
+    }, 800);
+  };
+
+  const handleClearOverride = () => {
+    Alert.alert(t('cv_edit_reset'), t('cv_edit_reset_confirm'), [
+      { text: t('consent_cancel'), style: 'cancel' },
+      {
+        text: t('cv_edit_reset'),
+        style: 'destructive',
+        onPress: async () => {
+          setCvOverrides({});
+          try { await clearOverride(agencyUserId, candidate.user_id); }
+          catch (e) { Alert.alert(t('cv_edit_title'), e?.message || 'error'); }
+        },
+      },
+    ]);
+  };
 
   const photos = [
     { uri: data.photoClose, cap: t('photo_cap_close') },
@@ -123,12 +288,11 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
   }, [data?.introVideo]);
 
   const refreshDocs = useCallback(async () => {
-    const [rows, con, fl] = await Promise.all([listDocuments(candidate.user_id), getContract(candidate.user_id), getFlight(candidate.user_id)]);
+    const [rows, con] = await Promise.all([listDocuments(candidate.user_id), getContract(candidate.user_id)]);
     const map = {};
     rows.forEach((r) => { map[r.kind] = r; });
     setDocs(map);
     setContract(con);
-    setFlight(fl);
   }, [candidate]);
 
   useEffect(() => { refreshDocs(); }, [refreshDocs]);
@@ -153,9 +317,6 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
     return () => { supabase.removeChannel(ch); };
   }, [candidate?.user_id, refreshDocs]);
 
-  // "Sözleşme Oluştur" -> formu aç (varsa düzenle).
-  const openContractForm = () => setFormVisible(true);
-
   // "Teklif Gönder" -> adaya TEKLİF gider. Belgeler/sözleşme AÇILMAZ; aday kabul edene kadar bekler.
   const acceptOffer = () => {
     Alert.alert(t('agency_offer'), `${t('agency_offer')}?`, [
@@ -166,6 +327,7 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
           setBusy(true);
           try {
             await offerCandidate(candidate.user_id);
+            notifyOffer(candidate.user_id, 'offer');
             setOffered(true);
             onAccepted?.(); // listeleri tazele (durum 'offered' oldu)
           } catch (e) {
@@ -176,6 +338,15 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
         },
       },
     ]);
+  };
+
+  const openEmployerPicker = () => setEmployerPickerVisible(true);
+
+  const onEmployerPicked = (employer) => {
+    const merged = mergeEmployerIntoContract(contract, employer);
+    setContract(merged);
+    setEmployerPickerVisible(false);
+    setFormVisible(true);
   };
 
   // Form: sözleşme BİLGİLERİNİ kaydet (KABUL ETMEZ). İmza+gönderim Belgeler adımında.
@@ -220,7 +391,87 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
   // Sözleşme önizlemesini aç (WebView + PDF paylaş).
   const viewContractPdf = () => setPreviewVisible(true);
 
+  // E-imza: işveren (acente) imza+kaşesiyle sözleşmeyi elektronik imzalar.
+  //  1) kayıtlı imza yoksa tanımlama ekranını aç
+  //  2) onay -> imzasız sözleşme hash'i (tamper-evidence) + denetim kaydı
+  //  3) imzalı PDF üret -> contract_unsigned olarak yükle (taslak) -> "Gönder" ile iletilir
+  // Önizlemedeki "E-imza ile imzala" çağırır (ön kontrolleri ContractPreview yapar).
+  // Onay -> imzasız hash + denetim kaydı -> imzalı PDF üret + yükle. Döner: imza bilgisi / null.
+  const esignContract = async () => {
+    const sig = await getMySignature();
+    if (!sig) return null;
+    const confirmed = await new Promise((res) => {
+      Alert.alert(t('esign_confirm_title'), t('esign_confirm_msg'), [
+        { text: t('consent_cancel'), style: 'cancel', onPress: () => res(false) },
+        { text: t('esign_now'), onPress: () => res(true) },
+      ], { onDismiss: () => res(false) });
+    });
+    if (!confirmed) return null;
+
+    try {
+      const latin = withLatinName(data || {});
+      const baseHtml = buildContractHtml(latin, contract || {});
+      const docHash = (await sha256Hex(baseHtml)).slice(0, 16);
+      const log = await logContractSignature({
+        candidateUserId: candidate.user_id,
+        signerName: sig.signerName,
+        signerTitle: sig.signerTitle,
+        docNo: code,
+        docHash,
+        platform: Platform.OS,
+      });
+      const auditLine = buildAuditLine(log);
+      const sigInfo = { image: sig.image, name: sig.signerName, subtitle: sig.signerTitle, auditLine };
+      const signedHtml = buildContractHtml(latin, contract || {}, { signature: sigInfo });
+      const { base64 } = await Print.printToFileAsync({ html: signedHtml, base64: true });
+      const row = await uploadDocument(candidate.user_id, 'contract_unsigned', base64, 'application/pdf');
+      setDocs((m) => ({ ...m, contract_unsigned: row }));
+      return sigInfo;
+    } catch (e) {
+      Alert.alert(t('esign_setup_title'), e?.message || t('esign_failed'));
+      return null;
+    }
+  };
+
+  // E-imzadan vazgeç: imzalı sözleşme belgesini kaldır (önizleme imzasıza döner).
+  const cancelEsignDoc = async () => {
+    try {
+      await removeDocument(candidate.user_id, 'contract_unsigned');
+      setDocs((m) => { const n = { ...m }; delete n.contract_unsigned; return n; });
+    } catch (e) {
+      Alert.alert(t('esign_cancel'), e?.message || 'error');
+    }
+  };
+
   const withdrawOffer = () => {
+    if (isHired) {
+      Alert.alert(t('staff_end'), t('staff_end_confirm'), [
+        { text: t('consent_cancel'), style: 'cancel' },
+        {
+          text: t('staff_end'),
+          style: 'destructive',
+          onPress: async () => {
+            setBusy(true);
+            try {
+              await endEmployment(candidate.user_id);
+              setDocs({});
+              setContract(null);
+              setIsAccepted(false);
+              setOffered(false);
+              setIsHired(false);
+              setCanRate(true);
+              onAccepted?.();
+              setRateOpen(true); // süreç bitince puan iste
+            } catch (e) {
+              Alert.alert(t('staff_end'), e?.message || 'error');
+            } finally {
+              setBusy(false);
+            }
+          },
+        },
+      ]);
+      return;
+    }
     Alert.alert(t('agency_withdraw'), t('agency_withdraw_confirm'), [
       { text: t('consent_cancel'), style: 'cancel' },
       {
@@ -232,10 +483,10 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
             await removeAllDocuments(candidate.user_id);
             await deleteContract(candidate.user_id);
             await deleteFlight(candidate.user_id);
+            try { await cancelInterview(candidate.user_id); } catch (_) { /* yoksa sorun değil */ }
             await withdrawCandidate(candidate.user_id);
             setDocs({});
             setContract(null);
-            setFlight(null);
             setIsAccepted(false);
             setOffered(false);
             onAccepted?.(); // havuz/durumları tazele
@@ -253,13 +504,16 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
     const row = docs[kind];
     if (!row) return;
     try {
+      setViewerLoading(true);
       const url = await getSignedUrl(row.storage_path, 120);
       setViewerPdf((row.mime_type || '').includes('pdf') || (row.storage_path || '').toLowerCase().endsWith('.pdf'));
       setViewer(url);
     } catch (e) {
+      setViewerLoading(false);
       Alert.alert(t('agency_tab_docs'), t('doc_upload_error'));
     }
   };
+  const closeViewer = () => { setViewer(null); setViewerLoading(false); };
 
   const uploadAgencyDoc = async (kind) => {
     try {
@@ -272,6 +526,27 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
       const row = await uploadDocument(candidate.user_id, kind, base64, 'image/jpeg');
       setDocs((m) => ({ ...m, [kind]: row }));
       // Not: adaya bildirim YÜKLEMEDE değil, "Belgeleri Gönder"de gider (submitStep).
+    } catch (e) {
+      Alert.alert(t('agency_tab_docs'), t('doc_upload_error'));
+    } finally {
+      setUploading(null);
+    }
+  };
+
+  // İmzalı sözleşmenin taranmış halini YÜKLE — sadece PDF (elle imza yolu).
+  const uploadContractPdf = async () => {
+    try {
+      const DocumentPicker = await import('expo-document-picker');
+      const { File } = await import('expo-file-system');
+      const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf'], copyToCacheDirectory: true, multiple: false });
+      if (res.canceled || !res.assets || !res.assets.length) return;
+      const a = res.assets[0];
+      const isPdf = (a.mimeType || '').includes('pdf') || (a.name || '').toLowerCase().endsWith('.pdf');
+      if (!isPdf) { Alert.alert(t('agency_tab_docs'), t('doc_pdf_only')); return; }
+      setUploading('contract_unsigned');
+      const base64 = await new File(a.uri).base64();
+      const row = await uploadDocument(candidate.user_id, 'contract_unsigned', base64, 'application/pdf');
+      setDocs((m) => ({ ...m, contract_unsigned: row }));
     } catch (e) {
       Alert.alert(t('agency_tab_docs'), t('doc_upload_error'));
     } finally {
@@ -294,20 +569,24 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
     }
   };
 
-  // Uçuş adımı: bilgileri kaydet + bileti gönder (submit) + adaya bildir. Form içinden çağrılır.
-  const submitFlight = async (fields) => {
-    setSending(true);
+  // Uçak bileti — yalnızca PDF (Turquz uçuş kartı devre dışı; bkz. lib/features.js).
+  const uploadFlightTicketPdf = async () => {
     try {
-      await saveFlight(candidate.user_id, fields, agencyUserId);
-      const rows = await submitDocuments(candidate.user_id, ['flight_ticket']);
-      setFlight(fields);
-      setDocs((m) => { const n = { ...m }; rows.forEach((r) => { n[r.kind] = r; }); return n; });
-      notifyDocument(candidate.user_id, 'flight_ticket');
-      setFlightForm(false);
+      const DocumentPicker = await import('expo-document-picker');
+      const { File } = await import('expo-file-system');
+      const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf'], copyToCacheDirectory: true, multiple: false });
+      if (res.canceled || !res.assets || !res.assets.length) return;
+      const a = res.assets[0];
+      const isPdf = (a.mimeType || '').includes('pdf') || (a.name || '').toLowerCase().endsWith('.pdf');
+      if (!isPdf) { Alert.alert(t('doc_flight_ticket'), t('doc_pdf_only')); return; }
+      setUploading('flight_ticket');
+      const base64 = await new File(a.uri).base64();
+      const row = await uploadDocument(candidate.user_id, 'flight_ticket', base64, 'application/pdf');
+      setDocs((m) => ({ ...m, flight_ticket: row }));
     } catch (e) {
-      Alert.alert(t('flight_form_title'), e?.message || 'error');
+      Alert.alert(t('doc_flight_ticket'), t('doc_upload_error'));
     } finally {
-      setSending(false);
+      setUploading(null);
     }
   };
 
@@ -335,7 +614,7 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
           try {
             const rows = await submitDocuments(candidate.user_id, kinds);
             setDocs((m) => { const n = { ...m }; rows.forEach((r) => { n[r.kind] = r; }); return n; });
-            kinds.forEach((k) => notifyDocument(candidate.user_id, k)); // adaya "belge geldi"
+            notifyDocumentSubmit(candidate.user_id, kinds);
           } catch (e) {
             Alert.alert(t('agency_tab_docs'), t('doc_upload_error'));
           } finally {
@@ -381,11 +660,12 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
             if (mode === 'locked') {
               return (
                 <View key={kind} style={styles.subRow}>
-                  <View style={styles.subMain}>
-                    <Text style={styles.subBullet}>🔒</Text>
-                    <Text style={[styles.subLabel, styles.subLabelMuted]}>{t('doc_contract_unsigned')}</Text>
-                    <View style={{ flex: 1 }} />
-                    <Text style={styles.lockedHint}>{t('doc_wait_passport')}</Text>
+                  <View style={styles.subLocked}>
+                    <View style={styles.subMain}>
+                      <Text style={styles.subBullet}>🔒</Text>
+                      <Text style={[styles.subLabel, styles.subLabelMuted, styles.subLabelFull]}>{t('doc_contract_unsigned')}</Text>
+                    </View>
+                    <Text style={styles.lockedHintBlock}>{t('doc_wait_passport')}</Text>
                   </View>
                 </View>
               );
@@ -403,19 +683,24 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
                   {sent ? (
                     <TouchableOpacity onPress={() => viewDoc('contract_unsigned')}><Text style={styles.linkView}>{t('doc_view')}</Text></TouchableOpacity>
                   ) : !up2 ? (
-                    <TouchableOpacity style={styles.addBtnSm} onPress={() => uploadAgencyDoc('contract_unsigned')} disabled={cbusy} activeOpacity={0.8}>
-                      {cbusy ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.addBtnText}>{t('contract_upload')}</Text>}
+                    <TouchableOpacity style={styles.addBtnSm} onPress={() => (contract?.title ? setPreviewVisible(true) : openEmployerPicker())} activeOpacity={0.8}>
+                      <Text style={styles.addBtnText}>{contract?.title ? t('contract_view') : t('contract_create')}</Text>
                     </TouchableOpacity>
                   ) : null}
                 </View>
+                {/* Yalnızca PDF indirildiyse (elle imza yolu) "imzalı halini yükle" görünür. E-imza atıldıysa gerek yok. */}
+                {!up2 && contractDownloaded ? (
+                  <View style={styles.subLinks}>
+                    <TouchableOpacity style={styles.changeBtn} onPress={uploadContractPdf} disabled={cbusy} activeOpacity={0.85}>
+                      {cbusy ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.changeBtnText}>⬆ {t('contract_upload_signed')}</Text>}
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
                 {up2 && !sent ? (
                   <>
                     <View style={styles.subLinks}>
                       <TouchableOpacity style={styles.changeBtn} onPress={() => viewDoc('contract_unsigned')} activeOpacity={0.85}>
-                        <Text style={styles.changeBtnText}>👁 {t('doc_view')}</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={styles.changeBtn} onPress={() => uploadAgencyDoc('contract_unsigned')} disabled={cbusy} activeOpacity={0.85}>
-                        <Text style={styles.changeBtnText}>✎ {t('photo_change')}</Text>
+                        <Text style={styles.changeBtnText}>{t('doc_view')}</Text>
                       </TouchableOpacity>
                       <TouchableOpacity style={styles.changeBtn} onPress={() => removeAgencyDoc('contract_unsigned')} activeOpacity={0.85}>
                         <Text style={[styles.changeBtnText, styles.removeText]}>🗑 {t('photo_remove')}</Text>
@@ -431,8 +716,7 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
           }
           const kst = kindState(kind, has);
           const busy = uploading === kind;
-          // Uçuş kendi formuyla yönetilir; genel taslak/gönder akışı dışında.
-          const draft = mine && kind !== 'flight_ticket' && isUploaded(kind) && !isSubmitted(kind);
+          const draft = mine && isUploaded(kind) && !isSubmitted(kind);
           const muteLabel = mode === 'locked' || (mode === 'done' && mine);
           return (
             <View key={kind} style={styles.subRow}>
@@ -441,12 +725,7 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
                 <Text style={[styles.subLabel, muteLabel && styles.subLabelMuted]}>{t(`doc_${kind}`)}</Text>
                 {draft ? <View style={styles.draftBadge}><Text style={styles.draftText}>{t('doc_draft')}</Text></View> : null}
                 <View style={{ flex: 1 }} />
-                {kst === 'done' && kind === 'flight_ticket' ? (
-                  <View style={styles.viewLinks}>
-                    <TouchableOpacity onPress={() => setFlightPrev(true)}><Text style={styles.linkView}>{t('flight_info_title')}</Text></TouchableOpacity>
-                    <TouchableOpacity onPress={() => viewDoc(kind)}><Text style={styles.linkView}>{t('doc_view')}</Text></TouchableOpacity>
-                  </View>
-                ) : kst === 'done' ? (
+                {kst === 'done' ? (
                   <View style={styles.viewLinks}>
                     <TouchableOpacity onPress={() => (kind === 'contract_unsigned' ? viewContractPdf() : viewDoc(kind))}>
                       <Text style={styles.linkView}>{t('doc_view')}</Text>
@@ -462,8 +741,15 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
                     <Text style={styles.linkView}>{t('doc_view')}</Text>
                   </TouchableOpacity>
                 ) : kst === 'active' && mine ? (
-                  <TouchableOpacity style={styles.addBtnSm} onPress={() => (kind === 'contract_unsigned' ? setFormVisible(true) : kind === 'flight_ticket' ? setFlightForm(true) : uploadAgencyDoc(kind))} disabled={busy} activeOpacity={0.8}>
-                    {busy ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.addBtnText}>{t('doc_upload')}</Text>}
+                  <TouchableOpacity
+                    style={styles.addBtnSm}
+                    onPress={() => (kind === 'contract_unsigned' ? openEmployerPicker() : kind === 'flight_ticket' ? uploadFlightTicketPdf() : uploadAgencyDoc(kind))}
+                    disabled={busy}
+                    activeOpacity={0.8}
+                  >
+                    {busy ? <ActivityIndicator color="#1b2533" /> : (
+                      <Text style={styles.addBtnText}>{kind === 'flight_ticket' ? t('flight_add_ticket') : t('doc_upload')}</Text>
+                    )}
                   </TouchableOpacity>
                 ) : kst === 'locked' ? (
                   <Text style={styles.lockedIcon}>🔒</Text>
@@ -471,21 +757,28 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
               </View>
               {draft ? (
                 <View style={styles.subLinks}>
-                  <TouchableOpacity style={styles.changeBtn} onPress={() => uploadAgencyDoc(kind)} activeOpacity={0.85}>
-                    <Text style={styles.changeBtnText}>✎ {t('photo_change')}</Text>
+                  <TouchableOpacity
+                    style={styles.changeBtn}
+                    onPress={() => (kind === 'flight_ticket' ? uploadFlightTicketPdf() : uploadAgencyDoc(kind))}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.changeBtnText}>✎ {kind === 'flight_ticket' ? t('flight_change_ticket') : t('photo_change')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.changeBtn} onPress={() => removeAgencyDoc(kind)} activeOpacity={0.85}>
                     <Text style={[styles.changeBtnText, styles.removeText]}>🗑 {t('photo_remove')}</Text>
                   </TouchableOpacity>
                 </View>
               ) : null}
+              {kind === 'flight_ticket' && mine && kst === 'active' && !draft ? (
+                <Text style={styles.lockedHintBlock}>ℹ️ {t('doc_pdf_only')}</Text>
+              ) : null}
             </View>
           );
         })}
 
         {/* Belgeleri Gönder: sıra acentede + adımın tüm (dosya) belgeleri yüklü (taslak).
-            Sözleşme ve uçuş kendi formlarıyla gönderildiği için bu genel butonun dışında. */}
-        {mode === 'active' && mine && !s.kinds.includes('contract_unsigned') && !s.kinds.includes('flight_ticket') && s.kinds.every((k) => isUploaded(k)) ? (
+            Sözleşme kendi formuyla gönderildiği için bu genel butonun dışında. */}
+        {mode === 'active' && mine && !s.kinds.includes('contract_unsigned') && s.kinds.every((k) => isUploaded(k)) ? (
           <TouchableOpacity style={[styles.sendBtn, sending && { opacity: 0.6 }]} onPress={() => submitStep(s)} disabled={sending} activeOpacity={0.9}>
             {sending ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.sendBtnText}>{t('docs_send')}  →</Text>}
           </TouchableOpacity>
@@ -507,10 +800,18 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
         <View style={styles.titleBox}>
           <Text style={[styles.title, fontsReady && styles.titleFont]} numberOfLines={1}>{maskedName(data) || code}</Text>
           <Text style={styles.titleCode} numberOfLines={1}>{code}</Text>
+          {ratingSummary ? (
+            <RatingBadge avg={ratingSummary.avg} count={ratingSummary.count} compact />
+          ) : null}
         </View>
+        {PROCESS_CHAT_ENABLED && contract?.isPaid ? (
+          <TouchableOpacity onPress={() => setChatOpen(true)} style={{ paddingHorizontal: 8 }} hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}>
+            <Text style={{ fontSize: 20 }}>💬</Text>
+          </TouchableOpacity>
+        ) : null}
         {isAccepted ? (
           <TouchableOpacity style={[styles.withdrawBtn, busy && styles.dim]} onPress={withdrawOffer} disabled={busy}>
-            {busy ? <ActivityIndicator color="#a32d2d" /> : <Text style={styles.withdrawText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('agency_withdraw')}</Text>}
+            {busy ? <ActivityIndicator color="#a32d2d" /> : <Text style={styles.withdrawText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{isHired ? t('staff_end') : t('agency_withdraw')}</Text>}
           </TouchableOpacity>
         ) : offered ? (
           <TouchableOpacity style={[styles.withdrawBtn, busy && styles.dim]} onPress={withdrawOffer} disabled={busy}>
@@ -530,17 +831,59 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
         </Animated.View>
       ) : null}
 
-      {/* Mülakat planla hep erişilebilir; Konuşma Kaydı YALNIZCA mülakat yapıldıysa */}
-      <View style={styles.interviewBar}>
-        <TouchableOpacity style={styles.interviewBtn} onPress={() => setInterviewOpen(true)} activeOpacity={0.85}>
-          <Text style={styles.interviewBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>🎥 {t('iv_propose_title')}</Text>
-        </TouchableOpacity>
-        {hasInterview ? (
-          <TouchableOpacity style={styles.transcriptBtn} onPress={() => setTranscriptOpen(true)} activeOpacity={0.85}>
-            <Text style={styles.transcriptBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>📝 {t('transcript_btn')}</Text>
-          </TouchableOpacity>
-        ) : null}
-      </View>
+      {/* Mülakat: süreç öncesi planlama + planlandıysa slot/geri sayım/katıl. Biten → yalnızca planla. */}
+      {((!offered && !isAccepted) || hasInterview || iv?.status === 'proposed' || iv?.status === 'scheduled') ? (
+        <View style={styles.interviewBarCol}>
+          {(!offered && !isAccepted) && iv?.status === 'scheduled' && iv.selectedSlot && !callWindow(iv.selectedSlot, callOpts).ended ? (() => {
+            const win = callWindow(iv.selectedSlot, callOpts);
+            const left = (win.base || 0) - nowTick;
+            return (
+              <View style={styles.ivSchedBar}>
+                <TouchableOpacity style={styles.ivSchedInfo} onPress={() => setInterviewOpen(true)} activeOpacity={0.85}>
+                  <Text style={styles.ivSchedTitle}>✓ {t('iv_scheduled')}</Text>
+                  <Text style={styles.ivSchedSlot} numberOfLines={1}>
+                    {weekdayOf(iv.selectedSlot, lang)} · {slotDateKey(iv.selectedSlot)} · 🕒 {slotTime(iv.selectedSlot)}
+                  </Text>
+                  {left > 0 ? (
+                    <Text style={styles.ivCountdown}>⏱ {t('iv_countdown')}: {formatCountdown(left)}</Text>
+                  ) : null}
+                </TouchableOpacity>
+                {win.joinable ? (
+                  <TouchableOpacity style={styles.ivJoinBtn} onPress={() => setInterviewOpen(true)} activeOpacity={0.9}>
+                    <Text style={styles.ivJoinBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>🎥 {t('call_join')}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={styles.ivDetailBtn} onPress={() => setInterviewOpen(true)} activeOpacity={0.85}>
+                    <Text style={styles.ivDetailBtnText}>›</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })() : null}
+          {(!offered && !isAccepted) && iv?.status === 'proposed' ? (
+            <TouchableOpacity style={styles.ivProposedBar} onPress={() => setInterviewOpen(true)} activeOpacity={0.85}>
+              <Text style={styles.ivProposedText} numberOfLines={2}>⏳ {t('iv_proposed_status')}</Text>
+              <Text style={styles.ivProposedChev}>›</Text>
+            </TouchableOpacity>
+          ) : null}
+          {(!offered && !isAccepted) && (
+            !iv
+            || iv.status === 'done'
+            || iv.status === 'cancelled'
+            || (iv.status === 'scheduled' && iv.selectedSlot && callWindow(iv.selectedSlot, callOpts).ended)
+            || (iv.status !== 'proposed' && iv.status !== 'scheduled')
+          ) ? (
+            <TouchableOpacity style={styles.interviewBtn} onPress={() => setInterviewOpen(true)} activeOpacity={0.85}>
+              <Text style={styles.interviewBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>🎥 {t('iv_propose_title')}</Text>
+            </TouchableOpacity>
+          ) : null}
+          {hasInterview ? (
+            <TouchableOpacity style={styles.transcriptBtn} onPress={() => setTranscriptOpen(true)} activeOpacity={0.85}>
+              <Text style={styles.transcriptBtnText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>📝 {t('transcript_btn')}</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
 
       {/* Sekmeler — yalnızca teklif gönderildikten sonra (CV ve Belgeler birlikte) */}
       {isAccepted ? (
@@ -554,9 +897,16 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
       ) : null}
 
       {activeTab === 'cv' ? (
-        <View style={styles.body}>
+        <ScrollView
+          style={styles.body}
+          contentContainerStyle={[styles.cvScrollContent, { paddingBottom: insets.bottom + 28 }]}
+          keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
+          showsVerticalScrollIndicator
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#c2a25a" colors={['#c2a25a']} />}
+        >
           {(photos.length || data.introVideo) ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.strip} contentContainerStyle={styles.stripContent}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.strip} contentContainerStyle={styles.stripContent} nestedScrollEnabled>
               {data.introVideo ? (
                 <TouchableOpacity activeOpacity={0.85} onPress={() => introVideoUrl && setVideoPlay(true)} style={styles.thumbBox}>
                   <View style={styles.thumbWrap}>
@@ -591,21 +941,51 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
               ))}
             </ScrollView>
           ) : null}
-          {isAccepted ? (
-            <View style={styles.cvActions}>
-              {has('passport') ? (
-                <TouchableOpacity style={styles.contractBtn} onPress={openContractForm} activeOpacity={0.85}>
-                  <Text style={styles.contractBtnText}>📄 {t('contract_create')}</Text>
-                </TouchableOpacity>
-              ) : (
-                <View style={styles.contractWait}>
-                  <Text style={styles.contractWaitText}>🔒 {t('doc_wait_passport')}</Text>
-                </View>
-              )}
+          {ratingSummary ? <RatingBreakdown stats={ratingSummary} /> : null}
+          <View style={styles.cvToolbar}>
+            <TouchableOpacity
+              style={[styles.cvEditBtn, hasCvOverrides && styles.cvEditBtnOn]}
+              onPress={() => setCvEditorOpen(true)}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.cvEditBtnText, hasCvOverrides && styles.cvEditBtnTextOn]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                ✏ {hasCvOverrides ? t('cv_edit_edited') : t('cv_edit_btn')}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.cvEditBtn, favEmployerIds.length > 0 && styles.cvEditBtnOn]}
+              onPress={() => setFavOpen(true)}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.cvEditBtnText, favEmployerIds.length > 0 && styles.cvEditBtnTextOn]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                {favEmployerIds.length > 0 ? '★' : '☆'} {t('fav_btn')}
+              </Text>
+            </TouchableOpacity>
+            {canRate ? (
+              <TouchableOpacity
+                style={[styles.cvEditBtn, hasMyRating && styles.cvEditBtnOn]}
+                onPress={() => setRateOpen(true)}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.cvEditBtnText, hasMyRating && styles.cvEditBtnTextOn]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                  ★ {hasMyRating ? t('rate_btn_edit') : t('rate_btn')}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          {cvTr ? (
+            <View style={[styles.trBar, styles.cvPadH]}>
+              <Text style={styles.trBadge}>🌐 {showOriginal ? t('cv_show_original') : t('cv_ai_translated')}</Text>
+              <TouchableOpacity onPress={() => setShowOriginal((o) => !o)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={styles.trToggle}>{showOriginal ? t('cv_show_translation') : t('cv_show_original')}</Text>
+              </TouchableOpacity>
             </View>
           ) : null}
-          <View style={styles.cv}><CVPreview data={data} masked candidateNo={code} /></View>
-        </View>
+          {/* Sabit yükseklik: üstteki puan/foto alanı CV'yi ezmesin; sayfa dikey kaydırılsın */}
+          <View style={[styles.cv, { height: Math.round(SCREEN_H * 0.78) }]}>
+            <CVPreview data={cvData} masked candidateNo={code} contentKey={cvPreviewKey} />
+          </View>
+        </ScrollView>
       ) : (
         <ScrollView
           contentContainerStyle={[styles.docsContent, { paddingBottom: insets.bottom + 24 }]}
@@ -622,17 +1002,27 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
             </View>
           </View>
           {PIPELINE.map((s) => <StepCard key={s.step} s={s} />)}
+
+          {/* Havaalanı karşılama — yalnızca uçak bileti adaya GÖNDERİLDİĞİNDE açılır */}
+          {isSubmitted('flight_ticket') ? (
+            <PickupCard userId={candidate.user_id} role="agency" agencyId={agencyUserId} />
+          ) : (
+            <View style={styles.pickupLock}>
+              <Text style={styles.pickupLockTitle}>🤝 {t('pickup_title')}</Text>
+              <Text style={styles.pickupLockText}>🔒 Havaalanı karşılama, uçak biletini adaya gönderdikten sonra açılır.</Text>
+            </View>
+          )}
         </ScrollView>
       )}
 
-      <Modal visible={!!viewer} animationType="slide" onRequestClose={() => setViewer(null)}>
+      <Modal visible={!!viewer} animationType="slide" onRequestClose={closeViewer}>
         <View style={styles.viewerWrap}>
           <View style={[styles.viewerHeader, { paddingTop: insets.top + 8 }]}>
             <Text style={styles.viewerTitle}>{t('doc_view')}</Text>
-            <TouchableOpacity onPress={() => setViewer(null)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}><Text style={styles.viewerX}>✕</Text></TouchableOpacity>
+            <TouchableOpacity onPress={closeViewer} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}><Text style={styles.viewerX}>✕</Text></TouchableOpacity>
           </View>
           {viewerPdf ? (
-            viewer ? <WebView source={{ uri: viewer }} style={styles.viewerBody} originWhitelist={['*']} /> : null
+            viewer ? <WebView source={{ uri: viewer }} style={styles.viewerBody} originWhitelist={['*']} onLoadEnd={() => setViewerLoading(false)} /> : null
           ) : (
             <ScrollView
               style={styles.viewerBody}
@@ -644,9 +1034,15 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
               showsVerticalScrollIndicator={false}
               showsHorizontalScrollIndicator={false}
             >
-              {viewer ? <Image source={{ uri: viewer }} style={{ width: SCREEN_W, height: SCREEN_H }} resizeMode="contain" /> : null}
+              {viewer ? <Image source={{ uri: viewer }} style={{ width: SCREEN_W, height: SCREEN_H }} resizeMode="contain" onLoadEnd={() => setViewerLoading(false)} /> : null}
             </ScrollView>
           )}
+          {viewerLoading ? (
+            <View style={styles.viewerLoadingOverlay} pointerEvents="none">
+              <ActivityIndicator size="large" color="#c2a25a" />
+              <Text style={styles.viewerLoadingText}>{t('doc_opening')}</Text>
+            </View>
+          ) : null}
         </View>
       </Modal>
 
@@ -696,11 +1092,62 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
         </View>
       </Modal>
 
+      <CvOverrideSheet
+        visible={cvEditorOpen}
+        base={cvTranslated}
+        overrides={cvOverrides}
+        onChange={handleOverrideChange}
+        onClear={handleClearOverride}
+        onClose={() => setCvEditorOpen(false)}
+        hasOverrides={hasCvOverrides}
+      />
+
+      <CandidateRateSheet
+        visible={rateOpen}
+        agencyId={agencyUserId}
+        candidateId={candidate?.user_id}
+        peerLabel={code}
+        onClose={() => setRateOpen(false)}
+        onSaved={async () => {
+          setHasMyRating(true);
+          const stats = await listRatingStats([candidate?.user_id]);
+          setRatingSummary(stats[candidate?.user_id] || null);
+        }}
+      />
+
+      <FavoriteEmployerSheet
+        visible={favOpen}
+        mode="toggle"
+        agencyId={agencyUserId}
+        candidateId={candidate?.user_id}
+        activeEmployerIds={favEmployerIds}
+        onChanged={(_candId, empId, nowOn) => {
+          setFavEmployerIds((prev) => {
+            const s = new Set(prev);
+            if (nowOn) s.add(empId);
+            else s.delete(empId);
+            return [...s];
+          });
+        }}
+        onClose={() => setFavOpen(false)}
+      />
+
+      <EmployerPickerSheet
+        visible={employerPickerVisible}
+        agencyId={agencyUserId}
+        onSelect={onEmployerPicked}
+        onClose={() => setEmployerPickerVisible(false)}
+      />
+
       <ContractForm
         visible={formVisible}
         initial={contract}
         data={data}
         onSaveData={saveContractData}
+        onChangeEmployer={() => {
+          setFormVisible(false);
+          setEmployerPickerVisible(true);
+        }}
         onClose={() => setFormVisible(false)}
       />
 
@@ -708,27 +1155,13 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
         visible={previewVisible}
         data={data}
         contract={contract}
-        onEsign={() => Alert.alert(t('esign_btn'), t('esign_soon'))}
+        candidateUserId={candidate.user_id}
+        esigned={(docs.contract_unsigned?.mime_type || '').includes('pdf')}
+        onEsign={esignContract}
+        onSaveContract={saveContractData}
+        onCancelEsign={cancelEsignDoc}
+        onDownloaded={() => setContractDownloaded(true)}
         onClose={() => setPreviewVisible(false)}
-      />
-
-      <FlightForm
-        visible={flightForm}
-        initial={flight}
-        data={data}
-        ticketUploaded={!!docs.flight_ticket}
-        uploadingTicket={uploading === 'flight_ticket'}
-        busy={sending}
-        onPickTicket={() => uploadAgencyDoc('flight_ticket')}
-        onSubmit={submitFlight}
-        onClose={() => { if (!sending) setFlightForm(false); }}
-      />
-
-      <FlightPreview
-        visible={flightPrev}
-        data={data}
-        flight={flight}
-        onClose={() => setFlightPrev(false)}
       />
 
       <InterviewModal
@@ -738,7 +1171,8 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
         agencyId={agencyUserId}
         fontsReady={fontsReady}
         candidateLabel={[maskedName(data), code].filter(Boolean).join(' · ')}
-        onClose={() => setInterviewOpen(false)}
+        autoJoin={!!openIvJoin}
+        onClose={() => { setInterviewOpen(false); refreshIv(); }}
       />
 
       <TranscriptModal
@@ -746,6 +1180,13 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
         candidateUserId={candidate.user_id}
         candidateLabel={[maskedName(data), code].filter(Boolean).join(' · ')}
         onClose={() => setTranscriptOpen(false)}
+      />
+
+      <ProcessChatSheet
+        visible={chatOpen}
+        onClose={() => setChatOpen(false)}
+        candidateId={candidate.user_id}
+        peerLabel={[maskedName(data), code].filter(Boolean).join(' · ')}
       />
     </View>
   );
@@ -780,6 +1221,8 @@ const styles = StyleSheet.create({
   tabTextOn: { color: '#fff' },
 
   body: { flex: 1 },
+  cvScrollContent: { flexGrow: 1 },
+  cvPadH: { marginHorizontal: 16 },
   strip: { flexGrow: 0, backgroundColor: '#fff', borderBottomWidth: 0.5, borderBottomColor: '#e6e8ec' },
   stripContent: { padding: 12, gap: 10 },
   thumbBox: { width: 96 },
@@ -794,18 +1237,44 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   thumbVideoPlay: { color: '#fff', fontSize: 15, marginLeft: 2 },
-  cv: { flex: 1 },
+  cv: { width: '100%' },
   interviewBar: { flexDirection: 'row', gap: 8, paddingHorizontal: 14, paddingBottom: 12, backgroundColor: '#fff', borderBottomWidth: 0.5, borderBottomColor: '#e6e8ec' },
-  interviewBtn: { flex: 1, backgroundColor: '#243042', borderRadius: 12, paddingVertical: 13, alignItems: 'center', justifyContent: 'center' },
+  interviewBarCol: { gap: 8, paddingHorizontal: 14, paddingBottom: 12, backgroundColor: '#fff', borderBottomWidth: 0.5, borderBottomColor: '#e6e8ec' },
+  interviewBtn: { backgroundColor: '#243042', borderRadius: 12, paddingVertical: 13, alignItems: 'center', justifyContent: 'center' },
   interviewBtnText: { color: '#fff', fontWeight: '800', fontSize: 14.5 },
+  ivSchedBar: { flexDirection: 'row', alignItems: 'stretch', gap: 8 },
+  ivSchedInfo: { flex: 1, backgroundColor: '#1b2533', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14 },
+  ivSchedTitle: { color: GOLD, fontWeight: '800', fontSize: 12, letterSpacing: 0.4, marginBottom: 4 },
+  ivSchedSlot: { color: '#fff', fontWeight: '800', fontSize: 13.5 },
+  ivCountdown: { color: '#dcc187', fontWeight: '700', fontSize: 12.5, marginTop: 6 },
+  ivCountdownMuted: { color: '#9aa4b1', fontWeight: '600', fontSize: 11.5, marginTop: 6 },
+  ivJoinBtn: { backgroundColor: GOLD, borderRadius: 12, paddingHorizontal: 14, minWidth: 110, alignItems: 'center', justifyContent: 'center' },
+  ivJoinBtnText: { color: INK, fontWeight: '900', fontSize: 13 },
+  ivDetailBtn: { width: 42, borderRadius: 12, backgroundColor: '#e7eaef', alignItems: 'center', justifyContent: 'center' },
+  ivDetailBtnText: { color: INK, fontSize: 22, fontWeight: '800' },
+  ivProposedBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff8e8', borderWidth: 1, borderColor: '#e8d7a8', borderRadius: 12, paddingVertical: 13, paddingHorizontal: 14 },
+  ivProposedText: { flex: 1, color: '#9a6b16', fontWeight: '800', fontSize: 13.5 },
+  ivProposedChev: { color: '#9a6b16', fontSize: 20, fontWeight: '800', marginLeft: 8 },
   transcriptBtn: { backgroundColor: '#eef0f2', borderWidth: 1, borderColor: '#d3d8df', borderRadius: 12, paddingVertical: 13, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' },
   transcriptBtnText: { color: INK, fontWeight: '800', fontSize: 13.5 },
-  cvActions: { marginHorizontal: 12, marginTop: 10 },
-  contractBtn: { backgroundColor: GOLD, borderRadius: 12, paddingVertical: 13, alignItems: 'center', justifyContent: 'center' },
-  contractBtnText: { color: INK, fontWeight: '800', fontSize: 14.5 },
-  contractWait: { backgroundColor: '#f1f2f4', borderWidth: 1, borderColor: '#e0e2e6', borderRadius: 12, paddingVertical: 13, alignItems: 'center', justifyContent: 'center' },
-  contractWaitText: { color: '#737373', fontWeight: '700', fontSize: 13.5 },
-  lockedHint: { color: '#9aa1ac', fontWeight: '700', fontSize: 12 },
+  subLocked: { gap: 6 },
+  subLabelFull: { flex: 1, flexShrink: 0 },
+  lockedHintBlock: { color: '#9aa1ac', fontWeight: '700', fontSize: 12, lineHeight: 17, paddingLeft: 22 },
+  pickupLock: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#eadfc2', borderRadius: 16, padding: 16, marginTop: 14, opacity: 0.95 },
+  pickupLockTitle: { fontSize: 16, fontWeight: '800', color: '#1b2533' },
+  pickupLockText: { fontSize: 13, color: '#9a6b16', marginTop: 8, lineHeight: 19, fontWeight: '600' },
+  trBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#f3ecdc', borderWidth: 1, borderColor: '#eadfc2', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, marginBottom: 10 },
+  trBadge: { fontSize: 12.5, fontWeight: '800', color: '#9a7b1f', flexShrink: 1 },
+  trToggle: { fontSize: 12.5, fontWeight: '800', color: '#1b2533', textDecorationLine: 'underline' },
+  cvToolbar: { flexDirection: 'row', alignItems: 'stretch', flexWrap: 'nowrap', gap: 6, paddingHorizontal: 16, paddingBottom: 10 },
+  cvEditBtn: {
+    flex: 1, minWidth: 0, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#dfe2e7', borderRadius: 10,
+    paddingHorizontal: 8, paddingVertical: 9,
+  },
+  cvEditBtnOn: { borderColor: '#c2a25a', backgroundColor: '#f6efdd' },
+  cvEditBtnText: { fontSize: 12, fontWeight: '800', color: '#1b2533', textAlign: 'center' },
+  cvEditBtnTextOn: { color: '#8a6a1f' },
 
   docsContent: { padding: 16 },
 
@@ -864,7 +1333,9 @@ const styles = StyleSheet.create({
   viewerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingBottom: 10, backgroundColor: '#1b2533' },
   viewerTitle: { color: '#fff', fontSize: 16, fontWeight: '800' },
   viewerX: { color: '#fff', fontSize: 20, fontWeight: '700' },
-  viewerBody: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  viewerBody: { flex: 1 },
+  viewerLoadingOverlay: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  viewerLoadingText: { color: '#c2a25a', fontWeight: '700', fontSize: 14 },
   viewerImg: { width: '100%', height: '100%' },
 
   galWrap: { flex: 1, backgroundColor: '#000' },

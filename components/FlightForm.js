@@ -1,5 +1,6 @@
 // components/FlightForm.js
 // Acente uçuş adımında: uçuş bilgilerini doldurur + bileti yükler + önizler + gönderir.
+// NOT: Şu an devre dışı (lib/features.js → FLIGHT_INFO_CARD_ENABLED). Dosya silinmedi.
 // Ülke/havalimanı kaydırmalı Select; tarih CV ile aynı (gün/ay/yıl); saat (saat/dakika) Select.
 // Bilet görseli yüklemesi ebeveynde (onPickTicket); bu form bilgileri tutar.
 import React, { useState, useEffect } from 'react';
@@ -99,6 +100,11 @@ export default function FlightForm({ visible, initial, data, ticketUploaded, upl
         <View style={styles.accent} />
 
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+          {data?.preferredStartDate ? (
+            <View style={styles.startHint}>
+              <Text style={styles.startHintText}>📅 {t('start_date_agency')}: <Text style={styles.startHintDate}>{data.preferredStartDate}</Text></Text>
+            </View>
+          ) : null}
           <Text style={styles.sec}>{t('flight_route_sec')}</Text>
           <Select label={t('flight_f_from_city')} value={f.fromCountry} options={countryOpts} onChange={(v) => setF((p) => ({ ...p, fromCountry: v, fromAirport: '' }))} placeholder={t('select')} />
           {f.fromCountry ? (
@@ -177,6 +183,9 @@ const styles = StyleSheet.create({
   accent: { height: 2.5, backgroundColor: GOLD },
 
   content: { padding: 16, paddingBottom: 28 },
+  startHint: { backgroundColor: '#eef4f6', borderWidth: 1, borderColor: '#cfe0e6', borderRadius: 10, paddingVertical: 11, paddingHorizontal: 13, marginBottom: 6 },
+  startHintText: { fontSize: 13, color: '#2a5560', fontWeight: '600' },
+  startHintDate: { fontWeight: '900', color: '#1b2533' },
   sec: { fontSize: 13, fontWeight: '800', color: '#737373', letterSpacing: 0.4, textTransform: 'uppercase', marginTop: 16, marginBottom: 8 },
   groupLabel: { fontSize: 13, fontWeight: '700', color: INK, marginBottom: 4, marginTop: 4 },
   field: { marginBottom: 12 },

@@ -1,0 +1,17 @@
+node_modules
+**/node_modules
+.expo
+ios
+android
+dist
+**/dist
+site
+site-careers
+site-medical
+site-contract
+agent
+pdf-server
+assets
+supabase/.temp
+*.md
+.git

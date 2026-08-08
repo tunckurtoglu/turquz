@@ -3,28 +3,35 @@
 // Akış: "Ekle" -> (gerekli açık rıza yoksa) ConsentSheet -> rıza Supabase'e yazılır ->
 // galeriden belge seç -> private 'documents' bucket'a güvenli yükleme -> "Yüklendi" durumu.
 // Doğrulama (son kullanma < 1 yıl / okunaklılık) Adım 4'te Edge Function ile eklenecek.
-import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, Image, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert, Modal, ActivityIndicator, Pressable, KeyboardAvoidingView, Platform, Keyboard, RefreshControl, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { WebView } from 'react-native-webview';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useLanguage } from '../i18n/LanguageContext';
 // NOT: expo-document-picker / expo-file-system NATIVE'dir; statik import açılışta çöker
 // (yeni build'de yokken). pickPdf içinde DİNAMİK import edilir.
 import ConsentSheet from '../components/ConsentSheet';
+import { Select } from '../components/Select';
+import { DAYS, monthOptions, FLIGHT_YEARS } from '../cv/options';
 import { getLatestConsent, saveConsent, canUploadDocs, hasSensitiveConsent } from '../lib/consent';
 import { listDocuments, uploadDocument, verifyDocument, getSignedUrl, removeDocument, submitDocuments } from '../lib/documents';
 import { getCandidateStatus, docsUnlocked, passportDeadline } from '../lib/candidate';
 import { supabase } from '../lib/supabase';
 import { latinFirst, latinLast } from '../lib/translit';
 import { PIPELINE, kindState, activeStep } from '../lib/pipeline';
-import { notifyDocument } from '../lib/push';
+import { notifyDocumentSubmit, notifyDocsDeadline } from '../lib/push';
 import { getContract } from '../lib/contracts';
 import { getFlight } from '../lib/flights';
 import { loadProfile, saveProfile } from '../lib/profile';
+import { birthPlaceFromOcr } from '../lib/passportFields';
+import { CONTRACT_WEB_PAYMENT_ENABLED, PROCESS_CHAT_ENABLED } from '../lib/features';
+import { openContractPortal } from '../lib/contractPortal';
 import ContractPreview from '../components/ContractPreview';
-import FlightPreview from '../components/FlightPreview';
+import ProcessChatSheet from '../components/ProcessChatSheet';
+import PickupCard from '../components/PickupCard';
 import VerifyingOverlay from '../components/VerifyingOverlay';
 
 // Otomatik pasaport doğrulaması (Gemini Edge Function) AÇIK/KAPALI.
@@ -76,9 +83,6 @@ function DocRow({ icon, label, desc, note, doc, badge, busy, t, onAdd, onView, o
   );
 }
 
-// Native (expo-camera) — yalnız açılınca yüklenir.
-const PassportCamera = React.lazy(() => import('../components/PassportCamera'));
-
 export default function DocumentsScreen({ userId, onBack, fontsReady }) {
   const { t, lang, dir } = useLanguage();
   const insets = useSafeAreaInsets();
@@ -95,21 +99,26 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
   const [saving, setSaving] = useState(false);
   const [pendingDoc, setPendingDoc] = useState(null); // rıza sonrası devam edilecek belge
   const pendingPick = useRef(null); // rıza penceresi kapanınca açılacak belge (tek seferlik)
+  const listRef = useRef(null);     // tebrik kartına otomatik kaydırma için
+  const [psDay, setPsDay] = useState('');     // tercih edilen en erken başlangıç: gün/ay/yıl
+  const [psMonth, setPsMonth] = useState('');
+  const [psYear, setPsYear] = useState('');
   const [viewerUrl, setViewerUrl] = useState(null);
   const [viewerPdf, setViewerPdf] = useState(false);
+  const [downloading, setDownloading] = useState(false); // görüntüleyicide indir/paylaş
   const [unlocked, setUnlocked] = useState(null);     // null = henüz bilinmiyor, true/false
   const [deadline, setDeadline] = useState(null);     // pasaport 14 gün son tarihi
   const [contract, setContract] = useState(null);     // acentenin doldurduğu sözleşme verisi
   const [flight, setFlight] = useState(null);         // acentenin doldurduğu uçuş bilgisi
-  const [flightPrev, setFlightPrev] = useState(false);
   const [nameSheet, setNameSheet] = useState(false);  // pasaport (Latin) isim düzeltme
   const [nFirst, setNFirst] = useState('');
   const [nLast, setNLast] = useState('');
   const [savingName, setSavingName] = useState(false);
   const [cvData, setCvData] = useState(null);         // PDF üretmek için adayın CV'si
   const [contractPreview, setContractPreview] = useState(false);
+  const [openingPortal, setOpeningPortal] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const [passportSheet, setPassportSheet] = useState(false);
-  const [passportCamOpen, setPassportCamOpen] = useState(false);
   const [passportMode, setPassportMode] = useState('upload'); // 'upload' | 'edit'
   const [pNo, setPNo] = useState('');
   const [pPlace, setPPlace] = useState('');
@@ -168,7 +177,9 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
       if (!alive) return;
       const open = docsUnlocked(status);
       setUnlocked(open);
-      setDeadline(passportDeadline(status));
+      const dl = passportDeadline(status);
+      setDeadline(dl);
+      if (open && dl?.overdue) notifyDocsDeadline(userId);
       if (!open) return; // kilitliyse rıza/belge çekmeye gerek yok
       const [row, prof] = await Promise.all([getLatestConsent(userId), loadProfile(userId)]);
       if (!alive) return;
@@ -189,8 +200,52 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
     }
   };
 
-  // Galeriden seç + private bucket'a yükle, ardından (pasaportsa) doğrula.
-  // Verilen görsel URI'sini yükle + (pasaportsa) doğrula. Hem galeri hem kamera bunu kullanır.
+  // Pasaport PDF yüklendikten sonra Gemini ile doğrula (verify-passport edge function).
+  const runPassportVerify = async (row) => {
+    if (!PASSPORT_VERIFY_ENABLED || !row) return;
+    setVerifying('passport');
+    setVerifyOverlay('verifying');
+    try {
+      let v = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        v = await verifyDocument('passport');
+        if (!(v && v.status === 'review' && v.note === 'ai_unavailable')) break;
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 2500));
+      }
+      const realVerdict = v && (v.status === 'valid' || (v.status === 'review' && v.note !== 'ai_unavailable'));
+      if (realVerdict) {
+        setDocs((m) => ({ ...m, passport: { ...(m.passport || {}), status: v.status, note: v.note, expiry_date: v.expiryDate } }));
+        const f = v.fields || {};
+        const patch = {};
+        if (f.passportNumber) patch.passportNo = String(f.passportNumber).replace(/\s+/g, '').trim();
+        const pob = birthPlaceFromOcr(f.placeOfBirth, cvData);
+        if (pob) patch.birthPlace = pob;
+        if (cvData && Object.keys(patch).length) {
+          const merged = { ...cvData, ...patch };
+          setCvData(merged);
+          saveProfile(userId, merged, lang).catch((e2) => console.warn('pasaport alanları kaydedilemedi:', e2?.message));
+        }
+        setVerifyOverlay('success');
+        setTimeout(() => setVerifyOverlay(null), 1800);
+      } else if (v && v.status === 'invalid') {
+        setVerifyOverlay(null);
+        await removeDocument(userId, 'passport', row.storage_path).catch(() => {});
+        setDocs((m) => { const n = { ...m }; delete n.passport; return n; });
+        Alert.alert(t('doc_rejected_title'), rejectReason(v.note));
+      } else {
+        setVerifyOverlay('success');
+        setTimeout(() => setVerifyOverlay(null), 1800);
+      }
+    } catch (e) {
+      console.warn('passport verify error (sessiz):', e?.message);
+      setVerifyOverlay('success');
+      setTimeout(() => setVerifyOverlay(null), 1800);
+    } finally {
+      setVerifying(null);
+    }
+  };
+
+  // Galeriden FOTO seç + yükle (JPEG'e çevrilir). Pasaport dışı belgeler için.
   const uploadFromUri = async (docKey, uri) => {
     try {
       setUploading(docKey);
@@ -198,46 +253,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
       const row = await uploadDocument(userId, docKey, base64, 'image/jpeg');
       setDocs((m) => ({ ...m, [docKey]: row }));
       setUploading(null);
-      setJustUploaded(true); setTimeout(() => setJustUploaded(false), 1500); // kısa "✓ Güncellendi"
-      // Not: acenteye bildirim YÜKLEMEDE değil, "Belgeleri Gönder"de gider (submitStep).
-
-      // Pasaportu otomatik doğrula. Yalnızca GEÇERLİ (veya insan incelemesi) ise kalsın.
-      if (PASSPORT_VERIFY_ENABLED && docKey === 'passport') {
-        setVerifying('passport');
-        setVerifyOverlay('verifying');
-        try {
-          // AI anlık yoğunsa (503) GERÇEK karar alana kadar tekrar dener — animasyon sürer.
-          let v = null;
-          for (let attempt = 0; attempt < 4; attempt++) {
-            v = await verifyDocument('passport');
-            // valid / invalid / düşük-güven incelemesi = gerçek sonuç -> dur. Sadece AI yoğunluğunda yeniden dene.
-            if (!(v && v.status === 'review' && v.note === 'ai_unavailable')) break;
-            if (attempt < 3) await new Promise((r) => setTimeout(r, 2500));
-          }
-          const realVerdict = v && (v.status === 'valid' || (v.status === 'review' && v.note !== 'ai_unavailable'));
-          if (realVerdict) {
-            setDocs((m) => ({ ...m, passport: { ...(m.passport || {}), status: v.status, note: v.note, expiry_date: v.expiryDate } }));
-            setVerifyOverlay('success'); // ✓ başarı animasyonu
-            setTimeout(() => setVerifyOverlay(null), 1800);
-          } else if (v && v.status === 'invalid') {
-            setVerifyOverlay(null);
-            await removeDocument(userId, 'passport', row.storage_path).catch(() => {});
-            setDocs((m) => { const n = { ...m }; delete n.passport; return n; });
-            Alert.alert(t('doc_rejected_title'), rejectReason(v.note));
-          } else {
-            // 4 denemede de AI'ya ulaşılamadı (gerçek/uzun kesinti — billing açıkken pratikte olmaz):
-            // adayı bloklama, belge yüklü kalır; acente panelinde görünür.
-            setVerifyOverlay('success');
-            setTimeout(() => setVerifyOverlay(null), 1800);
-          }
-        } catch (e) {
-          console.warn('passport verify error (sessiz):', e?.message);
-          setVerifyOverlay('success');
-          setTimeout(() => setVerifyOverlay(null), 1800);
-        } finally {
-          setVerifying(null);
-        }
-      }
+      setJustUploaded(true); setTimeout(() => setJustUploaded(false), 1500);
     } catch (e) {
       Alert.alert(t('docs_title'), t('doc_upload_error'));
       setUploading(null);
@@ -259,36 +275,42 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
     }
   };
 
-  // PDF (ya da dosyadan resim) seç + yükle. PDF olduğu gibi, resim JPEG'e çevrilerek.
+  // PDF seç + yükle. Pasaport ve çoğu resmi belge yalnızca PDF.
   const pickPdf = async (docKey) => {
     try {
       const DocumentPicker = await import('expo-document-picker');
       const { File } = await import('expo-file-system');
-      const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], copyToCacheDirectory: true, multiple: false });
+      const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf'], copyToCacheDirectory: true, multiple: false });
       if (res.canceled || !res.assets || !res.assets.length) return;
       const a = res.assets[0];
       const isPdf = (a.mimeType || '').includes('pdf') || (a.name || '').toLowerCase().endsWith('.pdf');
-      if (!isPdf) { await uploadFromUri(docKey, a.uri); return; } // dosyadaki resim -> JPEG yolu
+      if (!isPdf) { Alert.alert(t('docs_title'), t('doc_pdf_only')); return; }
       setUploading(docKey);
       const base64 = await new File(a.uri).base64();
       const row = await uploadDocument(userId, docKey, base64, 'application/pdf');
       setDocs((m) => ({ ...m, [docKey]: row }));
       setUploading(null);
       setJustUploaded(true); setTimeout(() => setJustUploaded(false), 1500);
+      if (docKey === 'passport') await runPassportVerify(row);
     } catch (e) {
       Alert.alert(t('docs_title'), t('doc_upload_error'));
       setUploading(null);
     }
   };
 
-  // Pasaport için çerçeveli KAMERA; diğer belgelerde Foto/PDF seçimi.
+  // Pasaport: yalnızca PDF. Sağlık raporu vb.: foto VEYA PDF. Diğerleri: yalnızca PDF.
   const startUpload = (docKey) => {
-    if (docKey === 'passport') { setPassportCamOpen(true); return; }
-    Alert.alert(t('doc_choose_title'), undefined, [
-      { text: t('doc_choose_photo'), onPress: () => pickImage(docKey) },
-      { text: t('doc_choose_pdf'), onPress: () => pickPdf(docKey) },
-      { text: t('consent_cancel'), style: 'cancel' },
-    ]);
+    if (docKey === 'passport') { pickPdf('passport'); return; }
+    // Sağlık raporu + konsolosluk ref (ekran görüntüsü) + çalışma izni (fiziksel kart): foto VEYA PDF.
+    if (docKey === 'health_report' || docKey === 'consulate_ref' || docKey === 'work_permit') {
+      Alert.alert(t('doc_choose_title'), undefined, [
+        { text: t('doc_choose_photo'), onPress: () => pickImage(docKey) },
+        { text: t('doc_choose_pdf'), onPress: () => pickPdf(docKey) },
+        { text: t('consent_cancel'), style: 'cancel' },
+      ]);
+      return;
+    }
+    pickPdf(docKey);
   };
 
   // Satır rozeti: yükleme/doğrulama durumuna ve sonuca göre metin + ton.
@@ -321,10 +343,10 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
     setSheetOpen(true);
   };
 
-  // Pasaport: bilgi formu YOK — doğrudan çerçeveli kamera; AI no/isim/doğum bilgisini çıkarır.
+  // Pasaport: yalnızca PDF; doğrulama sonrası no/doğum yeri OCR ile dolar (gerekirse düzenlenir).
   const startPassport = () => handleAdd('passport', false);
 
-  // Yükledikten sonra düzenleme: no/doğum yeri değiştir ve/veya fotoğrafı değiştir.
+  // Yükledikten sonra düzenleme: no/doğum yeri değiştir ve/veya PDF'i değiştir.
   const editPassport = () => {
     setPNo(cvData?.passportNo || '');
     setPPlace(cvData?.birthPlace || '');
@@ -343,7 +365,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
       await saveProfile(userId, merged, lang);
       setCvData(merged);
       setPassportSheet(false);
-      if (withPhoto) setPassportCamOpen(true); // çerçeveli kamera
+      if (withPhoto) pickPdf('passport');
     } catch (e) {
       Alert.alert(t('passport_info_title'), t('doc_upload_error'));
     } finally {
@@ -376,8 +398,21 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
 
   const handleView = async (docKey) => {
     try {
-      // Sözleşme: yüklü dosya değil; önizleme (WebView + PDF) aç.
+      // Sözleşme: yüklü dosya değil — web portal (ödeme) veya app içi önizleme.
       if (docKey === 'contract_unsigned' && contract && !docs[docKey]) {
+        if (CONTRACT_WEB_PAYMENT_ENABLED) {
+          setOpeningPortal(true);
+          try {
+            await openContractPortal();
+            await refreshDocs(); // dönüşte ödeme durumunu yenile
+          } catch (e) {
+            console.warn('portal:', e?.message);
+            Alert.alert(t('docs_title'), e?.message || t('doc_upload_error'));
+          } finally {
+            setOpeningPortal(false);
+          }
+          return;
+        }
         setContractPreview(true);
         return;
       }
@@ -388,6 +423,31 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
       setViewerUrl(url);
     } catch (e) {
       Alert.alert(t('docs_title'), t('doc_upload_error'));
+    }
+  };
+
+  // Görüntüleyicideki belgeyi indir/paylaş (uzak imzalı URL -> yerel dosya -> paylaş sayfası).
+  const shareViewer = async () => {
+    if (!viewerUrl || downloading) return;
+    setDownloading(true);
+    try {
+      const Sharing = await import('expo-sharing');
+      if (!(await Sharing.isAvailableAsync())) { Alert.alert(t('docs_title'), t('doc_upload_error')); return; }
+      const ext = viewerPdf ? 'pdf' : 'jpg';
+      // Yeni (SDK 54) File API ile uzak dosyayı önbelleğe indir.
+      const FS = await import('expo-file-system');
+      const dest = new FS.File(FS.Paths.cache, `belge_${Date.now()}.${ext}`);
+      try { dest.delete(); } catch (_) { /* yoksa sorun değil */ }
+      const out = await FS.File.downloadFileAsync(viewerUrl, dest);
+      const localUri = (out && out.uri) || dest.uri;
+      await Sharing.shareAsync(localUri, viewerPdf
+        ? { mimeType: 'application/pdf', dialogTitle: t('contract_title'), UTI: 'com.adobe.pdf' }
+        : { mimeType: 'image/jpeg', dialogTitle: t('doc_view') });
+    } catch (e) {
+      console.warn('indir/paylaş hatası:', e?.message);
+      Alert.alert(t('docs_title'), t('doc_upload_error'));
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -415,9 +475,32 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
 
   // "Belgeleri Gönder": adımın tüm (yüklü) belgelerini karşı tarafa ilet. Onay ister;
   // gönderince adım kilitlenir (taslak düzenlenemez) ve acenteye bildirim gider.
+  // Tercih edilen başlangıç tarihini cvData'dan doldur.
+  useEffect(() => {
+    const v = cvData?.preferredStartDate;
+    if (v) { const [d, m, y] = String(v).split('.'); setPsDay(d || ''); setPsMonth(m || ''); setPsYear(y || ''); }
+  }, [cvData?.preferredStartDate]);
+
+  // Gün/ay/yıl seçilince üçü de doluysa profile'a kaydet (preferredStartDate = "gg.aa.yyyy").
+  const setPreferredDate = (which, val) => {
+    const cur = { d: psDay, m: psMonth, y: psYear };
+    cur[which] = val;
+    if (which === 'd') setPsDay(val); else if (which === 'm') setPsMonth(val); else setPsYear(val);
+    if (cur.d && cur.m && cur.y && cvData) {
+      const merged = { ...cvData, preferredStartDate: `${cur.d}.${cur.m}.${cur.y}` };
+      setCvData(merged);
+      saveProfile(userId, merged, lang).catch((e) => console.warn('tarih kaydedilemedi:', e?.message));
+    }
+  };
+
   const submitStep = (s) => {
     const kinds = s.kinds.filter((k) => k !== 'contract_unsigned' && docs[k]);
     if (!kinds.length) return;
+    // Çalışma vizesi adımında tercih edilen başlangıç tarihi zorunlu.
+    if (s.kinds.includes('work_permit') && !cvData?.preferredStartDate) {
+      Alert.alert(t('docs_title'), t('start_date_required'));
+      return;
+    }
     Alert.alert(t('docs_send_confirm_title'), t('docs_send_confirm_msg'), [
       { text: t('docs_send_review'), style: 'cancel' },
       {
@@ -427,7 +510,16 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
           try {
             const rows = await submitDocuments(userId, kinds);
             setDocs((m) => { const n = { ...m }; rows.forEach((r) => { n[r.kind] = r; }); return n; });
-            kinds.forEach((k) => notifyDocument(userId, k)); // acenteye "belge geldi"
+            notifyDocumentSubmit(userId, kinds);
+            // Son aday adımı (çalışma vizesi) gönderildiyse tebrik kartına kaydır — yalnızca İLK kez.
+            if (kinds.includes('work_permit')) {
+              const seenKey = `turquz_congrats_${userId}`;
+              const seen = await AsyncStorage.getItem(seenKey).catch(() => null);
+              if (!seen) {
+                await AsyncStorage.setItem(seenKey, '1').catch(() => {});
+                setTimeout(() => listRef.current?.scrollTo({ y: 0, animated: true }), 400);
+              }
+            }
           } catch (e) {
             Alert.alert(t('docs_title'), t('doc_upload_error'));
           } finally {
@@ -474,10 +566,15 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
           <Text style={styles.backChevron}>{backChevron}</Text>
         </TouchableOpacity>
         <Text style={[styles.title, fontsReady && styles.titleFont]}>{t('docs_title')}</Text>
-        <View style={{ width: 28 }} />
+        {PROCESS_CHAT_ENABLED && contract?.isPaid ? (
+          <TouchableOpacity onPress={() => setChatOpen(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Text style={{ fontSize: 20 }}>💬</Text>
+          </TouchableOpacity>
+        ) : <View style={{ width: 28 }} />}
       </View>
 
       <ScrollView
+        ref={listRef}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#c2a25a" colors={['#c2a25a']} />}
       >
@@ -491,6 +588,22 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
           </View>
         ) : (
           <>
+            {/* Tüm aday adımları bitti (çalışma vizesi gönderildi) -> premium tebrik kartı */}
+            {has('work_permit') ? (
+              <View style={styles.doneCard}>
+                <View style={styles.doneFrame} pointerEvents="none" />
+                <Image source={require('../assets/turquz-logo.png')} style={styles.doneLogo} resizeMode="contain" />
+                <View style={styles.doneOrn}>
+                  <View style={styles.doneRule} />
+                  <Text style={styles.doneStar}>✦</Text>
+                  <View style={styles.doneRule} />
+                </View>
+                <Text style={styles.doneTitle}>{t('done_congrats_title')}</Text>
+                <Text style={styles.doneBody}>{t('done_congrats_body')}</Text>
+                <Text style={styles.doneStarBottom}>✦</Text>
+              </View>
+            ) : null}
+
             <Text style={styles.intro}>{t('docs_intro')}</Text>
 
             <View style={styles.legend}>
@@ -504,10 +617,10 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
               </View>
             </View>
 
-            {!has('passport') && deadline ? (
+            {activeStep(has) === 1 && deadline ? (
               <View style={[styles.deadlineBox, deadline.overdue ? styles.deadlineOver : deadline.days <= 3 ? styles.deadlineWarn : null]}>
                 <Text style={styles.deadlineIcon}>⏳</Text>
-                <Text style={styles.deadlineText}>{deadline.overdue ? t('passport_overdue') : t('passport_deadline', { n: deadline.days })}</Text>
+                <Text style={styles.deadlineText}>{deadline.overdue ? t('docs_pkg_overdue') : t('docs_pkg_deadline', { n: deadline.days })}</Text>
               </View>
             ) : null}
 
@@ -539,8 +652,8 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
 
                   {s.kinds.map((kind) => {
                     const kst = kindState(kind, has);
-                    const sensitive = kind === 'criminal';
-                    const langNote = kind === 'diploma' || kind === 'criminal';
+                    const sensitive = kind === 'criminal' || kind === 'health_report';
+                    const langNote = kind === 'diploma' || kind === 'criminal' || kind === 'health_report';
                     const busy = uploading === kind || verifying === kind;
                     const draft = mine && isUploaded(kind) && !isSubmitted(kind); // yüklendi, gönderilmedi
                     const muteLabel = mode === 'locked' || (mode === 'done' && mine);
@@ -551,17 +664,14 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
                           <Text style={[styles.subLabel, muteLabel && styles.subLabelMuted]}>{t(`doc_${kind}`)}</Text>
                           {draft ? <View style={styles.draftBadge}><Text style={styles.draftText}>{t('doc_draft')}</Text></View> : null}
                           <View style={{ flex: 1 }} />
-                          {kst === 'done' && !mine && kind === 'flight_ticket' ? (
-                            <View style={styles.viewLinks}>
-                              <TouchableOpacity onPress={() => setFlightPrev(true)} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}><Text style={styles.linkAgency}>{t('flight_info_title')}</Text></TouchableOpacity>
-                              <TouchableOpacity onPress={() => handleView(kind)} hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}><Text style={styles.linkAgency}>{t('doc_view')}</Text></TouchableOpacity>
-                            </View>
-                          ) : kst === 'done' && !mine ? (
+                          {kst === 'done' && !mine ? (
                             <TouchableOpacity onPress={() => handleView(kind)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={styles.linkAgency}>{t('doc_view')}</Text></TouchableOpacity>
                           ) : kst === 'done' ? (
                             <TouchableOpacity onPress={() => handleView(kind)}><Text style={styles.linkMuted}>{t('doc_view')}</Text></TouchableOpacity>
                           ) : draft ? (
                             <TouchableOpacity onPress={() => handleView(kind)}><Text style={styles.link}>{t('doc_view')}</Text></TouchableOpacity>
+                          ) : kst === 'active' && mine && kind === 'contract_signed' ? (
+                            null /* sözleşme: indir + yükle butonları aşağıdaki kutuda (sıralı) */
                           ) : kst === 'active' && mine ? (
                             <TouchableOpacity style={styles.addBtnSm} onPress={() => (kind === 'passport' ? startPassport() : handleAdd(kind, sensitive))} disabled={busy} activeOpacity={0.8}>
                               {busy ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.addBtnText}>{t('doc_upload')}</Text>}
@@ -577,8 +687,8 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
                                 <TouchableOpacity style={styles.changeBtn} onPress={editPassport} activeOpacity={0.85}>
                                   <Text style={styles.changeBtnText}>✎ {t('passport_edit_info')}</Text>
                                 </TouchableOpacity>
-                                <TouchableOpacity style={styles.changeBtn} onPress={() => setPassportCamOpen(true)} activeOpacity={0.85}>
-                                  <Text style={styles.changeBtnText}>📷 {t('passport_change_photo')}</Text>
+                                <TouchableOpacity style={styles.changeBtn} onPress={() => pickPdf('passport')} activeOpacity={0.85}>
+                                  <Text style={styles.changeBtnText}>✎ {t('passport_change_pdf')}</Text>
                                 </TouchableOpacity>
                               </>
                             ) : (
@@ -591,17 +701,78 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
                             </TouchableOpacity>
                           </View>
                         ) : null}
+                        {kind === 'passport' && mine && kst === 'active' && !draft ? (
+                          <View style={styles.langNoteBox}>
+                            <Text style={styles.langNoteText}>ℹ️ {t('doc_passport_desc')}</Text>
+                            <Text style={[styles.langNoteText, styles.langNoteTextGap]}>{t('doc_passport_upload_hint')}</Text>
+                          </View>
+                        ) : null}
                         {langNote && mode === 'active' && !draft ? (
                           <View style={styles.langNoteBox}><Text style={styles.langNoteText}>⚠ {t('doc_lang_note')}</Text></View>
                         ) : null}
-                        {/* İmzalı sözleşme adımı: sözleşmeyi indir/imzala + (yakında) e-imza */}
+                        {kind === 'consulate_ref' && mine && kst === 'active' && !draft ? (
+                          <View style={[styles.page3Note, { marginLeft: 22 }]}><Text style={styles.page3NoteText}>📌 {t('consulate_ref_note')}</Text></View>
+                        ) : null}
+                        {kind === 'work_permit' && mine && kst === 'active' && !draft ? (
+                          <View style={[styles.page3Note, { marginLeft: 22 }]}><Text style={styles.page3NoteText}>📌 {t('doc_work_permit_desc')}</Text></View>
+                        ) : null}
+                        {/* Çalışma vizesiyle birlikte: başlamayı tercih ettiği en erken tarih */}
+                        {kind === 'work_permit' && mine && kst === 'active' ? (
+                          <View style={styles.startDateBox}>
+                            <Text style={styles.startDateLabel}>{t('start_date_label')}</Text>
+                            <View style={styles.startDateRow}>
+                              <View style={styles.startDateCol}><Select label={t('f_day')} value={psDay} options={DAYS} onChange={(v) => setPreferredDate('d', v)} /></View>
+                              <View style={styles.startDateCol}><Select label={t('f_month')} value={psMonth} options={monthOptions(lang)} onChange={(v) => setPreferredDate('m', v)} /></View>
+                              <View style={styles.startDateCol}><Select label={t('f_year')} value={psYear} options={FLIGHT_YEARS} onChange={(v) => setPreferredDate('y', v)} /></View>
+                            </View>
+                            <Text style={styles.startDateNote}>ℹ️ {t('start_date_note')}</Text>
+                          </View>
+                        ) : null}
+                        {/* İmzalı sözleşme adımı: ÜSTTE indir (işveren e-imzalı), ALTTA yükle + 3. sayfa notu */}
                         {kind === 'contract_signed' && mine && kst === 'active' && !draft ? (
                           <View style={styles.signBox}>
-                            <Text style={styles.signHelp}>{t('contract_sign_help')}</Text>
-                            <View style={styles.signRow}>
-                              <TouchableOpacity style={styles.signDl} onPress={confirmContractName} activeOpacity={0.85}>
-                                <Text style={styles.signDlText}>📄 {t('contract_view_download')}</Text>
-                              </TouchableOpacity>
+                            {/* Adım ①: sözleşmeyi görüntüle/indir */}
+                            <View style={styles.stRow}>
+                              <View style={styles.stRail}>
+                                <View style={styles.stDot}><Text style={styles.stDotText}>1</Text></View>
+                                <View style={styles.stLine} />
+                              </View>
+                              <View style={styles.stBody}>
+                                <Text style={styles.stTitle}>{t('contract_step_a')}</Text>
+                                <Text style={styles.stSub}>{t('contract_step_a_sub')}</Text>
+                                <TouchableOpacity
+                                  style={[styles.stBtnDark, openingPortal && { opacity: 0.6 }]}
+                                  onPress={() => handleView('contract_unsigned')}
+                                  disabled={openingPortal}
+                                  activeOpacity={0.85}
+                                >
+                                  {openingPortal
+                                    ? <ActivityIndicator color="#fff" />
+                                    : <Text style={styles.stBtnDarkText}>{CONTRACT_WEB_PAYMENT_ENABLED ? t('contract_btn_web') : t('contract_btn_open')}</Text>}
+                                </TouchableOpacity>
+                              </View>
+                            </View>
+
+                            {/* Adım ②: imzalı sözleşmeyi yükle (web ödemede: önce paid) */}
+                            <View style={styles.stRow}>
+                              <View style={styles.stRail}>
+                                <View style={styles.stDot}><Text style={styles.stDotText}>2</Text></View>
+                              </View>
+                              <View style={[styles.stBody, { paddingBottom: 0 }]}>
+                                <Text style={styles.stTitle}>{t('contract_step_b')}</Text>
+                                <Text style={styles.stSub}>{t('contract_step_b_sub')}</Text>
+                                {CONTRACT_WEB_PAYMENT_ENABLED && !contract?.isPaid ? (
+                                  <Text style={styles.payGate}>{t('contract_pay_gate')}</Text>
+                                ) : (
+                                  <TouchableOpacity style={[styles.stBtnGold, busy && { opacity: 0.6 }]} onPress={() => handleAdd('contract_signed', false)} disabled={busy} activeOpacity={0.85}>
+                                    {busy ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.stBtnGoldText}>⬆  {t('contract_btn_send')}</Text>}
+                                  </TouchableOpacity>
+                                )}
+                              </View>
+                            </View>
+
+                            <View style={styles.page3Note}>
+                              <Text style={styles.page3NoteText}>{t('contract_page3_note')}</Text>
                             </View>
                           </View>
                         ) : null}
@@ -622,6 +793,12 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
                 </View>
               );
             })}
+
+            {/* Havaalanı karşılama — uçak bileti geldiyse veya karşılama bilgisi iletildiyse */}
+            {(has('flight_ticket') || flight?.pickupSent) ? (
+              <PickupCard userId={userId} role="candidate" flight={flight}
+                label={[cvData?.firstName, cvData?.lastName].filter(Boolean).join(' ')} />
+            ) : null}
           </>
         )}
       </ScrollView>
@@ -657,6 +834,11 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
               {viewerUrl ? <Image source={{ uri: viewerUrl }} style={{ width: winW, height: winH }} resizeMode="contain" /> : null}
             </ScrollView>
           )}
+          <View style={[styles.viewerFooter, { paddingBottom: insets.bottom + 12 }]}>
+            <TouchableOpacity style={[styles.viewerDl, downloading && { opacity: 0.6 }]} onPress={shareViewer} disabled={downloading} activeOpacity={0.85}>
+              {downloading ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.viewerDlText}>{t('pdf_download')}</Text>}
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
 
@@ -670,7 +852,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
             <Text style={styles.sheetLabel}>{t('passport_info_no')}</Text>
             <TextInput style={styles.sheetInput} value={pNo} onChangeText={setPNo} placeholder="N18869131" placeholderTextColor="#9aa1ac" autoCapitalize="characters" autoCorrect={false} />
             <Text style={styles.sheetLabel}>{t('passport_info_place')}</Text>
-            <TextInput style={styles.sheetInput} value={pPlace} onChangeText={setPPlace} placeholder="Almatı, Kazakistan" placeholderTextColor="#9aa1ac" />
+            <TextInput style={styles.sheetInput} value={pPlace} onChangeText={setPPlace} placeholder="Semey / Kazakistan" placeholderTextColor="#9aa1ac" />
             <View style={styles.sheetRow}>
               <TouchableOpacity onPress={() => setPassportSheet(false)} style={styles.sheetCancel}><Text style={styles.sheetCancelText}>{t('consent_cancel')}</Text></TouchableOpacity>
               <TouchableOpacity onPress={() => savePassportInfo(passportMode === 'upload')} disabled={!pNo.trim() || !pPlace.trim() || savingInfo} style={[styles.sheetSave, (!pNo.trim() || !pPlace.trim() || savingInfo) && { opacity: 0.5 }]} activeOpacity={0.9}>
@@ -729,22 +911,12 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
         onClose={() => setContractPreview(false)}
       />
 
-      <FlightPreview
-        visible={flightPrev}
-        data={cvData}
-        flight={flight}
-        onClose={() => setFlightPrev(false)}
+      <ProcessChatSheet
+        visible={chatOpen}
+        onClose={() => setChatOpen(false)}
+        candidateId={userId}
+        peerLabel={t('chat_title')}
       />
-
-      {passportCamOpen ? (
-        <Suspense fallback={null}>
-          <PassportCamera
-            visible={passportCamOpen}
-            onCapture={(uri) => { setPassportCamOpen(false); uploadFromUri('passport', uri); }}
-            onClose={() => setPassportCamOpen(false)}
-          />
-        </Suspense>
-      ) : null}
 
       <VerifyingOverlay status={verifyOverlay} />
     </View>
@@ -765,6 +937,24 @@ const styles = StyleSheet.create({
 
   content: { padding: 16 },
   intro: { fontSize: 13, color: '#6b6457', lineHeight: 19, backgroundColor: '#f7f4ec', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 10, padding: 12, marginBottom: 14 },
+  // Süreç tamamlandı — premium tebrik kartı (açık kâğıt + altın; logo çerçevesiz net dursun)
+  doneCard: {
+    backgroundColor: '#fffdf7', borderRadius: 22, paddingVertical: 26, paddingHorizontal: 22, marginBottom: 16,
+    alignItems: 'center', borderWidth: 1.5, borderColor: 'rgba(194,162,90,0.6)',
+    shadowColor: '#1b2533', shadowOpacity: 0.12, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 5,
+  },
+  // İç ince altın çerçeve (süs)
+  doneFrame: {
+    position: 'absolute', top: 7, left: 7, right: 7, bottom: 7, borderRadius: 17,
+    borderWidth: 1, borderColor: 'rgba(194,162,90,0.35)',
+  },
+  doneLogo: { width: 180, height: 123, marginTop: 2, marginBottom: 6 },
+  doneOrn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch', gap: 10, paddingHorizontal: 16, marginBottom: 14 },
+  doneRule: { flex: 1, height: 1, backgroundColor: 'rgba(194,162,90,0.5)' },
+  doneStar: { color: '#c2a25a', fontSize: 12 },
+  doneStarBottom: { color: 'rgba(194,162,90,0.8)', fontSize: 12, marginTop: 16 },
+  doneTitle: { color: '#16202e', fontSize: 22, fontWeight: '900', marginBottom: 14, textAlign: 'center', letterSpacing: 0.3 },
+  doneBody: { color: '#5b5444', fontSize: 13.5, lineHeight: 21, textAlign: 'center' },
 
   lockCard: { alignItems: 'center', backgroundColor: '#fff', borderWidth: 0.5, borderColor: '#e6e8ec', borderRadius: 14, padding: 26, marginTop: 16 },
   lockIcon: { fontSize: 40, marginBottom: 10 },
@@ -848,12 +1038,32 @@ const styles = StyleSheet.create({
   signBox: { marginTop: 12, marginLeft: 22, backgroundColor: '#f7f4ec', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 10, padding: 12 },
   signHelp: { fontSize: 12.5, color: '#6b6457', lineHeight: 18, marginBottom: 10 },
   signRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  signDl: { backgroundColor: '#1b2533', borderRadius: 9, paddingHorizontal: 14, paddingVertical: 9 },
-  signDlText: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  // Dikey adım çizelgesi (stepper)
+  stRow: { flexDirection: 'row' },
+  stRail: { width: 30, alignItems: 'center' },
+  stDot: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#1b2533', alignItems: 'center', justifyContent: 'center' },
+  stDotText: { color: '#fff', fontWeight: '900', fontSize: 13 },
+  stLine: { width: 2, flex: 1, backgroundColor: '#e0cfa0', marginTop: 4, minHeight: 18 },
+  stBody: { flex: 1, paddingLeft: 12, paddingBottom: 20 },
+  stTitle: { fontSize: 14.5, fontWeight: '900', color: '#1b2533' },
+  stSub: { fontSize: 12, color: '#8a8270', fontWeight: '600', marginTop: 2, marginBottom: 10 },
+  stBtnDark: { backgroundColor: '#1b2533', borderRadius: 10, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
+  stBtnDarkText: { color: '#fff', fontWeight: '800', fontSize: 13.5 },
+  stBtnGold: { backgroundColor: '#c2a25a', borderRadius: 10, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
+  stBtnGoldText: { color: '#1b2533', fontWeight: '800', fontSize: 13.5 },
+  payGate: { fontSize: 12.5, color: '#6b6457', fontWeight: '600', lineHeight: 18, backgroundColor: '#f7f4ec', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 9, padding: 10 },
+  page3Note: { flexDirection: 'row', gap: 8, backgroundColor: '#eef4f6', borderWidth: 1, borderColor: '#cfe0e6', borderRadius: 9, padding: 10, marginTop: 10 },
+  page3NoteText: { flex: 1, fontSize: 12, color: '#2a5560', fontWeight: '600', lineHeight: 17 },
+  startDateBox: { marginTop: 12, marginLeft: 22, backgroundColor: '#f7f4ec', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 10, padding: 12 },
+  startDateLabel: { fontSize: 13, fontWeight: '800', color: '#1b2533', marginBottom: 10 },
+  startDateRow: { flexDirection: 'row', gap: 8 },
+  startDateCol: { flex: 1 },
+  startDateNote: { fontSize: 11.5, color: '#7c6f4a', fontWeight: '600', lineHeight: 16, marginTop: 10 },
   addBtnSm: { backgroundColor: '#c2a25a', borderRadius: 9, paddingVertical: 7, paddingHorizontal: 14, minWidth: 60, alignItems: 'center' },
   linkSm: { fontSize: 12.5, color: '#c2a25a', fontWeight: '700' },
-  langNoteBox: { backgroundColor: '#fbeaea', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginTop: 10, marginLeft: 22, alignSelf: 'flex-start' },
-  langNoteText: { color: '#a32d2d', fontSize: 11.5, fontWeight: '700' },
+  langNoteBox: { backgroundColor: '#fbeaea', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginTop: 10, marginLeft: 22, marginRight: 0, alignSelf: 'stretch' },
+  langNoteText: { color: '#a32d2d', fontSize: 11.5, fontWeight: '700', lineHeight: 17, flexShrink: 1 },
+  langNoteTextGap: { marginTop: 6 },
   waitBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#e4f1f5', borderRadius: 9, paddingHorizontal: 12, paddingVertical: 10, marginTop: 12 },
   waitBannerText: { color: '#1f7d96', fontSize: 13, fontWeight: '700' },
   stepNo: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', marginRight: 11 },
@@ -892,4 +1102,7 @@ const styles = StyleSheet.create({
   viewerX: { color: '#fff', fontSize: 20, fontWeight: '700' },
   viewerBody: { flex: 1 },
   viewerScroll: { flexGrow: 1, alignItems: 'center', justifyContent: 'center' },
+  viewerFooter: { paddingHorizontal: 16, paddingTop: 12, backgroundColor: '#1b2533' },
+  viewerDl: { backgroundColor: '#c2a25a', borderRadius: 12, paddingVertical: 15, alignItems: 'center', justifyContent: 'center' },
+  viewerDlText: { color: '#1b2533', fontWeight: '800', fontSize: 15.5 },
 });

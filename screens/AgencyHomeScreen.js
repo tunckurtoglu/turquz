@@ -1,23 +1,34 @@
 // screens/AgencyHomeScreen.js
 // Acente paneli — premium aday havuzu (2 sütun foto galeri + alt bilgi).
 // Arama yok; bulma ⚙ Filtreler (tam ekran) ile. FlatList sanallaştırma + sonsuz kaydırma.
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, Text, Image, FlatList, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Keyboard, Modal, Pressable } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, Image, FlatList, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Keyboard, Modal, Pressable, useWindowDimensions } from 'react-native';
 import Svg, { Line, Circle, Path, Polyline, Rect } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
 import { listCandidates, listCandidateIds, listStatuses, listCandidatesWithDocs, offerCandidate, findCandidateByCode, listInterviewCandidates, listStaff, listInProcess, declineInterview, getCandidateById } from '../lib/roles';
+import { updateMyProfile, getSession } from '../lib/auth';
 import { candidateCode, parseCode, maskedName } from '../lib/candidateCode';
-import { slotDateKey, slotTime, weekdayOf, fromISO, cancelInterview } from '../lib/interviews';
+import { formatLastSeen, lastSeenTier } from '../lib/lastSeenFormat';
+import { slotDateKey, slotTime, weekdayOf, fromISO, formatCountdown, cancelInterview } from '../lib/interviews';
+import { callWindow, JOIN_PERIOD_MIN } from '../lib/livekitCall';
+import { scanDocsDeadline, scanInterviewReminders, scanInterviewSla, notifyOffer } from '../lib/push';
 import { Select } from '../components/Select';
 import { DAYS, monthOptions, FLIGHT_YEARS } from '../cv/options';
 import AgencyFilterSheet from '../components/AgencyFilterSheet';
 import NotificationBell from '../components/NotificationBell';
 import PhotoWatermark from '../components/PhotoWatermark';
 import { LANGUAGES_SUPPORTED } from '../i18n/languages';
+import { getAgencyNotifPrefs, setAgencyNotifPrefs } from '../lib/agencyNotifPrefs';
+import { syncChatLang } from '../lib/processChat';
+import { listRatingStats } from '../lib/ratings';
+import RatingBadge from '../components/RatingBadge';
+import FavoriteEmployerSheet from '../components/FavoriteEmployerSheet';
+import { listFavoriteCandidates, removeFavorite } from '../lib/favorites';
+import { readAgencyHomeUi, writeAgencyHomeUi, resetAgencyHomeUi } from '../lib/agencyHomeUi';
+import AgencyArrivals from '../components/AgencyArrivals';
 
-const FILTERS = ['all', 'pending', 'offered', 'active'];
 const PAGE = 24;
 
 // Uyruk -> ülke bayrağı (elimizde olanlar; diğerlerinde bayrak gösterilmez).
@@ -33,10 +44,6 @@ const NATION_FLAG = {
 
 const pressHaptic = () => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
 const tapHaptic = () => Haptics.selectionAsync().catch(() => {});
-// Sekme aktif renkleri (marka + durum paleti): turkuaz / kehribar / zümrüt
-const TAB_COLOR = { all: '#2a9db8', pending: '#d99221', offered: '#cf9a3a', active: '#5566d6' };
-const TAB_DOT = { all: '#9aa1ac', pending: '#d99221', offered: '#1f3a63', active: '#1f8a4c' };
-
 // Modern "sliders" filtre ikonu (3 yatay çizgi + düğme)
 function FilterIcon({ color = '#1b2533', knobFill = '#eef0f2', size = 20 }) {
   return (
@@ -88,13 +95,30 @@ function countFilters(f) {
   if (f.codeNation || f.regNo) n += 1;
   if (f.ageMin || f.ageMax) n += 1;
   if (f.gender) n += 1;
+  if (f.employmentStatus) n += 1;
+  if (f.availableMonths && f.availableMonths.length) n += 1;
   ['nationalities', 'positions', 'languages', 'skills'].forEach((k) => { if (f[k] && f[k].length) n += 1; });
   return n;
+}
+
+function PrefSwitch({ on, onToggle }) {
+  return (
+    <TouchableOpacity
+      onPress={onToggle}
+      activeOpacity={0.85}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: on }}
+      style={[styles.swTrack, on && styles.swTrackOn]}
+    >
+      <View style={[styles.swThumb, on && styles.swThumbOn]} />
+    </TouchableOpacity>
+  );
 }
 
 export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fontsReady }) {
   const { t, lang, setLang } = useLanguage();
   const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
   const [items, setItems] = useState([]);
   const [statuses, setStatuses] = useState({});
   const [docIds, setDocIds] = useState(new Set()); // kendi belgesini yüklemiş aday user_id'leri
@@ -103,8 +127,8 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState('all');
-  const [advFilters, setAdvFilters] = useState({});
+  const savedUi = readAgencyHomeUi();
+  const [advFilters, setAdvFilters] = useState(() => savedUi.advFilters || {});
   const [sheetVisible, setSheetVisible] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -116,18 +140,87 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const filterKey = JSON.stringify(advFilters);
   const activeCount = countFilters(advFilters);
   const [menuOpen, setMenuOpen] = useState(false);    // header ⋮ menüsü (dil + çıkış)
+  // Acente bilgilerini düzenle modalı
+  const [profOpen, setProfOpen] = useState(false);
+  const [profFirst, setProfFirst] = useState('');
+  const [profLast, setProfLast] = useState('');
+  const [profPhone, setProfPhone] = useState('');
+  const [profBusy, setProfBusy] = useState(false);
+  const [profErr, setProfErr] = useState('');
+  const openProfile = async () => {
+    setMenuOpen(false);
+    try {
+      const { session } = await getSession();
+      const m = session?.user?.user_metadata || {};
+      setProfFirst(m.first_name || ''); setProfLast(m.last_name || ''); setProfPhone(m.phone || '');
+    } catch (e) { setProfFirst(''); setProfLast(''); setProfPhone(''); }
+    setProfErr(''); setProfOpen(true);
+  };
+  const saveProfile = async () => {
+    const f = profFirst.trim(), l = profLast.trim(), p = profPhone.trim();
+    if (!f || !l || !p) { setProfErr('Ad, soyad ve telefon zorunludur.'); return; }
+    if (p.replace(/\D/g, '').length < 10) { setProfErr('Geçerli bir telefon numarası girin.'); return; }
+    setProfErr(''); setProfBusy(true);
+    const { error } = await updateMyProfile({ firstName: f, lastName: l, phone: p });
+    setProfBusy(false);
+    if (error) { setProfErr(error.message || 'Kaydedilemedi'); return; }
+    setProfOpen(false);
+  };
   const [searchOpen, setSearchOpen] = useState(false); // header'da açılır arama
-  const [view, setView] = useState('pool');          // pool | process | staff
-  const [subView, setSubView] = useState('interviews'); // interviews | concluded | inprocess
+  const [view, setView] = useState(() => savedUi.view || 'pool');          // pool | process | staff
+  const [subView, setSubView] = useState(() => savedUi.subView || 'interviews'); // interviews | concluded | inprocess
   const [ivList, setIvList] = useState([]);
   const [inProcessList, setInProcessList] = useState([]);
   const [staffList, setStaffList] = useState([]);
   const [listLoading, setListLoading] = useState(false);
   const [ivSortDesc, setIvSortDesc] = useState(true);   // yeni -> eski
+  // Havuz sıralaması: son görünürlük (yeniden eskiye) | eskiden yeniye | CV tarihi
+  const [poolSort, setPoolSort] = useState(() => savedUi.poolSort || 'online'); // online | online_old
+  const [staffView, setStaffView] = useState('cards'); // cards | arrivals
   const [rangeOpen, setRangeOpen] = useState(false);
   const [range, setRange] = useState({ s: null, e: null }); // seçili tarih aralığı (Date)
   const [draftFrom, setDraftFrom] = useState({ d: '', m: '', y: '' });
   const [draftTo, setDraftTo] = useState({ d: '', m: '', y: '' });
+  const [nowTick, setNowTick] = useState(Date.now());
+
+  const [generalPush, setGeneralPush] = useState(true);
+  const [chatPush, setChatPush] = useState(true);
+  const [ratingMap, setRatingMap] = useState({}); // user_id -> { avg, count }
+  const [favEmployer, setFavEmployer] = useState(() => savedUi.favEmployer || null); // { id, name } | null
+  const [favFilterOpen, setFavFilterOpen] = useState(false);
+
+  // Aday detayına gidip gelince unmount olmasın diye UI durumunu sakla.
+  useEffect(() => {
+    writeAgencyHomeUi({ view, subView, poolSort, advFilters, favEmployer });
+  }, [view, subView, poolSort, advFilters, favEmployer]);
+
+  // Tarama + tercih yükleme: dil değişiminde TEKRAR ÇALIŞMASIN (menü donmasını önler).
+  useEffect(() => {
+    if (!userId) return undefined;
+    let alive = true;
+    scanDocsDeadline();
+    scanInterviewReminders();
+    scanInterviewSla();
+    getAgencyNotifPrefs().then((p) => {
+      if (!alive) return;
+      setGeneralPush(p.generalPush);
+      setChatPush(p.chatPush);
+    });
+    return () => { alive = false; };
+  }, [userId]);
+
+  // Dil değişince yalnız sohbet dilini senkronla (listeyi yeniden çekme).
+  useEffect(() => {
+    if (!userId) return;
+    syncChatLang(lang);
+  }, [userId, lang]);
+
+  // Mülakat listesinde geri sayım / katıl penceresi için tick.
+  useEffect(() => {
+    if (!(view === 'process' && subView === 'interviews')) return undefined;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [view, subView]);
 
   // Süreç / Personel sekmesine geçince ilgili listeleri yükle.
   const reloadProcess = useCallback(async () => {
@@ -144,33 +237,74 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       if (alive) setListLoading(false);
     })();
     return () => { alive = false; };
-  }, [view, userId, lang, reloadProcess]);
+  }, [view, userId, reloadProcess]);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       setLoading(true);
-      const [rows, st, dids] = await Promise.all([listCandidates({ filters: advFilters, from: 0, to: PAGE - 1 }), listStatuses(), listCandidatesWithDocs()]);
+      let rows;
+      if (favEmployer?.id) {
+        rows = await listFavoriteCandidates(userId, favEmployer.id);
+        const [st, dids] = await Promise.all([listStatuses(), listCandidatesWithDocs()]);
+        if (!alive) return;
+        setItems(rows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(false); setLoading(false);
+        return;
+      }
+      const [poolRows, st, dids] = await Promise.all([
+        listCandidates({ filters: advFilters, from: 0, to: PAGE - 1, sort: poolSort }),
+        listStatuses(),
+        listCandidatesWithDocs(),
+      ]);
       if (!alive) return;
-      setItems(rows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(rows.length === PAGE); setLoading(false);
+      setItems(poolRows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(poolRows.length === PAGE); setLoading(false);
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKey]);
+  }, [filterKey, poolSort, favEmployer?.id, userId]);
+
+  // Havuz + süreç listelerindeki adayların açık puan özeti
+  useEffect(() => {
+    const ids = [
+      ...items.map((c) => c.user_id),
+      ...ivList.map((c) => c.user_id),
+      ...inProcessList.map((c) => c.user_id),
+      ...staffList.map((c) => c.user_id),
+    ];
+    if (!ids.length) return undefined;
+    let alive = true;
+    listRatingStats(ids).then((m) => { if (alive) setRatingMap((prev) => ({ ...prev, ...m })); });
+    return () => { alive = false; };
+  }, [items, ivList, inProcessList, staffList]);
 
   const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore || loading) return;
+    if (favEmployer?.id || loadingMore || !hasMore || loading) return;
     setLoadingMore(true);
     const next = page + 1;
-    const rows = await listCandidates({ filters: advFilters, from: next * PAGE, to: next * PAGE + PAGE - 1 });
+    const rows = await listCandidates({ filters: advFilters, from: next * PAGE, to: next * PAGE + PAGE - 1, sort: poolSort });
     setItems((prev) => [...prev, ...rows]); setPage(next); setHasMore(rows.length === PAGE); setLoadingMore(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingMore, hasMore, loading, page, filterKey]);
+  }, [loadingMore, hasMore, loading, page, filterKey, poolSort, favEmployer?.id]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    const [rows, st, dids] = await Promise.all([listCandidates({ filters: advFilters, from: 0, to: PAGE - 1 }), listStatuses(), listCandidatesWithDocs()]);
-    setItems(rows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(rows.length === PAGE); setRefreshing(false);
+    if (favEmployer?.id) {
+      const [rows, st, dids] = await Promise.all([
+        listFavoriteCandidates(userId, favEmployer.id),
+        listStatuses(),
+        listCandidatesWithDocs(),
+      ]);
+      setItems(rows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(false);
+      setRefreshing(false);
+      return;
+    }
+    const [rows, st, dids] = await Promise.all([
+      listCandidates({ filters: advFilters, from: 0, to: PAGE - 1, sort: poolSort }),
+      listStatuses(),
+      listCandidatesWithDocs(),
+    ]);
+    setItems(rows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(rows.length === PAGE);
+    setRefreshing(false);
   };
 
   const isAccepted = (id) => statuses[id]?.status === 'accepted';
@@ -180,7 +314,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const isSelected = (id) => selectedIds.includes(id);
 
   // Bildirime tıklayınca: ilgili aday (ref_user) varsa o adayın ekranını aç.
-  const NOTIF_TO_CANDIDATE = ['interview_scheduled', 'document', 'offer_accepted', 'offer_rejected'];
+  const NOTIF_TO_CANDIDATE = ['interview_scheduled', 'document', 'offer_accepted', 'offer_rejected', 'docs_deadline'];
   const onNotifNavigate = async (n) => {
     if (!n?.ref_user || !NOTIF_TO_CANDIDATE.includes(n.type)) return;
     try {
@@ -252,6 +386,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
             for (const id of selectedIds) {
               // eslint-disable-next-line no-await-in-loop
               await offerCandidate(id);
+              notifyOffer(id, 'offer');
             }
             const st = await listStatuses();
             setStatuses(st);
@@ -266,26 +401,32 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     ]);
   };
 
-  const data = useMemo(() => {
-    if (filter === 'all') return items;
-    return items.filter((c) => category(c.user_id) === filter);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, statuses, docIds, filter]);
-
+  // Havuzda müsait adaylara rozet yok — sadece teklifli / süreçte belirgin olsun.
   const PILL = {
-    pending: { box: styles.pillPend, dot: styles.dotPend, txt: styles.pillTextPend, label: t('agency_filter_pending') },
     offered: { box: styles.pillOffered, dot: styles.dotOffered, txt: styles.pillTextOffered, label: t('agency_filter_offered') },
     active: { box: styles.pillActive, dot: styles.dotActive, txt: styles.pillTextActive, label: t('agency_filter_active') },
   };
 
+  const removeFromFavList = async (candidateId) => {
+    if (!favEmployer?.id || !candidateId) return;
+    try {
+      await removeFavorite(userId, favEmployer.id, candidateId);
+      setItems((prev) => prev.filter((r) => r.user_id !== candidateId));
+      tapHaptic();
+    } catch (e) {
+      Alert.alert(t('fav_remove'), e?.message || 'error');
+    }
+  };
+
   const renderItem = ({ item: c }) => {
     const cat = category(c.user_id);
-    const pill = PILL[cat];
+    const pill = PILL[cat] || null;
     const photo = c.data?.photoClose || c.data?.photo || c.data?.photoFull;
     const code = candidateCode(c.data?.nationality, c.reg_no);
     const flag = NATION_FLAG[c.data?.nationality];
     const sel = isSelected(c.user_id);
     const name = maskedName(c.data) || code;
+    const showUnfav = !!favEmployer?.id && !selectMode;
     return (
       <TouchableOpacity style={[styles.fbCard, sel && styles.fbCardSel]} onPress={() => onCardPress(c)} onLongPress={() => onCardLongPress(c)} delayLongPress={300} activeOpacity={0.92}>
         {photo ? (
@@ -294,23 +435,45 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           <View style={[styles.fbPhoto, styles.photoPh]}><Text style={styles.photoIcon}>👤</Text></View>
         )}
         <PhotoWatermark size={26} margin={8} />
-        {/* JS katmanlı scrim (native gradient gerektirmez) — yazılar okunur kalsın */}
-        <View style={styles.fbScrimA} pointerEvents="none" />
-        <View style={styles.fbScrimB} pointerEvents="none" />
-        <View style={styles.fbScrimC} pointerEvents="none" />
+        {/* Çok hafif alt fade — sadece isim okunaklılığı; fotoğrafı karartmasın */}
+        <View style={styles.fbScrim} pointerEvents="none" />
         {flag ? <Image source={flag} style={styles.fbFlag} resizeMode="cover" /> : null}
+        {ratingMap[c.user_id] ? (
+          <View style={[styles.fbRateBadge, (selectMode || showUnfav) && styles.fbRateBadgeSelect]} pointerEvents="none">
+            <RatingBadge avg={ratingMap[c.user_id].avg} count={ratingMap[c.user_id].count} compact onDark float />
+          </View>
+        ) : null}
+        {showUnfav ? (
+          <TouchableOpacity
+            style={styles.fbUnfav}
+            onPress={() => removeFromFavList(c.user_id)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            activeOpacity={0.85}
+            accessibilityLabel={t('fav_remove')}
+          >
+            <Text style={styles.fbUnfavText}>✕</Text>
+          </TouchableOpacity>
+        ) : null}
         {selectMode ? (
           <View style={[styles.checkbox, sel && styles.checkboxOn]}>
             {sel ? <Text style={styles.checkmark}>✓</Text> : null}
           </View>
         ) : null}
         <View style={styles.fbInfo} pointerEvents="none">
-          <View style={[styles.fbPill, pill.box]}>
-            <View style={[styles.dot, pill.dot]} />
-            <Text style={[styles.pillText, pill.txt]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{pill.label}</Text>
-          </View>
+          {pill ? (
+            <View style={[styles.fbPill, pill.box]}>
+              <View style={[styles.dot, pill.dot]} />
+              <Text style={[styles.pillText, pill.txt]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{pill.label}</Text>
+            </View>
+          ) : null}
           <Text style={styles.fbName} numberOfLines={1}>{name}</Text>
           <Text style={styles.fbSub} numberOfLines={1}>{code}{c.title ? `  ·  ${c.title}` : ''}</Text>
+        </View>
+        <View style={styles.fbOnlineWrap} pointerEvents="none">
+          <View style={[styles.fbOnlinePill, styles[`fbOnline_${lastSeenTier(c.last_seen_at)}`] || styles.fbOnline_stale]}>
+            <View style={[styles.fbOnlineDot, styles[`fbOnlineDot_${lastSeenTier(c.last_seen_at)}`] || styles.fbOnlineDot_stale]} />
+            <Text style={styles.fbOnlineText}>{formatLastSeen(c.last_seen_at, t)}</Text>
+          </View>
         </View>
       </TouchableOpacity>
     );
@@ -348,12 +511,23 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     }
 
     return (
-      <TouchableOpacity style={styles.rich} onPress={() => onOpenCandidate(c, statuses[c.user_id])} activeOpacity={0.92}>
+      <TouchableOpacity
+        style={styles.rich}
+        onPress={() => onOpenCandidate(c, mode === 'staff'
+          ? { ...(statuses[c.user_id] || {}), status: 'hired', docs_unlocked: true }
+          : statuses[c.user_id])}
+        activeOpacity={0.92}
+      >
         <View style={styles.richTop}>
           <View style={styles.richPhotoBox}>
             {photo ? <Image source={{ uri: photo }} style={styles.richPhoto} resizeMode="cover" /> : <View style={[styles.richPhoto, styles.photoPh]}><Text style={styles.photoIcon}>👤</Text></View>}
             <PhotoWatermark size={16} margin={4} />
             {flag ? <Image source={flag} style={styles.richFlag} resizeMode="cover" /> : null}
+            {ratingMap[c.user_id] ? (
+              <View style={styles.richRateBadge} pointerEvents="none">
+                <RatingBadge avg={ratingMap[c.user_id].avg} count={ratingMap[c.user_id].count} compact onDark float />
+              </View>
+            ) : null}
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
             <Text style={styles.richName} numberOfLines={1}>{maskedName(c.data) || code}</Text>
@@ -381,6 +555,30 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           </View>
         ) : null}
 
+        {/* Planlanmış mülakat: geri sayım + katıl */}
+        {mode === 'interviews' && c.ivStatus === 'scheduled' && c.ivSlot ? (() => {
+          const win = callWindow(c.ivSlot, { minutes: c.ivMinutes || JOIN_PERIOD_MIN, extraSecs: c.ivExtraSecs || 0 });
+          const left = (win.base || 0) - nowTick;
+          return (
+            <View style={styles.ivJoinRow}>
+              {left > 0 ? (
+                <Text style={styles.ivCdText} numberOfLines={1}>⏱ {formatCountdown(left)}</Text>
+              ) : (
+                <Text style={styles.ivCdText} numberOfLines={1}>{win.joinable ? t('call_join') : t('iv_ended')}</Text>
+              )}
+              {win.joinable ? (
+                <TouchableOpacity
+                  style={styles.ivJoinMini}
+                  onPress={() => onOpenCandidate(c, { ...(statuses[c.user_id] || {}), _openIvJoin: true })}
+                  activeOpacity={0.9}
+                >
+                  <Text style={styles.ivJoinMiniText}>🎥 {t('call_join')}</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          );
+        })() : null}
+
         {/* Sonuçlanan: Teklif / Reddet — ama teklif zaten gittiyse buton AÇIK olmaz (mükerrer engeli) */}
         {mode === 'concluded' ? (
           isAccepted(c.user_id) ? (
@@ -407,7 +605,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     Alert.alert(t('offer_btn'), maskedName(c.data) || candidateCode(c.data?.nationality, c.reg_no), [
       { text: t('agency_cancel'), style: 'cancel' },
       { text: t('offer_btn'), onPress: async () => {
-          try { await offerCandidate(c.user_id); await cancelInterview(c.user_id); await reloadProcess(); }
+          try { await offerCandidate(c.user_id); notifyOffer(c.user_id, 'offer'); await cancelInterview(c.user_id); await reloadProcess(); }
           catch (e) { Alert.alert(t('offer_btn'), e?.message || 'error'); }
         } },
     ]);
@@ -422,10 +620,16 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     ]);
   };
 
-  // Mülakat(yaklaşan) vs Sonuçlanan: slot saati geçmişse "sonuçlanan".
-  const slotMs = (iso) => { const p = fromISO(iso); return p ? new Date(Number(p.y), Number(p.m) - 1, Number(p.d), Number(p.hhmm.split(':')[0]), Number(p.hhmm.split(':')[1])).getTime() : 0; };
+  // Mülakat(yaklaşan) vs Sonuçlanan: katılım penceresi (slot+30dk) bitince "sonuçlanan".
+  // Aksi halde görüşme sürerken kart "Sonuçlanan"a düşüp Teklif/Reddet görünürdü.
+  const slotMsLocal = (iso) => { const p = fromISO(iso); return p?.dt ? p.dt.getTime() : (p ? new Date(Number(p.y), Number(p.m) - 1, Number(p.d), Number(p.hhmm.split(':')[0]), Number(p.hhmm.split(':')[1])).getTime() : 0); };
   const nowMs = Date.now();
-  const isConcluded = (c) => c.ivStatus === 'scheduled' && c.ivSlot && slotMs(c.ivSlot) < nowMs;
+  const isConcluded = (c) => {
+    if (c.ivStatus !== 'scheduled' || !c.ivSlot) return false;
+    const mins = c.ivMinutes || JOIN_PERIOD_MIN;
+    const extra = c.ivExtraSecs || 0;
+    return (slotMsLocal(c.ivSlot) + mins * 60 * 1000 + extra * 1000) < nowMs;
+  };
   const upcomingIv = ivList.filter((c) => !isConcluded(c));
   const concludedIv = ivList.filter(isConcluded);
   const baseIv = subView === 'concluded' ? concludedIv : upcomingIv;
@@ -514,31 +718,119 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       </View>
       <View style={styles.accent} />
 
-      {/* Header menüsü: Dil seçimi + Çıkış */}
-      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
-        <Pressable style={styles.menuBackdrop} onPress={() => setMenuOpen(false)}>
-          <Pressable style={[styles.menuSheet, { paddingBottom: insets.bottom + 14 }]} onPress={(e) => e.stopPropagation()}>
+      {/* Ayarlar: dil + bildirim + hesap — tek kaydırılabilir alt sayfa */}
+      <Modal visible={menuOpen} transparent animationType="slide" onRequestClose={() => setMenuOpen(false)}>
+        <View style={styles.menuBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setMenuOpen(false)} />
+          <View style={[styles.menuSheet, { maxHeight: winH * 0.86, paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
             <View style={styles.menuHandle} />
-            {/* Marka — Turquz logosu */}
-            <View style={styles.menuBrand}>
-              <Image source={require('../assets/turquz-logo.png')} style={styles.menuBrandLogo} resizeMode="contain" />
-              <View style={styles.menuBrandRule} />
+            <View style={styles.menuHeadRow}>
+              <Text style={styles.menuHeadTitle}>{t('settings')}</Text>
+              <TouchableOpacity onPress={() => setMenuOpen(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.menuCloseBtn}>
+                <Text style={styles.menuCloseX}>✕</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={styles.menuTitle}>{t('set_language')}</Text>
-            <ScrollView style={styles.menuLangList} keyboardShouldPersistTaps="handled">
-              {LANGUAGES_SUPPORTED.map((l) => (
-                <TouchableOpacity key={l.code} style={[styles.menuLangRow, l.code === lang && styles.menuLangRowOn]} onPress={() => { setLang(l.code); setMenuOpen(false); }} activeOpacity={0.7}>
-                  <Text style={[styles.menuLangName, l.code === lang && styles.menuLangNameOn]}>{l.name}</Text>
-                  {l.code === lang ? <Text style={styles.menuCheck}>✓</Text> : null}
-                </TouchableOpacity>
-              ))}
+
+            <ScrollView
+              style={{ maxHeight: winH * 0.86 - 72 }}
+              contentContainerStyle={styles.menuScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              nestedScrollEnabled
+            >
+              <Text style={styles.menuSection}>{t('set_language')}</Text>
+              <View style={styles.langGrid}>
+                {LANGUAGES_SUPPORTED.map((l) => {
+                  const on = l.code === lang;
+                  return (
+                    <TouchableOpacity
+                      key={l.code}
+                      style={[styles.langChip, on && styles.langChipOn]}
+                      onPress={() => {
+                        if (on) return;
+                        setLang(l.code);
+                        setAgencyNotifPrefs({ generalPush, chatPush, preferredLang: l.code }).catch(() => {});
+                      }}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={[styles.langChipText, on && styles.langChipTextOn]} numberOfLines={1}>{l.name}</Text>
+                      {on ? <Text style={styles.langChipCheck}>✓</Text> : null}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('set_notifications')}</Text>
+              <View style={styles.prefCard}>
+                <View style={styles.prefRow}>
+                  <View style={styles.prefText}>
+                    <Text style={styles.prefTitle}>{t('set_notif_general')}</Text>
+                    <Text style={styles.prefDesc}>{t('set_notif_general_desc')}</Text>
+                  </View>
+                  <PrefSwitch
+                    on={generalPush}
+                    onToggle={() => {
+                      const v = !generalPush;
+                      setGeneralPush(v);
+                      setAgencyNotifPrefs({ generalPush: v, chatPush, preferredLang: lang }).catch(() => {});
+                    }}
+                  />
+                </View>
+                <View style={styles.prefDivider} />
+                <View style={styles.prefRow}>
+                  <View style={styles.prefText}>
+                    <Text style={styles.prefTitle}>{t('set_notif_chat')}</Text>
+                    <Text style={styles.prefDesc}>{t('set_notif_chat_desc')}</Text>
+                  </View>
+                  <PrefSwitch
+                    on={chatPush}
+                    onToggle={() => {
+                      const v = !chatPush;
+                      setChatPush(v);
+                      setAgencyNotifPrefs({ generalPush, chatPush: v, preferredLang: lang }).catch(() => {});
+                    }}
+                  />
+                </View>
+              </View>
+
+              <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('set_account')}</Text>
+              <TouchableOpacity style={styles.actionRow} onPress={openProfile} activeOpacity={0.85}>
+                <View style={[styles.menuLogoutIcon, { backgroundColor: '#eef3fb' }]}><Text style={{ fontSize: 16 }}>👤</Text></View>
+                <Text style={[styles.menuLogoutText, { color: INK, flex: 1 }]}>{t('set_edit_profile')}</Text>
+                <Text style={styles.menuLogoutHint}>›</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionRow, { marginTop: 8 }]}
+                onPress={() => { setMenuOpen(false); resetAgencyHomeUi(); onLogout?.(); }}
+                activeOpacity={0.85}
+              >
+                <View style={styles.menuLogoutIcon}><LogoutIcon color="#b5413a" size={18} /></View>
+                <Text style={[styles.menuLogoutText, { flex: 1 }]}>{t('set_logout')}</Text>
+                <Text style={styles.menuLogoutHint}>›</Text>
+              </TouchableOpacity>
             </ScrollView>
-            <View style={styles.menuSep} />
-            <TouchableOpacity style={styles.menuLogout} onPress={() => { setMenuOpen(false); onLogout?.(); }} activeOpacity={0.85}>
-              <View style={styles.menuLogoutIcon}><LogoutIcon color="#b5413a" size={18} /></View>
-              <Text style={styles.menuLogoutText}>{t('set_logout')}</Text>
-              <View style={{ flex: 1 }} />
-              <Text style={styles.menuLogoutHint}>→</Text>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Acente bilgilerini düzenle */}
+      <Modal visible={profOpen} transparent animationType="fade" onRequestClose={() => setProfOpen(false)}>
+        <Pressable style={styles.profOverlay} onPress={() => setProfOpen(false)}>
+          <Pressable style={styles.profCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.profTitle}>Bilgilerimi Düzenle</Text>
+            <Text style={styles.profLbl}>Ad</Text>
+            <TextInput style={styles.profInput} value={profFirst} onChangeText={setProfFirst} placeholder="Ad" placeholderTextColor="#9aa1ac" />
+            <Text style={styles.profLbl}>Soyad</Text>
+            <TextInput style={styles.profInput} value={profLast} onChangeText={setProfLast} placeholder="Soyad" placeholderTextColor="#9aa1ac" />
+            <Text style={styles.profLbl}>Telefon</Text>
+            <TextInput style={styles.profInput} value={profPhone} onChangeText={setProfPhone} placeholder="+90 5xx xxx xx xx" placeholderTextColor="#9aa1ac" keyboardType="phone-pad" />
+            {profErr ? <Text style={styles.profErr}>{profErr}</Text> : null}
+            <TouchableOpacity style={[styles.profSave, profBusy && { opacity: 0.6 }]} onPress={saveProfile} disabled={profBusy} activeOpacity={0.85}>
+              <Text style={styles.profSaveText}>{profBusy ? '…' : 'Kaydet'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.profCancel} onPress={() => setProfOpen(false)} activeOpacity={0.7}>
+              <Text style={styles.profCancelText}>İptal</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -555,20 +847,36 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         </View>
       </View>
 
-      {/* Süreç alt sekmeleri */}
+      {/* Süreç / Personel alt sekmeleri */}
       {view === 'process' ? (
         <View style={styles.subTabs}>
           {['interviews', 'concluded', 'inprocess'].map((sv) => (
             <TouchableOpacity key={sv} style={[styles.subChip, subView === sv && styles.subChipOn]} onPress={() => setSubView(sv)} activeOpacity={0.85}>
-              <Text style={[styles.subChipText, subView === sv && styles.subChipTextOn]}>{t(sv === 'interviews' ? 'sub_interviews' : sv === 'concluded' ? 'sub_concluded' : 'sub_inprocess')}</Text>
+              <Text style={[styles.subChipText, subView === sv && styles.subChipTextOn]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>{t(sv === 'interviews' ? 'sub_interviews' : sv === 'concluded' ? 'sub_concluded' : 'sub_inprocess')}</Text>
             </TouchableOpacity>
           ))}
+        </View>
+      ) : null}
+      {view === 'staff' ? (
+        <View style={styles.subTabs}>
+          <TouchableOpacity style={[styles.subChip, staffView === 'cards' && styles.subChipOn]} onPress={() => setStaffView('cards')} activeOpacity={0.85}>
+            <Text style={[styles.subChipText, staffView === 'cards' && styles.subChipTextOn]}>{t('staff_tab_list')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.subChip, staffView === 'arrivals' && styles.subChipOn]} onPress={() => setStaffView('arrivals')} activeOpacity={0.85}>
+            <Text style={[styles.subChipText, staffView === 'arrivals' && styles.subChipTextOn]}>🛬 {t('staff_tab_arrivals')}</Text>
+          </TouchableOpacity>
         </View>
       ) : null}
 
       {view !== 'pool' ? (
         listLoading ? (
           <ActivityIndicator color="#c2a25a" style={{ marginTop: 50 }} />
+        ) : view === 'staff' && staffView === 'arrivals' ? (
+          <AgencyArrivals
+            candidates={staffList}
+            contentPadBottom={insets.bottom + 24}
+            onOpen={(c) => onOpenCandidate(c, { ...(statuses[c.user_id] || {}), status: 'hired', docs_unlocked: true })}
+          />
         ) : (
           <>
             {view === 'process' && (mode === 'interviews' || mode === 'concluded') && baseIv.length ? (
@@ -602,18 +910,45 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       <>
       {codeError ? <Text style={styles.codeErrBar}>{t('agency_code_notfound')}</Text> : null}
 
-      {/* Durum segmenti + gelişmiş filtre (huni) — arama header'da */}
-      <View style={styles.filterRow}>
-      <View style={[styles.statusSeg, { flex: 1, marginHorizontal: 0, marginTop: 0, marginBottom: 0 }]}>
-        {FILTERS.map((f) => (
-          <TouchableOpacity key={f} style={[styles.segItem, filter === f && styles.segItemOn]} onPress={() => setFilter(f)} activeOpacity={0.85}>
-            {f !== 'all' ? <View style={[styles.segDot, { backgroundColor: TAB_DOT[f] }]} /> : null}
-            <Text style={[styles.segItemText, filter === f && styles.segItemTextOn]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t(`agency_filter_${f}`)}</Text>
+      {/* Görünürlük sıralaması + favori + huni */}
+      <View style={styles.poolSortRow}>
+        <View style={styles.sortSeg}>
+          <TouchableOpacity
+            style={[styles.sortSegItem, poolSort === 'online' && styles.sortSegItemOn]}
+            onPress={() => setPoolSort('online')}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.sortSegDot, poolSort === 'online' && styles.sortSegDotOn]} />
+            <Text style={[styles.sortSegText, poolSort === 'online' && styles.sortSegTextOn]} numberOfLines={1}>{t('sort_newest')}</Text>
           </TouchableOpacity>
-        ))}
-      </View>
+          <TouchableOpacity
+            style={[styles.sortSegItem, poolSort === 'online_old' && styles.sortSegItemOn]}
+            onPress={() => setPoolSort('online_old')}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.sortSegText, poolSort === 'online_old' && styles.sortSegTextOn]} numberOfLines={1}>{t('sort_oldest')}</Text>
+          </TouchableOpacity>
+        </View>
+        <TouchableOpacity
+          style={[styles.favFilterPill, favEmployer && styles.favFilterPillOn]}
+          onPress={() => setFavFilterOpen(true)}
+          activeOpacity={0.85}
+        >
+          <Text style={[styles.favFilterText, favEmployer && styles.favFilterTextOn]} numberOfLines={1}>
+            ★ {favEmployer ? favEmployer.name : t('fav_filter_btn')}
+          </Text>
+          {favEmployer ? (
+            <TouchableOpacity
+              onPress={() => setFavEmployer(null)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.favFilterX}
+            >
+              <Text style={styles.favFilterXText}>✕</Text>
+            </TouchableOpacity>
+          ) : null}
+        </TouchableOpacity>
         <TouchableOpacity style={styles.filterIconBtn} onPress={() => setSheetVisible(true)} activeOpacity={0.8}>
-          <FilterIcon color="#fff" knobFill={GOLD} size={20} />
+          <FilterIcon color="#fff" knobFill={GOLD} size={18} />
           {activeCount > 0 ? (
             <View style={styles.filterBadge}><Text style={styles.filterBadgeText}>{activeCount}</Text></View>
           ) : null}
@@ -646,7 +981,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         <ActivityIndicator color="#c2a25a" style={{ marginTop: 50 }} />
       ) : (
         <FlatList
-          data={data}
+          data={items}
           keyExtractor={(c) => c.user_id}
           renderItem={renderItem}
           numColumns={2}
@@ -658,7 +993,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           onEndReachedThreshold={0.4}
           refreshing={refreshing}
           onRefresh={onRefresh}
-          ListEmptyComponent={<Text style={styles.empty}>{t('agency_empty')}</Text>}
+          ListEmptyComponent={<Text style={styles.empty}>{favEmployer ? t('fav_empty') : t('agency_empty')}</Text>}
           ListFooterComponent={loadingMore ? <ActivityIndicator color="#c2a25a" style={{ marginVertical: 16 }} /> : null}
         />
       )}
@@ -682,8 +1017,24 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       <AgencyFilterSheet
         visible={sheetVisible}
         initial={advFilters}
-        onApply={(f) => { setAdvFilters(f); setSheetVisible(false); }}
+        sort={poolSort}
+        onApply={(f) => {
+          const { sort: nextSort, ...rest } = f || {};
+          if (nextSort) setPoolSort(nextSort);
+          setAdvFilters(rest);
+          setSheetVisible(false);
+        }}
         onClose={() => setSheetVisible(false)}
+      />
+
+      <FavoriteEmployerSheet
+        visible={favFilterOpen}
+        mode="filter"
+        agencyId={userId}
+        selectedEmployerId={favEmployer?.id || null}
+        onPickEmployer={(emp) => setFavEmployer({ id: emp.id, name: emp.name })}
+        onClearFilter={() => setFavEmployer(null)}
+        onClose={() => setFavFilterOpen(false)}
       />
 
       {/* Tarih aralığı seçici */}
@@ -731,7 +1082,6 @@ const styles = StyleSheet.create({
   heroSearchInput: { flex: 1, color: '#fff', fontSize: 15, fontWeight: '600', letterSpacing: 0.4, padding: 0 },
   heroSearchGo: { color: '#dcc187', fontWeight: '800', fontSize: 13.5 },
   heroSearchClose: { color: '#e7dcc4', fontSize: 20, fontWeight: '700' },
-  filterRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10 },
   heroLogo: { width: 92, height: 64 },
   heroHi: { color: '#c2a25a', fontSize: 11, fontWeight: '800', letterSpacing: 2.5, marginBottom: 4, textTransform: 'uppercase' },
   heroTitle: { color: '#fff', fontSize: 25, fontWeight: '800', letterSpacing: 0.3 },
@@ -744,36 +1094,72 @@ const styles = StyleSheet.create({
   accent: { height: 3, backgroundColor: GOLD, zIndex: 2 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 18 },
   menuDots: { fontSize: 26, color: '#cbd2db', fontWeight: '900', marginTop: -4 },
-  // Header menüsü (alt sayfa)
-  menuBackdrop: { flex: 1, backgroundColor: 'rgba(8,12,20,0.45)', justifyContent: 'flex-end' },
-  menuSheet: { backgroundColor: '#fbf8f1', borderTopLeftRadius: 30, borderTopRightRadius: 30, paddingHorizontal: 18, paddingTop: 12 },
-  menuHandle: { alignSelf: 'center', width: 44, height: 4.5, borderRadius: 3, backgroundColor: '#e0d6bd', marginBottom: 6 },
-  menuBrand: { alignItems: 'center', paddingTop: 10, paddingBottom: 14 },
-  menuBrandLogo: { width: 128, height: 88 },
-  menuBrandRule: { width: 46, height: 2.5, borderRadius: 2, backgroundColor: GOLD, marginTop: 12, opacity: 0.85 },
-  menuTitle: { fontSize: 12, fontWeight: '800', color: '#9a7b1f', letterSpacing: 1.6, textTransform: 'uppercase', marginBottom: 8, marginLeft: 6 },
-  menuLangList: { maxHeight: 300 },
-  menuLangRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 13, paddingHorizontal: 14, borderRadius: 13, marginBottom: 3 },
-  menuLangRowOn: { backgroundColor: '#f3ecdc' },
-  menuLangName: { fontSize: 16, fontWeight: '600', color: '#2a3342' },
-  menuLangNameOn: { fontWeight: '800', color: '#9a7b1f' },
-  menuCheck: { fontSize: 16, fontWeight: '900', color: GOLD },
-  menuSep: { height: 1, backgroundColor: '#ece4d2', marginTop: 10, marginBottom: 6, marginHorizontal: 4 },
-  menuLogout: { flexDirection: 'row', alignItems: 'center', gap: 13, marginTop: 6, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: '#fff', shadowColor: '#16202e', shadowOpacity: 0.07, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 2 },
+  // Ayarlar alt sayfası
+  menuBackdrop: { flex: 1, backgroundColor: 'rgba(8,12,20,0.5)', justifyContent: 'flex-end' },
+  menuSheet: {
+    backgroundColor: '#f7f4ec', borderTopLeftRadius: 26, borderTopRightRadius: 26,
+    paddingHorizontal: 18, paddingTop: 10, overflow: 'hidden',
+  },
+  menuHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 3, backgroundColor: '#ddd2b8', marginBottom: 10 },
+  menuHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, paddingHorizontal: 2 },
+  menuHeadTitle: { fontSize: 20, fontWeight: '900', color: INK, letterSpacing: 0.2 },
+  menuCloseBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#ebe4d5', alignItems: 'center', justifyContent: 'center' },
+  menuCloseX: { fontSize: 15, fontWeight: '800', color: '#5c6570' },
+  menuScroll: { flexGrow: 0 },
+  menuScrollContent: { paddingBottom: 8 },
+  menuSection: { fontSize: 11.5, fontWeight: '800', color: '#9a7b1f', letterSpacing: 1.4, textTransform: 'uppercase', marginBottom: 10, marginLeft: 2 },
+  langGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  langChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12,
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#e6dfd0', width: '48%',
+  },
+  langChipOn: { backgroundColor: '#f3ecdc', borderColor: GOLD },
+  langChipText: { fontSize: 14.5, fontWeight: '700', color: '#2a3342', flexShrink: 1 },
+  langChipTextOn: { color: '#8a6a1f' },
+  langChipCheck: { fontSize: 13, fontWeight: '900', color: GOLD, marginLeft: 'auto' },
+  prefCard: { backgroundColor: '#fff', borderRadius: 16, borderWidth: 1, borderColor: '#ebe4d5', overflow: 'hidden' },
+  prefRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 14 },
+  prefText: { flex: 1, minWidth: 0 },
+  prefTitle: { fontSize: 15, fontWeight: '800', color: INK },
+  prefDesc: { fontSize: 12, fontWeight: '600', color: '#8a929c', marginTop: 3, lineHeight: 16 },
+  prefDivider: { height: StyleSheet.hairlineWidth, backgroundColor: '#ece4d2', marginLeft: 14 },
+  swTrack: { width: 48, height: 28, borderRadius: 14, backgroundColor: '#cfd3d8', padding: 2, justifyContent: 'center' },
+  swTrackOn: { backgroundColor: GOLD },
+  swThumb: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#fff', alignSelf: 'flex-start' },
+  swThumbOn: { alignSelf: 'flex-end' },
+  actionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 12, paddingHorizontal: 14,
+    borderRadius: 16, backgroundColor: '#fff', borderWidth: 1, borderColor: '#ebe4d5',
+  },
   menuLogoutIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#fbeae8', alignItems: 'center', justifyContent: 'center' },
-  menuLogoutText: { color: '#1b2533', fontWeight: '800', fontSize: 15 },
-  menuLogoutHint: { color: '#c9a9a4', fontSize: 19, fontWeight: '800' },
+  menuLogoutText: { color: '#b5413a', fontWeight: '800', fontSize: 15 },
+  menuLogoutHint: { color: '#c9a9a4', fontSize: 22, fontWeight: '300' },
+  profOverlay: { flex: 1, backgroundColor: 'rgba(10,16,24,0.6)', alignItems: 'center', justifyContent: 'center', padding: 22 },
+  profCard: { width: '100%', maxWidth: 420, backgroundColor: '#fff', borderRadius: 18, padding: 22 },
+  profTitle: { fontSize: 19, fontWeight: '900', color: '#1b2533', marginBottom: 14 },
+  profLbl: { fontSize: 12.5, fontWeight: '700', color: '#737373', marginBottom: 5, marginTop: 10 },
+  profInput: { borderWidth: 1, borderColor: '#d6d6d6', borderRadius: 11, paddingHorizontal: 13, paddingVertical: 11, fontSize: 16, color: '#1b2533' },
+  profErr: { color: '#c0392b', fontSize: 13, fontWeight: '600', marginTop: 10 },
+  profSave: { backgroundColor: '#c2a25a', borderRadius: 12, paddingVertical: 13, alignItems: 'center', marginTop: 18 },
+  profSaveText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  profCancel: { paddingVertical: 12, alignItems: 'center', marginTop: 4 },
+  profCancelText: { color: '#9aa1ac', fontSize: 14, fontWeight: '700' },
   menu: { backgroundColor: 'transparent', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 6, zIndex: 5 },
-  segTrack: { flexDirection: 'row', backgroundColor: '#202c3d', borderRadius: 999, padding: 5, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', shadowColor: '#0c1320', shadowOpacity: 0.3, shadowRadius: 16, shadowOffset: { width: 0, height: 9 }, elevation: 8 },
+  segTrack: { flexDirection: 'row', backgroundColor: '#202c3d', borderRadius: 999, padding: 5, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   menuItem: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 999 },
-  menuItemOn: { backgroundColor: GOLD, shadowColor: '#a8842f', shadowOpacity: 0.5, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
+  menuItemOn: { backgroundColor: GOLD },
   menuText: { fontSize: 13.5, fontWeight: '800', color: '#9aa6b6', letterSpacing: 0.3 },
   menuTextOn: { color: '#16202e' },
-  subTabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 4, paddingBottom: 8, backgroundColor: 'transparent' },
-  subChip: { paddingHorizontal: 15, paddingVertical: 8, borderRadius: 999, backgroundColor: '#ebe4d5' },
-  subChipOn: { backgroundColor: '#16202e', shadowColor: '#0c1320', shadowOpacity: 0.22, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
+  subTabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingTop: 4, paddingBottom: 8, backgroundColor: 'transparent' },
+  subChip: { paddingHorizontal: 15, paddingVertical: 8, borderRadius: 999, backgroundColor: '#ebe4d5', maxWidth: '100%' },
+  subChipOn: { backgroundColor: '#16202e' },
   subChipText: { fontSize: 12.5, fontWeight: '800', color: '#737373' },
   subChipTextOn: { color: '#fff' },
+  ivJoinRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12 },
+  ivCdText: { flex: 1, color: '#9a7b1f', fontWeight: '800', fontSize: 12.5 },
+  ivJoinMini: { backgroundColor: GOLD, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  ivJoinMiniText: { color: INK, fontWeight: '900', fontSize: 12.5 },
   concActions: { flexDirection: 'row', gap: 8, marginTop: 12 },
   concNote: { marginTop: 12, borderRadius: 11, paddingVertical: 11, alignItems: 'center', backgroundColor: '#f3f4f6' },
   concNoteOk: { color: '#1f8a4c', fontWeight: '800', fontSize: 13.5 },
@@ -795,9 +1181,26 @@ const styles = StyleSheet.create({
   grpBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
   // --- Mülakat araç çubuğu ---
   ivToolbar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 2, paddingBottom: 10, backgroundColor: 'transparent' },
-  sortPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#ebe4d5', borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9 },
+  poolSortRow: { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  sortSeg: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: '#eef0f2', borderRadius: 999, padding: 3, borderWidth: 1, borderColor: '#e6e8ec',
+  },
+  sortSegItem: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, paddingHorizontal: 11, paddingVertical: 7 },
+  sortSegItemOn: { backgroundColor: '#fff', shadowColor: '#0c1320', shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 1 },
+  sortSegDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#9aa3b0' },
+  sortSegDotOn: { backgroundColor: '#22a06b', shadowColor: '#22a06b', shadowOpacity: 0.35, shadowRadius: 4, shadowOffset: { width: 0, height: 0 } },
+  sortSegText: { fontSize: 12, fontWeight: '800', color: '#6b7280' },
+  sortSegTextOn: { color: INK },
+  favFilterPill: { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: '42%', backgroundColor: '#eef0f2', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: '#e6e8ec' },
+  favFilterPillOn: { backgroundColor: 'rgba(194,162,90,0.16)', borderColor: GOLD },
+  favFilterText: { fontSize: 12.5, fontWeight: '800', color: '#5c6675', flexShrink: 1 },
+  favFilterTextOn: { color: '#8a6a1f' },
+  favFilterX: { marginLeft: 2 },
+  favFilterXText: { fontSize: 12, fontWeight: '800', color: '#8a6a1f' },
+  sortPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#ebe4d5', borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9, maxWidth: '100%' },
   sortArrow: { color: GOLD, fontSize: 14, fontWeight: '900' },
-  sortPillText: { color: INK, fontWeight: '800', fontSize: 12.5 },
+  sortPillText: { color: INK, fontWeight: '800', fontSize: 12.5, flexShrink: 1 },
   rangeChip: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#faf2e0', borderWidth: 1, borderColor: '#e3d2a3', borderRadius: 20, paddingLeft: 12, paddingRight: 9, paddingVertical: 7 },
   rangeChipText: { color: '#9a7b1f', fontWeight: '800', fontSize: 12 },
   rangeChipX: { color: '#9a7b1f', fontWeight: '900', fontSize: 12 },
@@ -848,12 +1251,6 @@ const styles = StyleSheet.create({
   selectAllText: { fontSize: 13, fontWeight: '800', color: INK },
   selectCount: { fontSize: 13, fontWeight: '700', color: '#737373' },
   searchBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, backgroundColor: 'transparent' },
-  statusSeg: { flexDirection: 'row', marginHorizontal: 16, marginTop: 2, marginBottom: 10, backgroundColor: '#ebe4d5', borderRadius: 999, padding: 4 },
-  segItem: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 8, borderRadius: 999 },
-  segItemOn: { backgroundColor: '#fff', shadowColor: '#16202e', shadowOpacity: 0.13, shadowRadius: 7, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
-  segDot: { width: 6, height: 6, borderRadius: 3 },
-  segItemText: { fontSize: 11.5, fontWeight: '800', color: '#a99e86', letterSpacing: 0.2 },
-  segItemTextOn: { color: '#16202e' },
   codeErrBar: { color: '#a32d2d', fontSize: 12.5, fontWeight: '600', paddingHorizontal: 16, paddingTop: 6, backgroundColor: '#fff' },
   codeAddRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
   codeInput: { flex: 1, backgroundColor: '#f4efe3', borderWidth: 1, borderColor: '#e7ddc6', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11, fontSize: 14, fontWeight: '600', letterSpacing: 0.3, color: INK },
@@ -865,7 +1262,7 @@ const styles = StyleSheet.create({
   codeChipText: { fontSize: 12.5, fontWeight: '800', color: INK, marginRight: 6 },
   codeChipX: { fontSize: 12, color: '#737373', fontWeight: '800' },
 
-  filterIconBtn: { width: 46, height: 44, borderRadius: 12, backgroundColor: GOLD, alignItems: 'center', justifyContent: 'center' },
+  filterIconBtn: { width: 40, height: 36, borderRadius: 18, backgroundColor: GOLD, alignItems: 'center', justifyContent: 'center' },
   filterBadge: { position: 'absolute', top: -5, right: -5, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: INK, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderWidth: 1.5, borderColor: '#fff' },
   filterBadgeText: { fontSize: 10.5, fontWeight: '800', color: '#fff' },
 
@@ -887,14 +1284,42 @@ const styles = StyleSheet.create({
   },
   fbCardSel: { borderWidth: 2.5, borderColor: GOLD },
   fbPhoto: { width: '100%', height: '100%' },
-  fbScrimA: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '58%', backgroundColor: 'rgba(10,15,22,0.22)' },
-  fbScrimB: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '38%', backgroundColor: 'rgba(10,15,22,0.34)' },
-  fbScrimC: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '20%', backgroundColor: 'rgba(10,15,22,0.5)' },
-  fbFlag: { position: 'absolute', top: 11, left: 11, width: 30, height: 20, borderRadius: 5, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.95)', shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 3, shadowOffset: { width: 0, height: 1 } },
-  fbInfo: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 13, paddingBottom: 13, paddingTop: 4 },
+  fbScrim: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '30%', backgroundColor: 'rgba(10,15,22,0.20)' },
+  fbFlag: { position: 'absolute', top: 11, left: 11, width: 30, height: 20, borderRadius: 5, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.95)', shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, zIndex: 3 },
+  fbRateBadge: { position: 'absolute', top: 10, right: 10, zIndex: 4 },
+  fbRateBadgeSelect: { top: 46 },
+  fbUnfav: {
+    position: 'absolute', top: 8, right: 8, zIndex: 5,
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: 'rgba(10,16,24,0.62)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  fbUnfavText: { color: '#fff', fontSize: 15, fontWeight: '900', marginTop: -1 },
+  richRateBadge: { position: 'absolute', top: 4, right: 4, zIndex: 4, transform: [{ scale: 0.92 }] },
+  fbInfo: { position: 'absolute', left: 0, right: 0, bottom: 30, paddingHorizontal: 13, paddingBottom: 0, paddingTop: 4 },
   fbPill: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4.5, marginBottom: 8 },
-  fbName: { color: '#fff', fontSize: 16.5, fontWeight: '800', letterSpacing: 0.2, textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 6, textShadowOffset: { width: 0, height: 1 } },
-  fbSub: { color: '#e7cf9a', fontSize: 11.5, fontWeight: '800', letterSpacing: 0.6, marginTop: 3, textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 5 },
+  fbName: { color: '#fff', fontSize: 16.5, fontWeight: '800', letterSpacing: 0.2, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 7, textShadowOffset: { width: 0, height: 1 } },
+  fbSub: { color: '#e7cf9a', fontSize: 11.5, fontWeight: '800', letterSpacing: 0.6, marginTop: 3, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 6 },
+  fbOnlineWrap: {
+    position: 'absolute', left: 0, right: 0, bottom: 5, zIndex: 3,
+    alignItems: 'center', paddingHorizontal: 10,
+  },
+  fbOnlinePill: {
+    maxWidth: '100%',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
+    paddingHorizontal: 8, paddingVertical: 3.5, borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)',
+  },
+  fbOnline_fresh: { backgroundColor: 'rgba(15,107,69,0.72)', borderColor: 'rgba(120,220,170,0.55)' },
+  fbOnline_recent: { backgroundColor: 'rgba(138,106,20,0.72)', borderColor: 'rgba(230,200,120,0.55)' },
+  fbOnline_stale: { backgroundColor: 'rgba(0,0,0,0.45)', borderColor: 'rgba(255,255,255,0.2)' },
+  fbOnline_never: { backgroundColor: 'rgba(0,0,0,0.45)', borderColor: 'rgba(255,255,255,0.2)' },
+  fbOnlineDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#c5ccd6', flexShrink: 0 },
+  fbOnlineDot_fresh: { backgroundColor: '#7dffb2' },
+  fbOnlineDot_recent: { backgroundColor: '#ffe08a' },
+  fbOnlineDot_stale: { backgroundColor: '#c5ccd6' },
+  fbOnlineDot_never: { backgroundColor: '#c5ccd6' },
+  fbOnlineText: { color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.15, lineHeight: 13, flexShrink: 1 },
 
   card: {
     width: '48.5%', marginBottom: 18, backgroundColor: '#fff', borderRadius: 24, overflow: 'hidden',

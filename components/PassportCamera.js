@@ -1,4 +1,4 @@
-// components/PassportCamera.js
+// NOT: Şu an devre dışı — pasaport yalnızca PDF (lib/features.js → PASSPORT_CAMERA_ENABLED).
 // Banka tarzı çerçeveli pasaport kamerası: ekranda pasaport çerçevesi var, kişi oraya
 // oturtup çeker. Çekilen fotoğrafın URI'si onCapture ile döner. Native (expo-camera) — dev build gerekir.
 import React, { useState, useEffect, useRef } from 'react';

@@ -1,0 +1,172 @@
+// supabase/functions/notify-docs-deadline/index.ts
+// İlk belge paketi (10 gün) süresi dolunca acenteye tek seferlik push + uygulama içi bildirim.
+// body: { candidateUserId } — tek aday (aday kendi ekranından veya ilgili acente)
+// body: { scan: true } — acentenin süreçteki adaylarını tara (panel açılışında)
+import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { docsDeadlinePushText, sendExpoPush, recipientAllowsPush, type PushTokenRow } from '../_shared/pushTexts.ts';
+
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
+
+const STEP1_KINDS = ['passport', 'diploma', 'criminal', 'health_report'];
+const DEADLINE_DAYS = 10;
+
+const NATION_CODE: Record<string, string> = {
+  'Türkiye': 'TR', 'Azerbaycan': 'AZ', 'Belarus': 'BY', 'Gürcistan': 'GE', 'Kazakistan': 'KZ',
+  'Kırgızistan': 'KG', 'Özbekistan': 'UZ', 'Rusya': 'RU', 'Tayland': 'TH', 'Türkmenistan': 'TM',
+  'Ukrayna': 'UA', 'Diğer': 'XX',
+};
+const codeOf = (nat?: string, reg?: number) =>
+  (NATION_CODE[nat ?? ''] || 'XX') + (reg ? String(reg).padStart(4, '0') : '----');
+
+type AdminClient = ReturnType<typeof createClient>;
+
+async function isStaff(admin: AdminClient, userId: string): Promise<boolean> {
+  const { data } = await admin.from('user_roles').select('role').eq('user_id', userId).maybeSingle();
+  return data?.role === 'agency' || data?.role === 'admin';
+}
+
+function isOverdue(acceptedAt: string): boolean {
+  const end = new Date(new Date(acceptedAt).getTime() + DEADLINE_DAYS * 24 * 3600 * 1000);
+  return end.getTime() < Date.now();
+}
+
+async function step1Complete(admin: AdminClient, candidateUserId: string): Promise<boolean> {
+  const { data } = await admin
+    .from('user_documents')
+    .select('kind')
+    .eq('user_id', candidateUserId)
+    .in('kind', STEP1_KINDS)
+    .not('submitted_at', 'is', null);
+  const done = new Set((data ?? []).map((r: { kind: string }) => r.kind));
+  return STEP1_KINDS.every((k) => done.has(k));
+}
+
+async function notifyOne(
+  admin: AdminClient,
+  candidateUserId: string,
+): Promise<'sent' | 'skipped'> {
+  const { data: st } = await admin
+    .from('candidate_status')
+    .select('status, accepted_at, accepted_by, docs_deadline_notified_at')
+    .eq('user_id', candidateUserId)
+    .maybeSingle();
+
+  if (!st || st.status !== 'accepted' || !st.accepted_at) return 'skipped';
+  if (st.docs_deadline_notified_at) return 'skipped';
+  if (!isOverdue(st.accepted_at)) return 'skipped';
+  if (await step1Complete(admin, candidateUserId)) return 'skipped';
+
+  const agencyRaw = st.accepted_by;
+  if (!agencyRaw || !/^[0-9a-f-]{36}$/i.test(agencyRaw)) return 'skipped';
+  const agencyId = agencyRaw;
+
+  // Tek seferlik: yarış koşulunda yalnızca ilk çağrı bildirim gönderir.
+  const { data: claimed } = await admin
+    .from('candidate_status')
+    .update({ docs_deadline_notified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('user_id', candidateUserId)
+    .is('docs_deadline_notified_at', null)
+    .select('user_id')
+    .maybeSingle();
+  if (!claimed) return 'skipped';
+
+  const { data: prof } = await admin
+    .from('profiles')
+    .select('reg_no, data')
+    .eq('user_id', candidateUserId)
+    .maybeSingle();
+  const code = prof ? codeOf(prof?.data?.nationality, prof?.reg_no) : '';
+
+  await admin.from('notifications').insert({
+    user_id: agencyId,
+    type: 'docs_deadline',
+    ref_user: candidateUserId,
+  });
+
+  if (!(await recipientAllowsPush(admin, agencyId, 'general'))) return 'prefs_off';
+
+  const { data: toks } = await admin.from('push_tokens').select('token, locale').eq('user_id', agencyId);
+  const tokens = (toks ?? []) as PushTokenRow[];
+  if (tokens.length) {
+    const messages = tokens.filter((t) => t.token).map(({ token: to, locale }) => {
+      const txt = docsDeadlinePushText(code, locale);
+      return {
+        to,
+        title: txt.title,
+        body: txt.body,
+        priority: 'high',
+        sound: 'notify.wav',
+        channelId: 'default',
+        data: { kind: 'docs_deadline', candidateUserId },
+      };
+    });
+    await sendExpoPush(messages);
+  }
+
+  return 'sent';
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
+  try {
+    const url = Deno.env.get('SUPABASE_URL')!;
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    const authHeader = req.headers.get('Authorization') ?? '';
+    const userClient = createClient(url, anonKey, { global: { headers: { Authorization: authHeader } } });
+    const { data: { user }, error: userErr } = await userClient.auth.getUser();
+    if (userErr || !user) return json({ error: 'unauthorized' }, 401);
+
+    const admin = createClient(url, serviceKey);
+    const staff = await isStaff(admin, user.id);
+    const body = await req.json().catch(() => ({}));
+    const { candidateUserId, scan } = body as { candidateUserId?: string; scan?: boolean };
+
+    if (scan) {
+      if (!staff) return json({ error: 'forbidden' }, 403);
+      const { data: roleRow } = await admin.from('user_roles').select('role').eq('user_id', user.id).maybeSingle();
+      const isAdmin = roleRow?.role === 'admin';
+      let q = admin
+        .from('candidate_status')
+        .select('user_id')
+        .eq('status', 'accepted')
+        .not('accepted_at', 'is', null)
+        .is('docs_deadline_notified_at', null);
+      if (!isAdmin) q = q.eq('accepted_by', user.id);
+      const { data: rows } = await q;
+      let sent = 0;
+      for (const row of rows ?? []) {
+        const r = await notifyOne(admin, row.user_id);
+        if (r === 'sent') sent += 1;
+      }
+      return json({ ok: true, scanned: (rows ?? []).length, sent });
+    }
+
+    if (!candidateUserId) return json({ error: 'bad_request' }, 400);
+
+    const isCandidate = user.id === candidateUserId;
+    if (!isCandidate && !staff) return json({ error: 'forbidden' }, 403);
+
+    if (staff && !isCandidate) {
+      const { data: st } = await admin
+        .from('candidate_status')
+        .select('accepted_by')
+        .eq('user_id', candidateUserId)
+        .maybeSingle();
+      const { data: roleRow } = await admin.from('user_roles').select('role').eq('user_id', user.id).maybeSingle();
+      const isAdmin = roleRow?.role === 'admin';
+      if (!isAdmin && st?.accepted_by !== user.id) return json({ error: 'forbidden' }, 403);
+    }
+
+    const result = await notifyOne(admin, candidateUserId);
+    return json({ ok: true, result });
+  } catch (e) {
+    return json({ error: String((e as Error)?.message ?? e) }, 500);
+  }
+});

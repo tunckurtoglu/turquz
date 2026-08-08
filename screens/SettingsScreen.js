@@ -1,19 +1,58 @@
 // screens/SettingsScreen.js
-// Ayarlar: Dil (seçime gider), Bildirimler (aç/kapat tercihi), Çıkış.
-// Bildirim tercihi şimdilik sadece state; gerçek push backend + expo-notifications ile bağlanacak.
-// Çıkış auth gelince supabase.auth.signOut()'a bağlanacak; şimdilik uygulamayı başa döndürür.
-import React from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
+// Ayarlar: Dil, Bildirimler (aday: tek; acente: genel + mesaj ayrı), KVKK, Çıkış.
+import React, { useEffect, useState } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
 import { nameOf } from '../i18n/languages';
 import { openPrivacy } from '../lib/config';
+import { getAgencyNotifPrefs, setAgencyNotifPrefs } from '../lib/agencyNotifPrefs';
 
-export default function SettingsScreen({ onBack, onChangeLanguage, onLogout, notifications, onToggleNotifications, fontsReady }) {
+function Switch({ on, onPress }) {
+  return (
+    <TouchableOpacity style={[styles.switch, on && styles.switchOn]} onPress={onPress} activeOpacity={0.8}>
+      <View style={[styles.knob, on && styles.knobOn]} />
+    </TouchableOpacity>
+  );
+}
+
+export default function SettingsScreen({
+  onBack, onChangeLanguage, onLogout, notifications, onToggleNotifications, fontsReady, isAgency,
+}) {
   const { t, lang, dir } = useLanguage();
   const insets = useSafeAreaInsets();
   const backChevron = dir === 'rtl' ? '›' : '‹';
   const fwdChevron = dir === 'rtl' ? '‹' : '›';
+
+  const [prefsLoading, setPrefsLoading] = useState(!!isAgency);
+  const [generalPush, setGeneralPush] = useState(true);
+  const [chatPush, setChatPush] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isAgency) return;
+    let alive = true;
+    (async () => {
+      setPrefsLoading(true);
+      const p = await getAgencyNotifPrefs();
+      if (!alive) return;
+      setGeneralPush(p.generalPush);
+      setChatPush(p.chatPush);
+      setPrefsLoading(false);
+    })();
+    return () => { alive = false; };
+  }, [isAgency]);
+
+  const savePrefs = async (next) => {
+    setSaving(true);
+    try {
+      await setAgencyNotifPrefs({ ...next, preferredLang: lang });
+    } catch (e) {
+      console.warn('prefs save', e?.message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <View style={styles.wrap}>
@@ -26,7 +65,6 @@ export default function SettingsScreen({ onBack, onChangeLanguage, onLogout, not
       </View>
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-        {/* Dil */}
         <TouchableOpacity style={styles.row} onPress={onChangeLanguage} activeOpacity={0.7}>
           <Text style={styles.rowIcon}>🌐</Text>
           <Text style={styles.rowLabel}>{t('set_language')}</Text>
@@ -34,30 +72,61 @@ export default function SettingsScreen({ onBack, onChangeLanguage, onLogout, not
           <Text style={styles.chev}>{fwdChevron}</Text>
         </TouchableOpacity>
 
-        {/* Bildirimler */}
-        <View style={styles.row}>
-          <Text style={styles.rowIcon}>🔔</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.rowLabel}>{t('set_notifications')}</Text>
-            <Text style={styles.rowDesc}>{t('set_notifications_desc')}</Text>
+        {isAgency ? (
+          prefsLoading ? (
+            <View style={[styles.row, { justifyContent: 'center' }]}><ActivityIndicator color="#c2a25a" /></View>
+          ) : (
+            <>
+              <View style={styles.row}>
+                <Text style={styles.rowIcon}>🔔</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowLabel}>{t('set_notif_general')}</Text>
+                  <Text style={styles.rowDesc}>{t('set_notif_general_desc')}</Text>
+                </View>
+                <Switch
+                  on={generalPush}
+                  onPress={() => {
+                    const v = !generalPush;
+                    setGeneralPush(v);
+                    savePrefs({ generalPush: v, chatPush });
+                  }}
+                />
+              </View>
+              <View style={styles.row}>
+                <Text style={styles.rowIcon}>💬</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowLabel}>{t('set_notif_chat')}</Text>
+                  <Text style={styles.rowDesc}>{t('set_notif_chat_desc')}</Text>
+                </View>
+                <Switch
+                  on={chatPush}
+                  onPress={() => {
+                    const v = !chatPush;
+                    setChatPush(v);
+                    savePrefs({ generalPush, chatPush: v });
+                  }}
+                />
+              </View>
+              {saving ? <Text style={styles.saving}>{t('chat_saving')}</Text> : null}
+            </>
+          )
+        ) : (
+          <View style={styles.row}>
+            <Text style={styles.rowIcon}>🔔</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>{t('set_notifications')}</Text>
+              <Text style={styles.rowDesc}>{t('set_notifications_desc')}</Text>
+            </View>
+            <Switch on={notifications} onPress={() => onToggleNotifications(!notifications)} />
           </View>
-          <TouchableOpacity
-            style={[styles.switch, notifications && styles.switchOn]}
-            onPress={() => onToggleNotifications(!notifications)}
-            activeOpacity={0.8}
-          >
-            <View style={[styles.knob, notifications && styles.knobOn]} />
-          </TouchableOpacity>
-        </View>
+        )}
 
-        {/* Gizlilik & KVKK */}
         <TouchableOpacity style={styles.row} onPress={openPrivacy} activeOpacity={0.7}>
           <Text style={styles.rowIcon}>🔒</Text>
           <Text style={styles.rowLabel}>{t('set_privacy')}</Text>
           <Text style={styles.chev}>{fwdChevron}</Text>
         </TouchableOpacity>
 
-        {/* Çıkış */}
         <TouchableOpacity style={[styles.row, styles.rowLast]} onPress={onLogout} activeOpacity={0.7}>
           <Text style={styles.rowIcon}>↩︎</Text>
           <Text style={[styles.rowLabel, styles.logout]}>{t('set_logout')}</Text>
@@ -92,6 +161,7 @@ const styles = StyleSheet.create({
   rowValue: { fontSize: 14, color: '#737373', marginRight: 6 },
   chev: { fontSize: 20, color: '#c2a25a', fontWeight: '700' },
   logout: { color: '#a32d2d', flex: 0 },
+  saving: { fontSize: 12, color: '#9aa1ac', marginBottom: 8, marginLeft: 4 },
 
   switch: { width: 46, height: 26, borderRadius: 13, backgroundColor: '#cfd3d8', padding: 2, justifyContent: 'center' },
   switchOn: { backgroundColor: '#c2a25a' },

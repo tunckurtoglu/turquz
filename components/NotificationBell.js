@@ -7,6 +7,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
 import { listNotifications, unreadCount, markAllRead } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
+import { candidateCode } from '../lib/candidateCode';
+import { slotLabel } from '../lib/interviews';
 
 const INK = '#1b2533';
 const GOLD = '#c2a25a';
@@ -18,8 +20,16 @@ const META = {
   offer_rejected: { icon: '✕', bg: '#fbeae8', fg: '#b5413a' },
   accepted: { icon: '🎉', bg: '#f3ecdc', fg: '#9a7b1f' },
   document: { icon: '📄', bg: '#e7ecf3', fg: '#1f3a63' },
+  docs_deadline: { icon: '⏰', bg: '#fbeae8', fg: '#b5413a' },
   reupload: { icon: '🔄', bg: '#fbf0db', fg: '#c98a1e' },
   interview: { icon: '🎥', bg: '#f3ecdc', fg: '#9a7b1f' },
+  interview_proposed: { icon: '🎥', bg: '#f3ecdc', fg: '#9a7b1f' },
+  interview_scheduled: { icon: '🎥', bg: '#f3ecdc', fg: '#9a7b1f' },
+  interview_declined: { icon: '✕', bg: '#fbeae8', fg: '#b5413a' },
+  interview_no_response: { icon: '⏳', bg: '#fbf0db', fg: '#c98a1e' },
+  interview_respond_remind: { icon: '⏰', bg: '#fbf0db', fg: '#c98a1e' },
+  pool_passive: { icon: '⏸', bg: '#f1f3f6', fg: '#5b6575' },
+  chat_message: { icon: '💬', bg: '#e7ecf3', fg: '#1f3a63' },
   default: { icon: '🔔', bg: '#f3ecdc', fg: '#9a7b1f' },
 };
 const metaOf = (type) => META[type] || META.default;
@@ -41,8 +51,30 @@ const fmt = (iso) => {
   return `${p(dt.getDate())}.${p(dt.getMonth() + 1)}.${dt.getFullYear()} ${p(dt.getHours())}:${p(dt.getMinutes())}`;
 };
 
+function notifText(n, t, lang) {
+  const p = n.payload || {};
+  if (n.type === 'interview_scheduled') {
+    const code = candidateCode(p.nationality, p.reg_no);
+    const slot = p.slot ? slotLabel(p.slot, lang) : '';
+    if (slot) return t('notif_interview_scheduled_detail').replace('{code}', code).replace('{slot}', slot);
+  }
+  if (n.type === 'interview_declined') {
+    const code = candidateCode(p.nationality, p.reg_no);
+    if (code && !code.endsWith('----')) return t('notif_interview_declined_detail').replace('{code}', code);
+  }
+  if (n.type === 'interview_no_response') {
+    const code = candidateCode(p.nationality, p.reg_no);
+    const hours = p.hours != null ? String(p.hours) : '48';
+    if (code && !code.endsWith('----')) {
+      return t('notif_interview_no_response_detail').replace('{code}', code).replace('{hours}', hours);
+    }
+    return (t('notif_interview_no_response') || '') + (hours ? ` (${hours}s)` : '');
+  }
+  return t(`notif_${n.type}`);
+}
+
 export default function NotificationBell({ userId, color = '#cbd2db', onNavigate }) {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
   const insets = useSafeAreaInsets();
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState([]);
@@ -98,7 +130,7 @@ export default function NotificationBell({ userId, color = '#cbd2db', onNavigate
                       <Text style={[styles.iconText, { color: m.fg }]}>{m.icon}</Text>
                     </View>
                     <View style={styles.rowBody}>
-                      <Text style={styles.rowText} numberOfLines={2}>{t(`notif_${n.type}`)}</Text>
+                      <Text style={styles.rowText} numberOfLines={3}>{notifText(n, t, lang)}</Text>
                       <Text style={styles.rowTime}>{fmt(n.created_at)}</Text>
                     </View>
                     {!n.read_at ? <View style={styles.unreadDot} /> : null}

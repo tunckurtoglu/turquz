@@ -3,10 +3,9 @@
 // Buradan GÖNDERME yok; imza ve gönderim Belgeler > "İmzalı Hizmet Sözleşmesi" adımında.
 // Bu sayfa: bilgileri kaydeder + önizleme/PDF indirme + (yakında) e-imza.
 import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, ScrollView, TouchableOpacity, StyleSheet, Modal, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { View, Text, TextInput, ScrollView, TouchableOpacity, StyleSheet, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
-import ContractPreview from './ContractPreview';
 
 const INK = '#1b2533';
 const GOLD = '#c2a25a';
@@ -29,22 +28,26 @@ function Row({ label, value, onChangeText, placeholder, keyboardType, multiline 
   );
 }
 
-export default function ContractForm({ visible, initial, data, onSaveData, onClose }) {
+export default function ContractForm({ visible, initial, data, onSaveData, onChangeEmployer, onClose }) {
   const { t, dir } = useLanguage();
   const insets = useSafeAreaInsets();
   const backChevron = dir === 'rtl' ? '›' : '‹';
 
   const [f, setF] = useState({});
-  const [previewOpen, setPreviewOpen] = useState(false);
   useEffect(() => { if (visible) setF(initial || {}); }, [visible, initial]);
 
   const up = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
   const infoOk = f.title?.trim() && f.address?.trim() && f.position?.trim();
 
   const persist = () => { if (infoOk) onSaveData?.(f); };           // bilgileri kaydet (kabul etmez)
-  const onPreview = () => { persist(); setPreviewOpen(true); };
-  const onEsign = () => Alert.alert(t('esign_btn'), t('esign_soon')); // imza/gönderim önizleme penceresinde
   const close = () => { persist(); onClose(); };
+  const saveAndClose = () => { persist(); onClose(); };            // "Kaydet" -> Görüntüle'den e-imzalanır
+
+  const changeEmployer = () => {
+    persist();
+    onClose?.();
+    onChangeEmployer?.();
+  };
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={close}>
@@ -60,6 +63,11 @@ export default function ContractForm({ visible, initial, data, onSaveData, onClo
 
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
           <Text style={[styles.sec, styles.secFirst]}>{t('contract_employer_sec')}</Text>
+          {onChangeEmployer ? (
+            <TouchableOpacity style={styles.reselectBtn} onPress={changeEmployer} activeOpacity={0.85}>
+              <Text style={styles.reselectText}>{t('employer_reselect')}</Text>
+            </TouchableOpacity>
+          ) : null}
           <Row label={t('contract_f_title')} value={f.title} onChangeText={up('title')} placeholder="SBN TURİZM... – JUJU PREMIER PALACE OTEL" multiline />
           <Row label={t('contract_f_address')} value={f.address} onChangeText={up('address')} placeholder="BELDİBİ MAH. ... KEMER / ANTALYA" multiline />
           <Row label={t('contract_f_phone')} value={f.phone} onChangeText={up('phone')} placeholder="+90 242 ..." keyboardType="phone-pad" />
@@ -80,12 +88,10 @@ export default function ContractForm({ visible, initial, data, onSaveData, onClo
         </ScrollView>
 
         <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
-          <TouchableOpacity style={styles.previewFull} onPress={onPreview} activeOpacity={0.9}>
-            <Text style={styles.previewText}>👁 {t('contract_view')}</Text>
+          <TouchableOpacity style={[styles.previewFull, !infoOk && { opacity: 0.5 }]} onPress={saveAndClose} disabled={!infoOk} activeOpacity={0.9}>
+            <Text style={styles.previewText}>{t('esign_save')}</Text>
           </TouchableOpacity>
         </View>
-
-        <ContractPreview visible={previewOpen} data={data} contract={f} onEsign={onEsign} onClose={() => setPreviewOpen(false)} />
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -102,6 +108,11 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 32 },
   sec: { fontSize: 13, fontWeight: '800', color: '#9a7b1f', letterSpacing: 0.6, textTransform: 'uppercase', marginTop: 30, marginBottom: 14, paddingTop: 18, borderTopWidth: 1, borderTopColor: '#eceef1' },
   secFirst: { marginTop: 4, paddingTop: 0, borderTopWidth: 0 },
+  reselectBtn: {
+    alignSelf: 'flex-start', marginBottom: 14, paddingVertical: 8, paddingHorizontal: 12,
+    borderRadius: 10, backgroundColor: '#f3ecdc', borderWidth: 1, borderColor: 'rgba(194,162,90,.35)',
+  },
+  reselectText: { fontSize: 13.5, fontWeight: '800', color: '#9a7b1f' },
   field: { marginBottom: 18 },
   label: { fontSize: 13, fontWeight: '700', color: INK, marginBottom: 8 },
   input: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e6e8ec', borderRadius: 11, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: INK },

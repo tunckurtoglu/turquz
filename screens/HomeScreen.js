@@ -2,13 +2,14 @@
 // Ana sayfa: "Aday kartı" — otelin gördüğü görünümün birebir önizlemesi.
 // Üstte kimlik (vesikalık + isim/ünvan + foto sayısı), altında 3'lü foto şeridi
 // (vesikalık / boydan / yakın; dolu olana dokununca tam ekran açılır, boş olan
-// "Ekle" ile düzenlemeye götürür), en altta "CV'yi Gör" butonu.
+// "Ekle" / "⋯ Değiştir" ile fotoğraflar profilde güncellenir), en altta "CV'yi Gör" butonu.
 // Kartın altında ileriki modüller (duyuru, asistan, mülakat) "Yakında" olarak listelenir.
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, Image, ScrollView, TouchableOpacity, StyleSheet, Modal, Animated, Switch, Alert, ActivityIndicator, Pressable } from 'react-native';
 import Svg, { Path, Polyline, Line } from 'react-native-svg';
 import { LANGUAGES_SUPPORTED } from '../i18n/languages';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { WebView } from 'react-native-webview';
 import { uploadIntroVideo, getIntroVideoUrl, removeIntroVideo, INTRO_VIDEO_MAX_SEC } from '../lib/introVideo';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,11 +18,13 @@ import { nameOf } from '../i18n/languages';
 import { listDocuments } from '../lib/documents';
 import InterviewModal from '../components/InterviewModal';
 import { getInterview } from '../lib/interviews';
+import { callWindow, getCallWindowOpts } from '../lib/livekitCall';
 import { supabase } from '../lib/supabase';
 import NotificationBell from '../components/NotificationBell';
 import PhotoWatermark from '../components/PhotoWatermark';
 import { getCandidateStatus, docsUnlocked, reactivateCandidate, workInfo } from '../lib/candidate';
 import { acceptOffer, rejectOffer } from '../lib/roles';
+import { notifyOffer } from '../lib/push';
 import { candidatePendingCount } from '../lib/pipeline';
 
 // Modül satırı. onPress verilirse tıklanabilir (chevron), yoksa "Yakında" rozeti.
@@ -49,19 +52,28 @@ function ModuleRow({ icon, label, soonLabel, last, onPress, rightExtra }) {
     : <View style={[styles.modRow, !last && styles.modBorder]}>{inner}</View>;
 }
 
-// Foto şeridindeki tek kutu: dolu ise dokun=büyüt, boş ise dokun=düzenlemeye git.
-function PhotoCell({ uri, caption, addLabel, onView, onAdd }) {
+// Foto şeridi: dolu = görüntüle + ⋯ menü (değiştir); boş = yerinde ekle (CV'ye gitmez).
+function PhotoCell({ uri, caption, addLabel, busy, onView, onAdd, onMenu }) {
   return (
     <View style={styles.cell}>
       {uri ? (
-        <TouchableOpacity activeOpacity={0.85} onPress={onView} style={styles.cellBox}>
-          <Image source={{ uri }} style={styles.cellImg} resizeMode="cover" />
-          <PhotoWatermark size={26} margin={6} />
-        </TouchableOpacity>
+        <View style={styles.cellBox}>
+          <TouchableOpacity activeOpacity={0.85} onPress={onView} onLongPress={onMenu} delayLongPress={280} style={StyleSheet.absoluteFill}>
+            <Image source={{ uri }} style={styles.cellImg} resizeMode="cover" />
+            <PhotoWatermark size={26} margin={6} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.videoCellMenu} onPress={onMenu} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} activeOpacity={0.8}>
+            <Text style={styles.videoCellMenuIcon}>⋯</Text>
+          </TouchableOpacity>
+        </View>
       ) : (
-        <TouchableOpacity activeOpacity={0.7} onPress={onAdd} style={[styles.cellBox, styles.cellEmpty]}>
-          <Text style={styles.cellPlus}>＋</Text>
-          <Text style={styles.cellAdd}>{addLabel}</Text>
+        <TouchableOpacity activeOpacity={0.7} onPress={onAdd} disabled={busy} style={[styles.cellBox, styles.cellEmpty]}>
+          {busy ? <ActivityIndicator color="#c2a25a" /> : (
+            <>
+              <Text style={styles.cellPlus}>＋</Text>
+              <Text style={styles.cellAdd}>{addLabel}</Text>
+            </>
+          )}
         </TouchableOpacity>
       )}
       <Text style={styles.cellCap}>{caption}</Text>
@@ -69,29 +81,50 @@ function PhotoCell({ uri, caption, addLabel, onView, onAdd }) {
   );
 }
 
+async function optimizeHomePhoto(uri) {
+  const actions = [{ resize: { width: 800 } }];
+  try {
+    const out = await ImageManipulator.manipulateAsync(uri, actions, {
+      compress: 0.82, format: ImageManipulator.SaveFormat.WEBP, base64: true,
+    });
+    return `data:image/webp;base64,${out.base64}`;
+  } catch {
+    const out = await ImageManipulator.manipulateAsync(uri, actions, {
+      compress: 0.82, format: ImageManipulator.SaveFormat.JPEG, base64: true,
+    });
+    return `data:image/jpeg;base64,${out.base64}`;
+  }
+}
+
 // Galeride fotoğrafların yanında duran tanıtım videosu hücresi: ilk kare + ▶ rozet.
 // Dokun -> tam ekran oynat; basılı tut -> değiştir/kaldır menüsü.
 function VideoCell({ url, caption, onPlay, onMenu }) {
   return (
     <View style={styles.cell}>
-      <TouchableOpacity activeOpacity={0.85} onPress={onPlay} onLongPress={onMenu} delayLongPress={280} style={styles.cellBox}>
-        {url ? (
-          <View pointerEvents="none" style={styles.videoCellMedia}>
-            <WebView
-              source={{ html: `<html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"></head><body style="margin:0;background:#000;overflow:hidden"><video src="${url}" muted playsinline preload="metadata" style="width:100%;height:100%;object-fit:cover;background:#000"></video></body></html>` }}
-              style={styles.videoCellMedia}
-              originWhitelist={['*']}
-              allowsInlineMediaPlayback
-              scrollEnabled={false}
-            />
+      <View style={styles.cellBox}>
+        <TouchableOpacity activeOpacity={0.85} onPress={onPlay} onLongPress={onMenu} delayLongPress={280} style={StyleSheet.absoluteFill}>
+          {url ? (
+            <View pointerEvents="none" style={styles.videoCellMedia}>
+              <WebView
+                source={{ html: `<html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"></head><body style="margin:0;background:#000;overflow:hidden"><video src="${url}" muted playsinline preload="metadata" style="width:100%;height:100%;object-fit:cover;background:#000"></video></body></html>` }}
+                style={styles.videoCellMedia}
+                originWhitelist={['*']}
+                allowsInlineMediaPlayback
+                scrollEnabled={false}
+              />
+            </View>
+          ) : (
+            <View style={[styles.videoCellMedia, styles.videoCellLoading]}><ActivityIndicator color="#c2a25a" /></View>
+          )}
+          <View style={styles.videoCellOverlay} pointerEvents="none">
+            <View style={styles.videoCellBadge}><Text style={styles.videoCellPlay}>▶</Text></View>
           </View>
-        ) : (
-          <View style={[styles.videoCellMedia, styles.videoCellLoading]}><ActivityIndicator color="#c2a25a" /></View>
-        )}
-        <View style={styles.videoCellOverlay} pointerEvents="none">
-          <View style={styles.videoCellBadge}><Text style={styles.videoCellPlay}>▶</Text></View>
-        </View>
-      </TouchableOpacity>
+        </TouchableOpacity>
+        {/* Görünür yönetim düğmesi: değiştir / kaldır */}
+        <TouchableOpacity style={styles.videoCellMenu} onPress={onMenu} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} activeOpacity={0.8}>
+          <Text style={styles.videoCellMenuIcon}>⋯</Text>
+        </TouchableOpacity>
+      </View>
       <Text style={styles.cellCap}>{caption}</Text>
     </View>
   );
@@ -115,7 +148,9 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
   const [offerBusy, setOfferBusy] = useState(false);
   const [interviewOpen, setInterviewOpen] = useState(false);
   const [ivPending, setIvPending] = useState(false); // adaya gönderilmiş, henüz seçilmemiş mülakat
+  const [ivJoinable, setIvJoinable] = useState(false); // planlandı + katılım penceresi açık
   const [work, setWork] = useState({ hired: false }); // çalışma/personel durumu
+  const [photoBusy, setPhotoBusy] = useState(null); // 'photo' | 'photoClose' | 'photoFull' | null
   const blink = useRef(new Animated.Value(1)).current;
   const ivBlink = useRef(new Animated.Value(1)).current;
   const pulse = useRef(new Animated.Value(0)).current; // spotlight radar nabzı
@@ -149,7 +184,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       { text: t('consent_cancel'), style: 'cancel' },
       { text: t('offer_accept'), onPress: async () => {
           setOfferBusy(true);
-          try { await acceptOffer(); await loadStatus(); }
+          try { await acceptOffer(); notifyOffer(userId, 'offer_accepted'); await loadStatus(); }
           catch (e) { Alert.alert(t('offer_card_title'), e?.message || 'error'); }
           finally { setOfferBusy(false); }
         } },
@@ -162,7 +197,12 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       { text: t('consent_cancel'), style: 'cancel' },
       { text: t('offer_reject'), style: 'destructive', onPress: async () => {
           setOfferBusy(true);
-          try { await rejectOffer(); await loadStatus(); }
+          try {
+            const { data: st } = await supabase.from('candidate_status').select('accepted_by').eq('user_id', userId).maybeSingle();
+            await rejectOffer();
+            notifyOffer(userId, 'offer_rejected', st?.accepted_by);
+            await loadStatus();
+          }
           catch (e) { Alert.alert(t('offer_card_title'), e?.message || 'error'); }
           finally { setOfferBusy(false); }
         } },
@@ -194,10 +234,16 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     return undefined;
   }, [missingDocs, blink]);
 
-  // Bekleyen mülakat daveti var mı? (proposed = aday henüz seçmedi). Anlık dinle.
+  // Bekleyen mülakat daveti / katılım penceresi. Anlık dinle.
   const loadInterview = useCallback(async () => {
     const iv = await getInterview(userId);
     setIvPending(iv?.status === 'proposed');
+    if (iv?.status === 'scheduled' && iv.selectedSlot) {
+      const opts = await getCallWindowOpts(iv);
+      setIvJoinable(callWindow(iv.selectedSlot, opts).joinable);
+    } else {
+      setIvJoinable(false);
+    }
   }, [userId]);
   useEffect(() => { loadInterview(); }, [loadInterview]);
   useEffect(() => {
@@ -208,10 +254,15 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [userId, loadInterview]);
-
-  // Mülakat daveti bekliyorsa kutuyu sürekli yanıp söndür (dikkat çeksin).
+  // Katılım penceresi saniyede bir yenilensin.
   useEffect(() => {
-    if (ivPending) {
+    const id = setInterval(() => { loadInterview(); }, 15000);
+    return () => clearInterval(id);
+  }, [loadInterview]);
+
+  // Mülakat daveti / katıl penceresi: kutuyu yanıp söndür.
+  useEffect(() => {
+    if (ivPending || ivJoinable) {
       const loop = Animated.loop(Animated.sequence([
         Animated.timing(ivBlink, { toValue: 0.3, duration: 600, useNativeDriver: true }),
         Animated.timing(ivBlink, { toValue: 1, duration: 600, useNativeDriver: true }),
@@ -221,7 +272,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     }
     ivBlink.setValue(1);
     return undefined;
-  }, [ivPending, ivBlink]);
+  }, [ivPending, ivJoinable, ivBlink]);
 
   // Spotlight radar nabzı — sürekli (havuzda canlı olduğunuz hissi).
   useEffect(() => {
@@ -309,27 +360,59 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     const url = videoPreviewUrl || await getIntroVideoUrl(showVideo);
     if (url) setVideoPlayUrl(url);
   };
+  // Videoyu sil: storage'dan kaldır + profilden temizle (kart yeniden "Video Ekle"ye döner).
+  const doRemoveVideo = async () => {
+    try { await removeIntroVideo(savedVideo); onSaveData?.({ introVideo: '' }); } catch (e) { /* yoksay */ }
+  };
   const removeVideo = () => {
     Alert.alert(t('intro_video_label'), t('intro_video_remove_confirm'), [
       { text: t('consent_cancel'), style: 'cancel' },
-      { text: t('intro_video_remove'), style: 'destructive', onPress: async () => {
-          try { await removeIntroVideo(savedVideo); onSaveData?.({ introVideo: '' }); } catch (e) { /* yoksay */ }
-        } },
+      { text: t('intro_video_remove'), style: 'destructive', onPress: doRemoveVideo },
     ]);
   };
-  // Galerideki video hücresine basılı tutunca: değiştir / kaldır.
+  // Galerideki video hücresinin ⋯ düğmesi / basılı tut: değiştir / kaldır.
   const videoMenu = () => {
     Alert.alert(t('intro_video_label'), '', [
       { text: t('intro_video_change'), onPress: pickVideo },
-      { text: t('intro_video_remove'), style: 'destructive', onPress: removeVideo },
+      { text: t('intro_video_remove'), style: 'destructive', onPress: doRemoveVideo },
+      { text: t('consent_cancel'), style: 'cancel' },
+    ]);
+  };
+
+  const pickHomePhoto = async (field, aspect) => {
+    if (!onSaveData || photoBusy) return;
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(t('perm_needed'), t('perm_msg'));
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true, aspect, quality: 1,
+      });
+      if (res.canceled || !res.assets?.length) return;
+      setPhotoBusy(field);
+      const optimized = await optimizeHomePhoto(res.assets[0].uri);
+      onSaveData({ [field]: optimized });
+    } catch (e) {
+      Alert.alert(t('err_title'), t('err_photo'));
+    } finally {
+      setPhotoBusy(null);
+    }
+  };
+
+  const photoMenu = (field, aspect, caption) => {
+    Alert.alert(caption, '', [
+      { text: t('photo_change'), onPress: () => pickHomePhoto(field, aspect) },
       { text: t('consent_cancel'), style: 'cancel' },
     ]);
   };
 
   const cells = [
-    { uri: d.photo, caption: t('photo_cap_id') },
-    { uri: d.photoClose, caption: t('photo_cap_close') },
-    { uri: d.photoFull, caption: t('photo_cap_full') },
+    { field: 'photo', aspect: [1, 1], uri: d.photo, caption: t('photo_cap_id') },
+    { field: 'photoClose', aspect: [3, 4], uri: d.photoClose, caption: t('photo_cap_close') },
+    { field: 'photoFull', aspect: [3, 4], uri: d.photoFull, caption: t('photo_cap_full') },
   ];
   const photoCount = cells.filter((c) => c.uri).length;
 
@@ -345,7 +428,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
           <View style={styles.headerActions}>
           <NotificationBell userId={userId} color="#e7dcc4" onNavigate={(n) => {
             if (['reupload', 'document', 'accepted'].includes(n.type)) onOpenDocs?.();
-            else if (n.type === 'interview_proposed') setInterviewOpen(true);
+            else if (n.type === 'interview_proposed' || n.type === 'interview_respond_remind' || String(n.type || '').startsWith('interview_reminder') || n.type === 'interview_scheduled') setInterviewOpen(true);
             // 'offer' -> teklif kartı zaten ana sayfada
           }} />
           <TouchableOpacity onPress={() => setMenuOpen(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
@@ -451,11 +534,23 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
         <View style={styles.card}>
           {/* Kimlik satırı */}
           <View style={styles.cardHead}>
-            {d.photo ? (
-              <Image source={{ uri: d.photo }} style={styles.avatar} />
-            ) : (
-              <View style={styles.avatarPlaceholder}><Text style={styles.avatarIcon}>👤</Text></View>
-            )}
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => (d.photo
+                ? photoMenu('photo', [1, 1], t('photo_cap_id'))
+                : pickHomePhoto('photo', [1, 1]))}
+              disabled={!!photoBusy}
+            >
+              {d.photo ? (
+                <Image source={{ uri: d.photo }} style={styles.avatar} />
+              ) : (
+                <View style={styles.avatarPlaceholder}>
+                  {photoBusy === 'photo'
+                    ? <ActivityIndicator color="#c2a25a" />
+                    : <Text style={styles.avatarIcon}>👤</Text>}
+                </View>
+              )}
+            </TouchableOpacity>
             <View style={styles.cardId}>
               <Text style={[styles.name, fontsReady && styles.nameFont]} numberOfLines={2}>{fullName}</Text>
               {subtitle ? <Text style={styles.subtitle} numberOfLines={2}>{subtitle}</Text> : null}
@@ -475,14 +570,16 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                 onMenu={videoMenu}
               />
             ) : null}
-            {cells.map((c, i) => (
+            {cells.map((c) => (
               <PhotoCell
-                key={i}
+                key={c.field}
                 uri={c.uri}
                 caption={c.caption}
                 addLabel={t('photo_add')}
+                busy={photoBusy === c.field}
                 onView={() => setViewer(c.uri)}
-                onAdd={onEdit}
+                onAdd={() => pickHomePhoto(c.field, c.aspect)}
+                onMenu={() => photoMenu(c.field, c.aspect, c.caption)}
               />
             ))}
           </View>
@@ -564,6 +661,10 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
             ) : (
               <>
                 <Text style={styles.videoMotiv}>{t('intro_video_motiv')}</Text>
+                <View style={styles.videoFullbody}>
+                  <Text style={styles.videoFullbodyIcon}>🧍</Text>
+                  <Text style={styles.videoFullbodyText}>{t('intro_video_fullbody')}</Text>
+                </View>
                 <TouchableOpacity style={styles.videoCta} onPress={pickVideo} activeOpacity={0.9}>
                   <Text style={styles.videoCtaText}>{t('intro_video_add')}</Text>
                 </TouchableOpacity>
@@ -586,8 +687,8 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
           <TouchableOpacity style={styles.gridTile} onPress={() => setInterviewOpen(true)} activeOpacity={0.85}>
             <View style={styles.gridIconWrap}><Text style={styles.gridIcon}>🎥</Text></View>
             <Text style={styles.gridLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('home_interviews')}</Text>
-            {ivPending ? (
-              <Animated.View style={[styles.gridBadge, styles.gridBadgeGold, { opacity: ivBlink }]}><Text style={styles.gridBadgeText}>!</Text></Animated.View>
+            {(ivPending || ivJoinable) ? (
+              <Animated.View style={[styles.gridBadge, styles.gridBadgeGold, { opacity: ivBlink }]}><Text style={styles.gridBadgeText}>{ivJoinable ? '▶' : '!'}</Text></Animated.View>
             ) : null}
           </TouchableOpacity>
 
@@ -710,7 +811,14 @@ const styles = StyleSheet.create({
   videoSubtitle: { fontSize: 10.5, fontWeight: '800', color: '#dcc187', letterSpacing: 1.2, textTransform: 'uppercase', marginTop: 3 },
   videoOkBadge: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#e7f3ec', alignItems: 'center', justifyContent: 'center' },
   videoOkText: { color: '#1f8a4c', fontSize: 12, fontWeight: '900' },
-  videoMotiv: { fontSize: 12.5, color: '#a8b6c8', fontWeight: '500', lineHeight: 18, marginBottom: 16 },
+  videoMotiv: { fontSize: 12.5, color: '#a8b6c8', fontWeight: '500', lineHeight: 18, marginBottom: 12 },
+  videoFullbody: {
+    flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 16,
+    backgroundColor: 'rgba(194,162,90,0.13)', borderWidth: 1, borderColor: 'rgba(194,162,90,0.45)',
+    borderRadius: 12, paddingVertical: 11, paddingHorizontal: 12,
+  },
+  videoFullbodyIcon: { fontSize: 18 },
+  videoFullbodyText: { flex: 1, color: '#e7cf93', fontWeight: '800', fontSize: 12.5, lineHeight: 17 },
   videoCta: { backgroundColor: '#c2a25a', borderRadius: 14, paddingVertical: 14, alignItems: 'center', shadowColor: '#a8842f', shadowOpacity: 0.4, shadowRadius: 10, shadowOffset: { width: 0, height: 5 }, elevation: 4 },
   videoCtaText: { color: '#16202e', fontWeight: '800', fontSize: 15 },
   videoActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -835,6 +943,11 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   videoCellPlay: { color: '#fff', fontSize: 13, marginLeft: 2 },
+  videoCellMenu: {
+    position: 'absolute', top: 4, right: 4, width: 24, height: 24, borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center', zIndex: 2,
+  },
+  videoCellMenuIcon: { color: '#fff', fontSize: 16, fontWeight: '900', marginTop: -4 },
 
   cvBtn: { marginTop: 16, backgroundColor: '#c2a25a', borderRadius: 12, paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
   cvBtnText: { color: '#1b2533', fontSize: 15, fontWeight: '800' },

@@ -1,0 +1,15 @@
+{
+  "name": "turquz-pdf-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CV HTML -> A4 PDF. Gerçek Chrome (Puppeteer) ile render eder; üçüncü taraf yok.",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "puppeteer": "^23.11.1"
+  }
+}

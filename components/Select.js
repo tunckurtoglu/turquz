@@ -20,7 +20,12 @@ export function Select({ label, value, options = [], onChange, placeholder, disa
     <View style={[styles.field, disabled && styles.fieldDisabled]}>
       {label ? <Text style={[styles.label, disabled && styles.labelDisabled]}>{label}</Text> : null}
       <TouchableOpacity style={[styles.control, disabled && styles.controlDisabled]} onPress={() => !disabled && setOpen(true)} activeOpacity={disabled ? 1 : 0.7} disabled={disabled}>
-        <Text style={[styles.controlText, !selected && styles.placeholder, disabled && styles.textDisabled]} numberOfLines={1}>
+        <Text
+          style={[styles.controlText, !selected && styles.placeholder, disabled && styles.textDisabled]}
+          numberOfLines={2}
+          adjustsFontSizeToFit
+          minimumFontScale={0.82}
+        >
           {selected ? selected.label : ph}
         </Text>
         <Text style={[styles.chev, disabled && styles.textDisabled]}>▾</Text>
@@ -30,8 +35,8 @@ export function Select({ label, value, options = [], onChange, placeholder, disa
         <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={() => setOpen(false)} />
         <View style={styles.sheet}>
           <View style={styles.sheetHead}>
-            <Text style={styles.sheetTitle}>{label || ph}</Text>
-            <TouchableOpacity onPress={() => setOpen(false)}>
+            <Text style={styles.sheetTitle} numberOfLines={2}>{label || ph}</Text>
+            <TouchableOpacity onPress={() => setOpen(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Text style={styles.action}>{t('close')}</Text>
             </TouchableOpacity>
           </View>
@@ -46,7 +51,7 @@ export function Select({ label, value, options = [], onChange, placeholder, disa
                   style={styles.option}
                   onPress={() => { onChange(item.value); setOpen(false); }}
                 >
-                  <Text style={[styles.optionText, active && styles.optionTextActive]}>{item.label}</Text>
+                  <Text style={[styles.optionText, active && styles.optionTextActive]} numberOfLines={3}>{item.label}</Text>
                   {active ? <Text style={styles.check}>✓</Text> : null}
                 </TouchableOpacity>
               );
@@ -111,7 +116,7 @@ export function MultiSelect({ label, values = [], options = [], onChange, placeh
                   <View style={[styles.box, active && styles.boxActive]}>
                     {active ? <Text style={styles.boxCheck}>✓</Text> : null}
                   </View>
-                  <Text style={[styles.optionText, styles.optionTextMulti, active && styles.optionTextActive, disabled && styles.optionTextDisabled]}>
+                  <Text style={[styles.optionText, styles.optionTextMulti, active && styles.optionTextActive, disabled && styles.optionTextDisabled]} numberOfLines={3}>
                     {item.label}
                   </Text>
                 </TouchableOpacity>
@@ -148,9 +153,10 @@ const styles = StyleSheet.create({
   sheetHead: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#eef0f2',
+    gap: 12,
   },
-  sheetTitle: { fontSize: 16, fontWeight: '800', color: '#1b2533' },
-  action: { fontSize: 15, fontWeight: '700', color: '#c2a25a' },
+  sheetTitle: { flex: 1, fontSize: 16, fontWeight: '800', color: '#1b2533' },
+  action: { fontSize: 15, fontWeight: '700', color: '#c2a25a', flexShrink: 0 },
 
   option: {
     flexDirection: 'row', alignItems: 'center',

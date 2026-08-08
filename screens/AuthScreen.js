@@ -1,7 +1,7 @@
 // screens/AuthScreen.js
 // Giriş / Kayıt ekranı (8 dilli, RTL uyumlu).
 // - E-posta + şifre ile giriş ve kayıt (kayıtta şifre iki kez + eşleşme kontrolü)
-// - Şifremi unuttum (e-postaya sıfırlama linki)
+// - Şifremi unuttum → e-posta linki turquz://reset-password (App.js recovery ekranı)
 // - Google / Apple butonları (Aşama 2'de OAuth bağlanacak; şimdilik "yakında")
 import React, { useState } from 'react';
 import {
@@ -13,6 +13,7 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view
 import { useLanguage } from '../i18n/LanguageContext';
 import { signInWithEmail, signUpWithEmail, sendPasswordReset, signOut } from '../lib/auth';
 import { getRole } from '../lib/roles';
+import { registerAsAgency, registerAsCandidate } from '../lib/agencyProfile';
 import { GoogleIcon, AppleIcon } from '../components/BrandIcons';
 import { openPrivacy } from '../lib/config';
 
@@ -21,6 +22,15 @@ const NAVY = '#1b2533';
 const CARD = '#243042';
 
 const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || '').trim());
+
+function PrivacyNote({ prefixKey, t, rtl }) {
+  return (
+    <Text style={[styles.privacyNote, rtl && styles.privacyNoteRtl]}>
+      {t(prefixKey)}{' '}
+      <Text style={styles.privacyLink} onPress={openPrivacy}>{t('privacy_link')} ↗</Text>
+    </Text>
+  );
+}
 
 export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fontsReady }) {
   const { t, dir } = useLanguage();
@@ -33,7 +43,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   const [msg, setMsg] = useState(null);           // { type:'err'|'ok', text }
   const [showReset, setShowReset] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
-  // Acente/otel portalları: sadece giriş (kayıt + OAuth gizli). Portal seçimi dışarıdan gelir.
+  // Acente: kayıt + OAuth UI açık. OAuth native bağlanınca soon kalkacak.
   const agencyMode = portal === 'agency';
 
   const rtl = dir === 'rtl';
@@ -43,6 +53,53 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   const passMismatch = mode === 'signup' && pass2.length > 0 && pass !== pass2;
 
   const clearMsg = () => setMsg(null);
+
+  const finishAgencySession = async (session) => {
+    try {
+      await registerAsAgency();
+    } catch (e) {
+      const code = e?.message || '';
+      if (code.includes('already_candidate')) {
+        await signOut();
+        setMsg({ type: 'err', text: t('auth_err_agency_already_candidate') });
+        return false;
+      }
+      console.warn('register_as_agency:', code);
+    }
+    const role = await getRole(session.user.id);
+    if (role !== 'agency' && role !== 'admin') {
+      await signOut();
+      setMsg({ type: 'err', text: t('auth_err_not_agency') });
+      return false;
+    }
+    onAuthed?.(session);
+    return true;
+  };
+
+  const finishCandidateSession = async (session) => {
+    try {
+      await registerAsCandidate();
+    } catch (e) {
+      const code = e?.message || '';
+      if (code.includes('already_agency')) {
+        await signOut();
+        setMsg({ type: 'err', text: t('auth_err_not_candidate') });
+        return false;
+      }
+      console.warn('register_as_candidate:', code);
+    }
+    const role = await getRole(session.user.id);
+    const ok = role === 'admin'
+      || (portal === 'hotel' && (role === 'hotel' || role === 'agency'))
+      || (portal === 'candidate' && role === 'candidate');
+    if (!ok) {
+      await signOut();
+      setMsg({ type: 'err', text: t('auth_err_not_candidate') });
+      return false;
+    }
+    onAuthed?.(session);
+    return true;
+  };
 
   // --- E-posta ile giriş / kayıt ---
   const submit = async () => {
@@ -54,28 +111,25 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
     setBusy(true);
     try {
       if (mode === 'signup') {
-        const { data, error } = await signUpWithEmail(email, pass);
+        const { data, error } = await signUpWithEmail(email, pass, {
+          portal: agencyMode ? 'agency' : 'candidate',
+        });
         if (error) { setMsg({ type: 'err', text: error.message }); return; }
-        // Confirm-email kapalıysa session döner -> direkt giriş.
-        if (data?.session) { onAuthed?.(data.session); return; }
-        // Confirm-email açıksa onay maili gider.
+        if (data?.session) {
+          if (agencyMode) await finishAgencySession(data.session);
+          else await finishCandidateSession(data.session);
+          return;
+        }
         setMsg({ type: 'ok', text: t('auth_check_email') });
       } else {
         const { data, error } = await signInWithEmail(email, pass);
         if (error) { setMsg({ type: 'err', text: error.message }); return; }
         if (data?.session) {
-          // Portal-rol eşleşmesi: aday girişine yalnız aday, acente/otel girişine yalnız acente/otel/admin.
-          const role = await getRole(data.session.user.id);
-          const ok = role === 'admin'
-            || (portal === 'agency' && role === 'agency')
-            || (portal === 'hotel' && (role === 'hotel' || role === 'agency'))
-            || (portal === 'candidate' && role === 'candidate');
-          if (!ok) {
-            await signOut();
-            setMsg({ type: 'err', text: t(portal === 'candidate' ? 'auth_err_not_candidate' : 'auth_err_not_agency') });
+          if (agencyMode) {
+            await finishAgencySession(data.session);
             return;
           }
-          onAuthed?.(data.session);
+          await finishCandidateSession(data.session);
         }
       }
     } catch (e) {
@@ -103,6 +157,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   };
 
   // --- Google / Apple (Aşama 2) ---
+  // OAuth bağlanınca options.data.portal = agency|candidate zorunlu; register_as_* ile kilitlenecek.
   const soon = () => Alert.alert('Turquz', t('auth_soon'));
 
   return (
@@ -125,9 +180,9 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
         <Image source={require('../assets/turquz-logo.png')} style={styles.logo} resizeMode="contain" />
         <View style={styles.titleRule} />
         <Text style={[styles.title, styles.titleCenter, fontsReady && styles.titleFont]}>{agencyMode ? t('auth_agency_login') : t('portal_candidate')}</Text>
+        <Text style={[styles.subtitle, ta]}>{agencyMode ? t('auth_subtitle_agency') : t('auth_subtitle')}</Text>
 
-        {/* Sekme: Giriş / Kayıt (acente modunda gizli) */}
-        {!agencyMode && (
+        {/* Sekme: Giriş / Kayıt */}
         <View style={styles.tabs}>
           <TouchableOpacity
             style={[styles.tab, mode === 'signin' && styles.tabActive]}
@@ -142,7 +197,6 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
             <Text style={[styles.tabText, mode === 'signup' && styles.tabTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('auth_tab_signup')}</Text>
           </TouchableOpacity>
         </View>
-        )}
 
         {/* E-posta */}
         <Text style={[styles.label, ta]}>{t('auth_email')}</Text>
@@ -150,11 +204,13 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
           style={[styles.input, ta]}
           value={email}
           onChangeText={(v) => { setEmail(v); clearMsg(); }}
-          placeholder="ornek@email.com"
+          placeholder={t('auth_email_ph')}
           placeholderTextColor="#7d8794"
           keyboardType="email-address"
           autoCapitalize="none"
           autoCorrect={false}
+          textContentType="emailAddress"
+          autoComplete="email"
         />
 
         {/* Şifre */}
@@ -211,22 +267,18 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
           )}
         </TouchableOpacity>
 
-        {/* Gizlilik / KVKK linki (kayıt modunda) */}
+        {/* KVKK (e-posta kaydı) */}
         {mode === 'signup' && (
-          <Text style={styles.privacyNote}>
-            <Text style={styles.privacyLink} onPress={openPrivacy}>{t('privacy_link')} ↗</Text>
-          </Text>
+          <PrivacyNote prefixKey="auth_privacy_signup_before" t={t} rtl={rtl} />
         )}
 
-        {!agencyMode && (<>
-        {/* Ayraç */}
+        {/* Ayraç + Google / Apple (OAuth native bağlanınca aktif) */}
         <View style={styles.divider}>
           <View style={styles.line} />
           <Text style={styles.or}>{t('auth_or')}</Text>
           <View style={styles.line} />
         </View>
 
-        {/* Google / Apple */}
         <TouchableOpacity style={styles.oauth} onPress={soon} activeOpacity={0.85}>
           <View style={styles.oauthInner}>
             <GoogleIcon size={20} />
@@ -241,7 +293,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
             </View>
           </TouchableOpacity>
         )}
-        </>)}
+        <PrivacyNote prefixKey="auth_privacy_oauth_before" t={t} rtl={rtl} />
       </KeyboardAwareScrollView>
 
       {/* Şifre sıfırlama paneli */}
@@ -254,11 +306,13 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
               style={[styles.input, ta, { marginTop: 14 }]}
               value={resetEmail}
               onChangeText={setResetEmail}
-              placeholder="ornek@email.com"
+              placeholder={t('auth_email_ph')}
               placeholderTextColor="#7d8794"
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
+              textContentType="emailAddress"
+              autoComplete="email"
             />
             {msg && showReset ? (
               <Text style={[msg.type === 'err' ? styles.warn : styles.ok, ta, { marginTop: 8 }]}>{msg.text}</Text>
@@ -286,7 +340,8 @@ const styles = StyleSheet.create({
   titleRule: { width: 44, height: 2, borderRadius: 1, backgroundColor: GOLD, alignSelf: 'center', marginBottom: 10, opacity: 0.85 },
   title: { color: '#fff', fontSize: 22, fontWeight: '700', marginTop: 2, letterSpacing: 0.3 },
   titleFont: { fontFamily: 'PlayfairDisplay_700Bold', fontWeight: '400' },
-  titleCenter: { textAlign: 'center', marginBottom: 16 },
+  titleCenter: { textAlign: 'center', marginBottom: 6 },
+  subtitle: { color: '#9aa4b1', fontSize: 14, lineHeight: 20, textAlign: 'center', marginBottom: 16, paddingHorizontal: 4 },
 
   tabs: { flexDirection: 'row', backgroundColor: CARD, borderRadius: 12, padding: 4, marginBottom: 18 },
   tab: { flex: 1, paddingVertical: 11, borderRadius: 9, alignItems: 'center' },
@@ -307,7 +362,8 @@ const styles = StyleSheet.create({
   ctaDisabled: { opacity: 0.6 },
   ctaText: { color: NAVY, fontSize: 16, fontWeight: '800' },
 
-  privacyNote: { color: '#9aa4b1', fontSize: 12, textAlign: 'center', marginTop: 14, lineHeight: 17 },
+  privacyNote: { color: '#9aa4b1', fontSize: 12, textAlign: 'center', marginTop: 14, lineHeight: 17, paddingHorizontal: 4 },
+  privacyNoteRtl: { writingDirection: 'rtl' },
   privacyLink: { color: GOLD, fontWeight: '700' },
 
   divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 20 },

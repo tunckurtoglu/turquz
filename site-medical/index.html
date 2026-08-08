@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/brand/favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#16202e" />
+
+    <title>Turquz Sağlık — Diş ve Göz Bilgilendirme</title>
+    <meta name="description" content="Turquz Sağlık: diş ve göz konularında bilgilendirme ve klinik iletişimi. Tedavi kliniklerde yürür; Turquz bir klinik değildir." />
+
+    <meta property="og:title" content="Turquz Sağlık — Diş ve Göz Bilgilendirme" />
+    <meta property="og:description" content="Diş ve göz için bilgi alın, sorularınızı iletin; sizi ilgili klinik ekibiyle buluşturalım." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/brand/icon.png" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;0,800;1,500&family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      #tq-hero-vid {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        width: 100%;
+        height: 92svh;
+        object-fit: cover;
+        object-position: center;
+        z-index: 0;
+        pointer-events: none !important;
+        display: none;
+        /* Play butonu görünmesin: oynamadan önce tamamen gizle */
+        opacity: 0 !important;
+        visibility: hidden !important;
+        background: transparent;
+      }
+      /* Safari play / controls — hepsini kapat */
+      #tq-hero-vid::-webkit-media-controls,
+      #tq-hero-vid::-webkit-media-controls-enclosure,
+      #tq-hero-vid::-webkit-media-controls-panel,
+      #tq-hero-vid::-webkit-media-controls-overlay-play-button,
+      #tq-hero-vid::-webkit-media-controls-start-playback-button,
+      #tq-hero-vid::-webkit-media-controls-play-button {
+        display: none !important;
+        opacity: 0 !important;
+        width: 0 !important;
+        height: 0 !important;
+        -webkit-appearance: none !important;
+        appearance: none !important;
+        pointer-events: none !important;
+      }
+      body.tq-hero-video-on #tq-hero-vid { display: block; }
+      /* Yalnızca gerçekten oynarken göster */
+      body.tq-hero-playing #tq-hero-vid {
+        opacity: 1 !important;
+        visibility: visible !important;
+      }
+      body.tq-hero-video-on #root { position: relative; z-index: 1; }
+    </style>
+  </head>
+  <body>
+    <video
+      id="tq-hero-vid"
+      muted
+      autoplay
+      loop
+      playsinline
+      webkit-playsinline
+      preload="auto"
+      src="/hero/hero.mp4"
+    ></video>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

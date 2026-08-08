@@ -22,7 +22,8 @@ const CORS = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 
-const PROMPT = `You are verifying a passport image submitted for a job application.
+const PROMPT = `You are verifying a passport document (photo scan or PDF) submitted for a job application.
+The file may be a JPEG/PNG photo of the passport data page OR a PDF scan of that page.
 Read the document carefully and return ONLY a JSON object with EXACTLY this shape:
 {
   "isPassport": boolean,        // true only if this is a passport data/photo page (with MRZ)
@@ -32,13 +33,19 @@ Read the document carefully and return ONLY a JSON object with EXACTLY this shap
   "surname": string|null,       // surname in LATIN letters (from MRZ/visual)
   "givenNames": string|null,    // given names in LATIN letters
   "birthDate": string|null,     // date of birth "YYYY-MM-DD"
-  "placeOfBirth": string|null,  // place of birth if printed (visual zone), else null
+  "placeOfBirth": string|null,  // ONLY "Place of birth" / "Doğum yeri" field (city or city+country). NOT place of issue, NOT address, NOT nationality alone.
+  "placeOfIssue": string|null,  // issuing authority / place of issue if printed — never copy into placeOfBirth
   "nationality": string|null,   // nationality / country (latin), else null
   "sex": string|null,           // "M" or "F" if legible, else null
   "mrz": string|null,           // machine-readable zone lines exactly as seen, else null
   "confidence": number          // 0..1 overall extraction confidence
 }
-Return only the JSON, no extra text.`;
+Return only the JSON, no extra text.
+
+Rules for placeOfBirth:
+- Read ONLY the visual field labeled "Place of birth", "Doğum yeri", or equivalent.
+- NEVER use: place of issue, issuing authority, holder address, residence, registration address, or nationality alone.
+- If the place of birth field is missing or illegible, set placeOfBirth to null (do not guess from other fields).`;
 
 type Parsed = {
   isPassport?: boolean;
@@ -49,6 +56,7 @@ type Parsed = {
   givenNames?: string | null;
   birthDate?: string | null;
   placeOfBirth?: string | null;
+  placeOfIssue?: string | null;
   nationality?: string | null;
   sex?: string | null;
   mrz?: string | null;
@@ -75,6 +83,26 @@ function decide(p: Parsed): { status: string; expiryDate: string | null; note: s
     return { status: 'review', expiryDate: p.expiryDate, note: 'low_confidence' };
   }
   return { status: 'valid', expiryDate: p.expiryDate, note: null };
+}
+
+function norm(s: string | null | undefined): string {
+  return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+// AI bazen ikamet adresini veya veriliş yerini doğum yeri sanıyor — süz.
+function sanitizePlaceOfBirth(
+  placeOfBirth: string | null | undefined,
+  profile: { location?: string; nationality?: string } | null,
+): string | null {
+  const pob = String(placeOfBirth || '').trim();
+  if (!pob) return null;
+  const pobN = norm(pob);
+  const locN = norm(profile?.location);
+  const natN = norm(profile?.nationality);
+  if (locN && pobN === locN) return null;
+  if (locN && locN.length > 8 && pobN.length > 8 && (locN.includes(pobN) || pobN.includes(locN))) return null;
+  if (natN && pobN === natN) return null;
+  return pob;
 }
 
 Deno.serve(async (req) => {
@@ -111,12 +139,16 @@ Deno.serve(async (req) => {
 
     const base64 = encodeBase64(new Uint8Array(await file.arrayBuffer()));
     const mimeType = docRow.mime_type ?? 'image/jpeg';
+    if (!/^image\/(jpeg|png|webp)|application\/pdf$/.test(mimeType)) {
+      return json({ error: 'unsupported_mime' }, 400);
+    }
 
     // 3) Gemini çağrısı — YÜKSEK HACİM için dayanıklı:
     //    her model için 2 deneme (jitter'lı backoff); model yoğun/yoksa SIRADAKİ yedek modele düş.
     const payload = JSON.stringify({
       contents: [{ parts: [{ text: PROMPT }, { inline_data: { mime_type: mimeType, data: base64 } }] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0 },
+      // thinkingBudget: 0 -> 2.5-flash "düşünme" modunu kapatır; OCR çok daha HIZLI biter.
+      generationConfig: { responseMimeType: 'application/json', temperature: 0, thinkingConfig: { thinkingBudget: 0 } },
     });
     const MODELS = [...new Set([model, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest'])];
     const RETRY = new Set([429, 500, 502, 503, 504]);
@@ -169,17 +201,20 @@ Deno.serve(async (req) => {
       .eq('kind', kind);
 
     // Çıkarılan alanlar (yalnız geçerli/incelemede): formu otomatik doldurmak için.
-    const fields = (result.status === 'valid' || result.status === 'review')
-      ? {
-          passportNumber: parsed.passportNumber ?? null,
-          surname: parsed.surname ?? null,
-          givenNames: parsed.givenNames ?? null,
-          birthDate: parsed.birthDate ?? null,
-          placeOfBirth: parsed.placeOfBirth ?? null,
-          nationality: parsed.nationality ?? null,
-          sex: parsed.sex ?? null,
-        }
-      : null;
+    let fields: Record<string, string | null> | null = null;
+    if (result.status === 'valid' || result.status === 'review') {
+      const { data: prof } = await admin.from('profiles').select('data').eq('user_id', user.id).maybeSingle();
+      const pdata = (prof?.data ?? {}) as { location?: string; nationality?: string };
+      fields = {
+        passportNumber: parsed.passportNumber ?? null,
+        surname: parsed.surname ?? null,
+        givenNames: parsed.givenNames ?? null,
+        birthDate: parsed.birthDate ?? null,
+        placeOfBirth: sanitizePlaceOfBirth(parsed.placeOfBirth, pdata),
+        nationality: parsed.nationality ?? null,
+        sex: parsed.sex ?? null,
+      };
+    }
 
     return json({ status: result.status, expiryDate: result.expiryDate, note: result.note, fields }, 200);
   } catch (e) {

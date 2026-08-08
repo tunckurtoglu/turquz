@@ -11,28 +11,45 @@ import { maskCandidate } from '../lib/candidateCode';
 import { withLatinName } from '../lib/translit';
 import { useLanguage } from '../i18n/LanguageContext';
 
-export default function CVPreview({ data, langOverride, masked = false, candidateNo }) {
+// Fotoğraf base64'lerini key'e koyma — çok uzun key RN'de güvenilir değil.
+function cvContentFingerprint(d = {}, lang = '') {
+  return [
+    lang,
+    String(d.title ?? ''),
+    String(d.profile || '').slice(0, 120),
+    JSON.stringify(d.positions || []),
+    JSON.stringify(d.skills || []),
+    JSON.stringify(d.experience || []),
+    JSON.stringify(d.education || []),
+    JSON.stringify(d.certificates || []),
+    d.photo ? '1' : '0',
+    d.photoClose ? '1' : '0',
+    d.photoFull ? '1' : '0',
+  ].join('\u001f');
+}
+
+export default function CVPreview({ data, langOverride, masked = false, candidateNo, contentKey }) {
   const { lang, t } = useLanguage();
   const activeLang = langOverride || lang;
   const [busy, setBusy] = useState(false);
 
-  // Tanıtım videosu CV'ye GÖMÜLMEZ; galeri bölümünde oynatılır (aday ana ekran + acente paneli).
-  // EKRAN: acente görünümünde isim -> aday no, iletişim/aile bulanık.
   const screenData = useMemo(() => (masked ? maskCandidate(data || {}, candidateNo) : withLatinName(data || {})), [data, masked, candidateNo]);
   const htmlScreen = useMemo(() => buildCvHtml(screenData, activeLang, { withLogo: true, masked }), [screenData, activeLang, masked]);
 
-  // PDF (otele verilecek): acente modunda gerçek İSİM görünür; iletişim/aile yine bulanık; Aday No adres altında.
   const htmlPdf = useMemo(() => {
     if (!masked) return htmlScreen;
     return buildCvHtml(maskCandidate(data || {}, candidateNo, { revealName: true }), activeLang, { withLogo: true, masked: true });
   }, [data, candidateNo, masked, activeLang, htmlScreen]);
 
-  // PDF üret + paylaş/kaydet menüsü
+  // RN WebView source.html değişince çoğu zaman yenilenmez; içerik anahtarı ile remount.
+  // contentKey: parent (override) bilgisini doğrudan geçirir — title-only değişimde kaçmasın.
+  const webKey = contentKey || cvContentFingerprint(screenData, activeLang);
+
   const downloadPdf = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const { uri } = await Print.printToFileAsync({ html: htmlPdf, base64: false });
+      const { uri } = await Print.printToFileAsync({ html: htmlPdf, base64: false, width: 595, height: 842 });
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
         await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Turquz CV', UTI: 'com.adobe.pdf' });
@@ -50,7 +67,7 @@ export default function CVPreview({ data, langOverride, masked = false, candidat
     <View style={styles.wrap}>
       <View style={styles.frame}>
         <WebView
-          key={activeLang}
+          key={webKey}
           originWhitelist={['*']}
           source={{ html: htmlScreen }}
           scrollEnabled

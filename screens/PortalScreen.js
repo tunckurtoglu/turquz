@@ -6,7 +6,7 @@ import { View, Text, Image, TouchableOpacity, StyleSheet, ScrollView } from 'rea
 import Svg, { Path, Circle, Rect, Line } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
-
+import { HOTEL_PORTAL_ENABLED } from '../lib/features';
 const GOLD = '#c2a25a';
 const TEAL = '#2a9db8';
 const NAVY = '#1b2533';
@@ -108,15 +108,17 @@ export default function PortalScreen({ onSelect, fontsReady }) {
           desc={t('portal_agency_desc')}
           onPress={() => onSelect('agency')}
         />
-        <PortalButton
-          Icon={BedIcon}
-          accent="#8a93a0"
-          label={t('portal_hotel')}
-          desc={t('portal_hotel_desc')}
-          disabled
-          soonLabel={t('soon')}
-          onPress={() => {}}
-        />
+        {HOTEL_PORTAL_ENABLED ? (
+          <PortalButton
+            Icon={BedIcon}
+            accent="#8a93a0"
+            label={t('portal_hotel')}
+            desc={t('portal_hotel_desc')}
+            disabled
+            soonLabel={t('soon')}
+            onPress={() => {}}
+          />
+        ) : null}
       </ScrollView>
     </View>
   );

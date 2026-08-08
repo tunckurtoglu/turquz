@@ -1,9 +1,5 @@
 // supabase/functions/livekit-token/index.ts
 // Mülakat görüntülü görüşmesi için LiveKit erişim token'ı üretir.
-// Yalnızca o mülakatın İKİ tarafı (aday + mülakatı kuran acente) odaya girebilir.
-// Oda adı: "iv-<candidateUserId>". Çağrı: invoke('livekit-token', { body: { candidateUserId } })
-// Gereken ENV (Supabase > Edge Functions > Secrets):
-//   LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL  (wss://...)
 // Deploy: supabase functions deploy livekit-token
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { AccessToken } from 'https://esm.sh/livekit-server-sdk@2.9.7';
@@ -14,6 +10,23 @@ const CORS = {
 };
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
+
+const REJOIN_GRACE_MS = 120_000;
+
+function slotMs(iso: string): number {
+  if (!iso) return NaN;
+  const old = /^(\d{2})\.(\d{2})\.(\d{4})[ ](\d{2}):(\d{2})/.exec(String(iso));
+  const dt = old
+    ? new Date(Number(old[3]), Number(old[2]) - 1, Number(old[1]), Number(old[4]), Number(old[5]))
+    : new Date(iso);
+  return dt.getTime();
+}
+
+function minutesForPeerCount(n: number) {
+  if (n >= 3) return 25;
+  if (n === 2) return 20;
+  return 10;
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
@@ -37,10 +50,11 @@ Deno.serve(async (req) => {
     let room: string;
     let role: string;
     let minutes = 10;
+    let extraSecs = 0;
+    let endsAt: number | null = null;
 
     if (groupId) {
-      // GRUP mülakatı: sahip (acente) veya davetli aday girebilir.
-      const { data: g } = await admin.from('interview_groups').select('created_by, status').eq('id', groupId).maybeSingle();
+      const { data: g } = await admin.from('interview_groups').select('created_by, status, slot').eq('id', groupId).maybeSingle();
       if (!g) return json({ error: 'no_group' }, 404);
       if (g.status !== 'scheduled') return json({ error: 'not_scheduled' }, 409);
       const isOwner = user.id === g.created_by;
@@ -53,12 +67,19 @@ Deno.serve(async (req) => {
       if (!isOwner && !isMember) return json({ error: 'forbidden' }, 403);
       room = `grp-${groupId}`;
       role = isOwner ? 'agency' : 'candidate';
+      minutes = 24;
+      const base = slotMs(g.slot);
+      if (Number.isFinite(base)) {
+        endsAt = base + minutes * 60_000;
+        const now = Date.now();
+        if (now > endsAt + REJOIN_GRACE_MS) return json({ error: 'call_ended' }, 409);
+        if (now < base) return json({ error: 'too_early' }, 409);
+      }
     } else {
       if (!candidateUserId) return json({ error: 'bad_request' }, 400);
-      // Birleşik mülakat: oda (acente + seçilen slot)'a bağlı; aynı slotu seçen 1-3 aday aynı odada.
       const { data: iv } = await admin
         .from('interviews')
-        .select('user_id, created_by, status, selected_slot')
+        .select('*')
         .eq('user_id', candidateUserId)
         .maybeSingle();
       if (!iv) return json({ error: 'no_interview' }, 404);
@@ -69,23 +90,43 @@ Deno.serve(async (req) => {
       room = `iv-${iv.created_by}-${slotKey}`;
       role = user.id === iv.user_id ? 'candidate' : 'agency';
 
-      // Süre: aynı acente+slot için seçen aday sayısına göre (1->10, 2->20, 3->25 dk).
       const { count } = await admin
         .from('interviews')
         .select('user_id', { count: 'exact', head: true })
         .eq('created_by', iv.created_by)
         .eq('status', 'scheduled')
         .eq('selected_slot', iv.selected_slot);
-      const n = count || 1;
-      minutes = n >= 3 ? 25 : n === 2 ? 20 : 10;
+      minutes = minutesForPeerCount(count || 1);
+      extraSecs = Number(iv.call_extra_secs) || 0;
+
+      const base = slotMs(iv.selected_slot);
+      if (!Number.isFinite(base)) return json({ error: 'bad_slot' }, 400);
+      endsAt = base + minutes * 60_000 + extraSecs * 1000;
+      const now = Date.now();
+      if (now > endsAt + REJOIN_GRACE_MS) return json({ error: 'call_ended' }, 409);
+      if (now < base) return json({ error: 'too_early' }, 409);
     }
 
-    // metadata: çevirmen ajan her katılımcının dilini buradan okur.
-    const at = new AccessToken(lkKey, lkSecret, { identity: user.id, name: role, ttl: '40m', metadata: JSON.stringify({ lang: lang || 'en', role }) });
-    at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true });
+    // Token: görüşme + birkaç uzatma + reconnect payı.
+    const ttlMin = Math.max(45, minutes + Math.ceil(extraSecs / 60) + 30);
+    const at = new AccessToken(lkKey, lkSecret, {
+      identity: user.id,
+      name: role,
+      ttl: `${ttlMin}m`,
+      metadata: JSON.stringify({ lang: lang || 'en', role }),
+    });
+    at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: true });
     const token = await at.toJwt();
 
-    return json({ token, url: lkUrl, room, role, minutes });
+    return json({
+      token,
+      url: lkUrl,
+      room,
+      role,
+      minutes,
+      extraSecs,
+      endsAt: endsAt ? new Date(endsAt).toISOString() : null,
+    });
   } catch (e) {
     return json({ error: String((e as Error)?.message || e) }, 500);
   }

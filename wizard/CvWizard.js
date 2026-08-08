@@ -3,7 +3,7 @@
 // startStep: hangi adımdan açılacağı (0-6 form, 7 = önizleme).
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Modal,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Modal, Dimensions,
 } from 'react-native';
 import { useLanguage } from '../i18n/LanguageContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,6 +29,17 @@ const STEPS = [
 ];
 
 const TOTAL = STEPS.length + 1; // +1 = Önizleme
+const PREVIEW_MIN_H = Math.round(Dimensions.get('window').height * 0.52);
+
+function NavBtn({ style, textStyle, label, onPress, disabled, primary }) {
+  return (
+    <TouchableOpacity style={[styles.btn, primary ? styles.btnPrimary : styles.btnGhost, disabled && styles.btnDisabled, style]} onPress={onPress} disabled={disabled} activeOpacity={0.85}>
+      <Text style={[primary ? styles.btnPrimaryText : styles.btnGhostText, textStyle]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.72}>
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
 
 export default function CvWizard({ onExit, onFinish, onEdit, data: extData, onChange, startStep = 0, previewOnly = false }) {
   const { t, dir } = useLanguage();
@@ -87,6 +98,27 @@ export default function CvWizard({ onExit, onFinish, onEdit, data: extData, onCh
   const rowDir = dir === 'rtl' ? 'row-reverse' : 'row';
   const align = dir === 'rtl' ? 'right' : 'left';
 
+  const renderNavFooter = () => (
+    <View style={[styles.footerInline, { flexDirection: rowDir }]}>
+      {effPreviewOnly ? (
+        <>
+          <NavBtn label={t('back')} onPress={goPrev} />
+          <NavBtn primary label={t('home_edit_short')} onPress={() => { setEditingFromPreview(true); setStep(0); }} />
+        </>
+      ) : (
+        <>
+          <NavBtn label={t('back')} onPress={goPrev} />
+          <NavBtn
+            primary
+            label={isPreview ? t('save') : (step === STEPS.length - 1 ? t('preview') : t('next'))}
+            onPress={goNext}
+            disabled={nextBlocked}
+          />
+        </>
+      )}
+    </View>
+  );
+
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.flex}>
@@ -102,46 +134,23 @@ export default function CvWizard({ onExit, onFinish, onEdit, data: extData, onCh
           </View>
         </View>
 
-        {isPreview ? (
-          <View style={styles.flex}>
-            <CVPreview data={data} />
-          </View>
-        ) : (
-          <ScrollView
-            ref={scrollRef}
-            style={styles.flex}
-            contentContainerStyle={styles.content}
-            keyboardShouldPersistTaps="handled"
-            onScroll={onScroll}
-            scrollEventThrottle={16}
-          >
-            <Current data={data} update={update} />
-          </ScrollView>
-        )}
-
-        <View style={[styles.footer, { flexDirection: rowDir, paddingBottom: insets.bottom + 12 }]}>
-          {effPreviewOnly ? (
-            <>
-              <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={goPrev}>
-                <Text style={styles.btnGhostText}>{t('back')}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={() => { setEditingFromPreview(true); setStep(0); }}>
-                <Text style={styles.btnPrimaryText}>{t('home_edit_short')}</Text>
-              </TouchableOpacity>
-            </>
+        <ScrollView
+          ref={scrollRef}
+          style={styles.flex}
+          contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+          keyboardShouldPersistTaps="handled"
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+        >
+          {isPreview ? (
+            <View style={[styles.previewBox, { height: PREVIEW_MIN_H }]}>
+              <CVPreview data={data} />
+            </View>
           ) : (
-            <>
-              <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={goPrev}>
-                <Text style={styles.btnGhostText}>{t('back')}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnPrimary, nextBlocked && styles.btnDisabled]} onPress={goNext} disabled={nextBlocked}>
-                <Text style={styles.btnPrimaryText}>
-                  {isPreview ? t('save') : (step === STEPS.length - 1 ? t('preview') : t('next'))}
-                </Text>
-              </TouchableOpacity>
-            </>
+            <Current data={data} update={update} />
           )}
-        </View>
+          {renderNavFooter()}
+        </ScrollView>
       </View>
 
       {/* Onay (disclaimer) modalı — Bitti'ye basınca */}
@@ -162,16 +171,13 @@ export default function CvWizard({ onExit, onFinish, onEdit, data: extData, onCh
             </TouchableOpacity>
 
             <View style={[styles.modalBtns, { flexDirection: rowDir }]}>
-              <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={() => setConfirmOpen(false)}>
-                <Text style={styles.btnGhostText}>{t('back')}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.btn, styles.btnPrimary, !accepted && styles.btnDisabled]}
+              <NavBtn label={t('back')} onPress={() => setConfirmOpen(false)} />
+              <NavBtn
+                primary
+                label={t('confirm_accept')}
                 onPress={() => { if (accepted) { setConfirmOpen(false); onFinish && onFinish(); } }}
                 disabled={!accepted}
-              >
-                <Text style={styles.btnPrimaryText}>{t('confirm_accept')}</Text>
-              </TouchableOpacity>
+              />
             </View>
           </View>
         </View>
@@ -187,14 +193,15 @@ const styles = StyleSheet.create({
   stepTitle: { fontSize: 20, fontWeight: '800', color: '#1b2533', marginTop: 2 },
   progressTrack: { height: 4, backgroundColor: '#e6e8ec', borderRadius: 2, marginTop: 10, overflow: 'hidden' },
   progressFill: { height: 4, backgroundColor: '#c2a25a', borderRadius: 2 },
-  content: { padding: 20, paddingBottom: 32 },
-  footer: { gap: 12, padding: 16, backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#e6e8ec' },
-  btn: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  content: { padding: 20, flexGrow: 1 },
+  previewBox: { width: '100%' },
+  footerInline: { gap: 12, marginTop: 28, paddingTop: 20, borderTopWidth: 1, borderTopColor: '#e6e8ec' },
+  btn: { flex: 1, minHeight: 50, paddingVertical: 12, paddingHorizontal: 10, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   btnPrimary: { backgroundColor: '#1b2533' },
   btnDisabled: { backgroundColor: '#b9bec6' },
-  btnPrimaryText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  btnPrimaryText: { color: '#fff', fontWeight: '800', fontSize: 15, textAlign: 'center' },
   btnGhost: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#c9ccd2' },
-  btnGhostText: { color: '#1b2533', fontWeight: '700', fontSize: 15 },
+  btnGhostText: { color: '#1b2533', fontWeight: '700', fontSize: 15, textAlign: 'center' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 22 },

@@ -8,6 +8,7 @@ import { useLanguage } from '../../i18n/LanguageContext';
 import {
   HEIGHTS, WEIGHTS, DAYS, monthOptions, BIRTH_YEARS,
   langOptions, licenseOptions, bloodOptions, ageFromBirth, MIN_AGE, MAX_AGE,
+  normalizeWorkAvailability,
 } from '../../cv/options';
 
 // Telefon: kullanıcı yazmaya başlayınca başına otomatik "+" koy.
@@ -96,6 +97,19 @@ export default function Step1Personal({ data, update }) {
         onChange={(v) => update({ gender: v })}
       />
       <Select label={t('f_nationality')} value={data.nationality} options={opts.NATIONALITIES} onChange={(v) => update({ nationality: v })} />
+
+      <Select
+        label={t('f_employment_status')}
+        value={data.employmentStatus}
+        options={opts.EMPLOYMENT_STATUS}
+        onChange={(v) => update({ employmentStatus: v })}
+      />
+      <Select
+        label={t('f_work_duration')}
+        value={normalizeWorkAvailability(data.availableMonths) || data.availableMonths}
+        options={opts.WORK_AVAILABILITY}
+        onChange={(v) => update({ availableMonths: v })}
+      />
 
       <Select
         label={t('f_lic_country')}

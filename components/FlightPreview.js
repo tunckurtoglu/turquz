@@ -1,5 +1,6 @@
 // components/FlightPreview.js
 // Uçuş bilgileri PDF önizlemesi (WebView) + PDF paylaş/indir. Acente ve aday kullanır.
+// NOT: Şu an devre dışı (lib/features.js → FLIGHT_INFO_CARD_ENABLED). Dosya silinmedi.
 import React, { useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Modal, ActivityIndicator, Alert } from 'react-native';
 import { WebView } from 'react-native-webview';

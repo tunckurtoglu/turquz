@@ -6,10 +6,11 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, ScrollView, TouchableOpacity, StyleSheet, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
-import { langOptions } from '../cv/options';
+import { langOptions, normalizeWorkAvailability } from '../cv/options';
 import { parseCode, candidateCode } from '../lib/candidateCode';
 
 const GENDER_VALUES = ['male', 'female'];
+const EMPLOYMENT_VALUES = ['student', 'employed'];
 const INK = '#1b2533';
 const GOLD = '#c2a25a';
 
@@ -17,10 +18,15 @@ function Dropdown({ title, summary, open, onToggle, children }) {
   return (
     <View style={styles.dd}>
       <TouchableOpacity style={styles.ddHead} onPress={onToggle} activeOpacity={0.7}>
-        <Text style={styles.ddTitle}>{title}</Text>
-        <View style={{ flex: 1 }} />
-        {summary ? <Text style={styles.ddSummary} numberOfLines={1}>{summary}</Text> : null}
-        <Text style={styles.ddChev}>{open ? '▾' : '▸'}</Text>
+        <View style={styles.ddHeadMain}>
+          <View style={styles.ddHeadRow}>
+            <Text style={styles.ddTitle} numberOfLines={2}>{title}</Text>
+            <Text style={styles.ddChev}>{open ? '▾' : '▸'}</Text>
+          </View>
+          {summary ? (
+            <Text style={styles.ddSummary} numberOfLines={2}>{summary}</Text>
+          ) : null}
+        </View>
       </TouchableOpacity>
       {open ? <View style={styles.ddBody}>{children}</View> : null}
     </View>
@@ -34,7 +40,7 @@ function Chips({ options, selected, onToggle }) {
         const on = selected.includes(o.value);
         return (
           <TouchableOpacity key={o.value} style={[styles.chip, on && styles.chipOn]} onPress={() => onToggle(o.value)} activeOpacity={0.8}>
-            <Text style={[styles.chipText, on && styles.chipTextOn]}>{o.label}</Text>
+            <Text style={[styles.chipText, on && styles.chipTextOn]} numberOfLines={2}>{o.label}</Text>
           </TouchableOpacity>
         );
       })}
@@ -42,7 +48,12 @@ function Chips({ options, selected, onToggle }) {
   );
 }
 
-export default function AgencyFilterSheet({ visible, initial, onApply, onClose }) {
+const SORT_OPTS = [
+  { value: 'online', labelKey: 'sort_online_desc' },
+  { value: 'online_old', labelKey: 'sort_online_asc' },
+];
+
+export default function AgencyFilterSheet({ visible, initial, sort = 'online', onApply, onClose }) {
   const { t, lang, dir } = useLanguage();
   const insets = useSafeAreaInsets();
   const opts = langOptions(lang);
@@ -53,10 +64,13 @@ export default function AgencyFilterSheet({ visible, initial, onApply, onClose }
   const [ageMin, setAgeMin] = useState('');
   const [ageMax, setAgeMax] = useState('');
   const [gender, setGender] = useState('');
+  const [employmentStatus, setEmploymentStatus] = useState('');
+  const [availableMonths, setAvailableMonths] = useState([]);
   const [nationalities, setNationalities] = useState([]);
   const [positions, setPositions] = useState([]);
   const [languages, setLanguages] = useState([]);
   const [skills, setSkills] = useState([]);
+  const [sortBy, setSortBy] = useState(sort);
 
   useEffect(() => {
     if (!visible) return;
@@ -64,15 +78,19 @@ export default function AgencyFilterSheet({ visible, initial, onApply, onClose }
     setCodeText(f.codeNation && f.regNo ? candidateCode(f.codeNation, f.regNo) : '');
     setAgeMin(f.ageMin ? String(f.ageMin) : ''); setAgeMax(f.ageMax ? String(f.ageMax) : '');
     setGender(f.gender || '');
+    setEmploymentStatus(f.employmentStatus || '');
+    setAvailableMonths((f.availableMonths || []).map(normalizeWorkAvailability).filter(Boolean));
     setNationalities(f.nationalities || []); setPositions(f.positions || []);
     setLanguages(f.languages || []); setSkills(f.skills || []);
+    setSortBy(sort || 'online');
     setOpen(null);
-  }, [visible, initial]);
+  }, [visible, initial, sort]);
 
   const toggle = (arr, setArr, v) => setArr(arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
   const toggleSec = (k) => setOpen(open === k ? null : k);
   const clear = () => {
     setCodeText(''); setAgeMin(''); setAgeMax(''); setGender('');
+    setEmploymentStatus(''); setAvailableMonths([]);
     setNationalities([]); setPositions([]); setLanguages([]); setSkills([]);
   };
   const apply = () => {
@@ -83,7 +101,10 @@ export default function AgencyFilterSheet({ visible, initial, onApply, onClose }
       ageMin: parseInt(ageMin, 10) || undefined,
       ageMax: parseInt(ageMax, 10) || undefined,
       gender: gender || undefined,
+      employmentStatus: employmentStatus || undefined,
+      availableMonths: availableMonths.length ? availableMonths : undefined,
       nationalities, positions, languages, skills,
+      sort: sortBy,
     });
   };
 
@@ -104,6 +125,24 @@ export default function AgencyFilterSheet({ visible, initial, onApply, onClose }
         <View style={styles.accent} />
 
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+          <Dropdown
+            title={t('sort_by') || 'Sırala'}
+            summary={t(SORT_OPTS.find((o) => o.value === sortBy)?.labelKey || 'sort_online_desc')}
+            open={open === 'sort'}
+            onToggle={() => toggleSec('sort')}
+          >
+            <View style={styles.segmentCol}>
+              {SORT_OPTS.map((o) => {
+                const on = sortBy === o.value;
+                return (
+                  <TouchableOpacity key={o.value} style={[styles.segBtn, styles.segBtnBlock, on && styles.segBtnOn]} onPress={() => setSortBy(o.value)} activeOpacity={0.8}>
+                    <Text style={[styles.segText, on && styles.segTextOn]} numberOfLines={2}>{t(o.labelKey)}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </Dropdown>
+
           <Dropdown title={t('candidate_no')} summary={codeSummary} open={open === 'code'} onToggle={() => toggleSec('code')}>
             <TextInput style={styles.input} value={codeText} onChangeText={(v) => setCodeText(v.toUpperCase())} placeholder="TR0123" placeholderTextColor="#9aa1ac" autoCapitalize="characters" autoCorrect={false} maxLength={10} />
           </Dropdown>
@@ -122,7 +161,33 @@ export default function AgencyFilterSheet({ visible, initial, onApply, onClose }
                 const on = gender === v;
                 return (
                   <TouchableOpacity key={v} style={[styles.segBtn, on && styles.segBtnOn]} onPress={() => setGender(on ? '' : v)} activeOpacity={0.8}>
-                    <Text style={[styles.segText, on && styles.segTextOn]} numberOfLines={1}>{t(`gender_${v}`)}</Text>
+                    <Text style={[styles.segText, on && styles.segTextOn]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>{t(`gender_${v}`)}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </Dropdown>
+
+          <Dropdown title={t('f_employment_status')} summary={employmentStatus ? t(`es_${employmentStatus}`) : ''} open={open === 'employment'} onToggle={() => toggleSec('employment')}>
+            <View style={styles.segment}>
+              {EMPLOYMENT_VALUES.map((v) => {
+                const on = employmentStatus === v;
+                return (
+                  <TouchableOpacity key={v} style={[styles.segBtn, on && styles.segBtnOn]} onPress={() => setEmploymentStatus(on ? '' : v)} activeOpacity={0.8}>
+                    <Text style={[styles.segText, on && styles.segTextOn]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>{t(`es_${v}`)}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </Dropdown>
+
+          <Dropdown title={t('f_work_duration')} summary={availableMonths.map((v) => opts.WORK_AVAILABILITY.find((o) => o.value === v)?.label).filter(Boolean).join(', ')} open={open === 'months'} onToggle={() => toggleSec('months')}>
+            <View style={styles.chips}>
+              {opts.WORK_AVAILABILITY.map((o) => {
+                const on = availableMonths.includes(o.value);
+                return (
+                  <TouchableOpacity key={o.value} style={[styles.chip, on && styles.chipOn]} onPress={() => toggle(availableMonths, setAvailableMonths, o.value)} activeOpacity={0.8}>
+                    <Text style={[styles.chipText, on && styles.chipTextOn]} numberOfLines={2}>{o.label}</Text>
                   </TouchableOpacity>
                 );
               })}
@@ -130,7 +195,16 @@ export default function AgencyFilterSheet({ visible, initial, onApply, onClose }
           </Dropdown>
 
           <Dropdown title={t('sec_positions')} summary={nsel(positions.length)} open={open === 'positions'} onToggle={() => toggleSec('positions')}>
-            <Chips options={opts.POSITIONS} selected={positions} onToggle={(v) => toggle(positions, setPositions, v)} />
+            {(opts.POSITION_SECTORS || []).map((sec) => (
+              <View key={sec.value} style={styles.posSector}>
+                <Text style={styles.posSectorTitle}>{sec.label}</Text>
+                <Chips
+                  options={opts.POSITIONS_BY_SECTOR?.[sec.value] || []}
+                  selected={positions}
+                  onToggle={(v) => toggle(positions, setPositions, v)}
+                />
+              </View>
+            ))}
           </Dropdown>
 
           <Dropdown title={t('step_languages')} summary={nsel(languages.length)} open={open === 'languages'} onToggle={() => toggleSec('languages')}>
@@ -168,10 +242,12 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 24 },
 
   dd: { backgroundColor: '#fff', borderRadius: 12, marginBottom: 10, borderWidth: 0.5, borderColor: '#e6e8ec', overflow: 'hidden' },
-  ddHead: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 15 },
-  ddTitle: { fontSize: 14.5, fontWeight: '800', color: INK },
-  ddSummary: { fontSize: 13, color: GOLD, fontWeight: '700', marginRight: 10, maxWidth: 150 },
-  ddChev: { fontSize: 14, color: '#9aa1ac', fontWeight: '700' },
+  ddHead: { paddingHorizontal: 14, paddingVertical: 15 },
+  ddHeadMain: { flex: 1, minWidth: 0 },
+  ddHeadRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  ddTitle: { flex: 1, fontSize: 14.5, fontWeight: '800', color: INK },
+  ddSummary: { fontSize: 13, color: GOLD, fontWeight: '700', marginTop: 4, lineHeight: 18 },
+  ddChev: { fontSize: 14, color: '#9aa1ac', fontWeight: '700', marginTop: 2, flexShrink: 0 },
   ddBody: { paddingHorizontal: 14, paddingBottom: 16, paddingTop: 2 },
 
   input: { flex: 1, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e6e8ec', borderRadius: 11, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: INK },
@@ -179,18 +255,22 @@ const styles = StyleSheet.create({
   dash: { color: '#9aa1ac', fontSize: 18 },
 
   segment: { flexDirection: 'row', backgroundColor: '#eceef1', borderRadius: 12, padding: 4, gap: 4 },
-  segBtn: { flex: 1, paddingVertical: 10, borderRadius: 9, alignItems: 'center' },
+  segmentCol: { backgroundColor: '#eceef1', borderRadius: 12, padding: 4, gap: 4 },
+  segBtn: { flex: 1, paddingVertical: 10, paddingHorizontal: 4, borderRadius: 9, alignItems: 'center', minWidth: 0 },
+  segBtnBlock: { flex: 0, width: '100%', alignItems: 'flex-start', paddingHorizontal: 12 },
   segBtnOn: { backgroundColor: INK },
-  segText: { fontSize: 12.5, fontWeight: '700', color: '#737373' },
+  segText: { fontSize: 12.5, fontWeight: '700', color: '#737373', textAlign: 'center' },
   segTextOn: { color: '#fff' },
 
   codeRow: { gap: 8, paddingRight: 8 },
   codeChip: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 11, backgroundColor: '#f1f2f4' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: { paddingHorizontal: 13, paddingVertical: 8, borderRadius: 20, backgroundColor: '#f1f2f4' },
+  chip: { paddingHorizontal: 13, paddingVertical: 8, borderRadius: 20, backgroundColor: '#f1f2f4', maxWidth: '100%' },
   chipOn: { backgroundColor: INK },
-  chipText: { fontSize: 13, fontWeight: '600', color: '#4a4a4a' },
+  chipText: { fontSize: 13, fontWeight: '600', color: '#4a4a4a', textAlign: 'center' },
   chipTextOn: { color: '#fff' },
+  posSector: { marginBottom: 12 },
+  posSectorTitle: { fontSize: 12, fontWeight: '800', color: GOLD, letterSpacing: 0.3, textTransform: 'uppercase', marginBottom: 8 },
 
   footer: { paddingHorizontal: 18, paddingTop: 12, backgroundColor: '#fff', borderTopWidth: 0.5, borderTopColor: '#e6e8ec' },
   applyBtn: { backgroundColor: GOLD, borderRadius: 14, paddingVertical: 16, alignItems: 'center' },

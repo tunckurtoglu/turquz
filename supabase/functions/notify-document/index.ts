@@ -1,13 +1,7 @@
 // supabase/functions/notify-document/index.ts
-// Belge yüklendiğinde karşı tarafa Expo push gönderir.
-//   - Acente belgesi (contract_unsigned / flight_ticket) yüklendi  -> ADAYI "zilli" uyar.
-//   - Aday belgesi yüklendi                                        -> ACENTEYİ normal uyar
-//     (acente aynı anda onlarca bildirim alabileceği için çaldırmıyoruz).
-//
-// Çağrı (istemci): supabase.functions.invoke('notify-document', { body: { candidateUserId, kind } })
-// SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY otomatik enjekte edilir.
-// Deploy:  supabase functions deploy notify-document
+// Belge gönderildiğinde karşı tarafa Expo push (alıcının dilinde).
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { docPushText, sendExpoPush, recipientAllowsPush, type PushTokenRow } from '../_shared/pushTexts.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -16,13 +10,7 @@ const CORS = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 
-const AGENCY_KINDS = ['contract_unsigned', 'flight_ticket'];
-
-// Bildirim metinleri (alıcıya göre). Şimdilik TR; alıcı diline göre genişletilebilir.
-const TEXT = {
-  ring: { title: '📄 Yeni belge — Acente', body: 'Acenten senin için bir belge yükledi. Hemen incele.' },
-  normal: { title: '📄 Aday belge yükledi', body: 'Bir aday yeni belge yükledi.' },
-};
+const AGENCY_KINDS = ['contract_unsigned', 'flight_ticket', 'pickup'];
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
@@ -31,7 +19,6 @@ Deno.serve(async (req) => {
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-    // Çağıranı doğrula (yetkisiz çağrıyı engelle).
     const authHeader = req.headers.get('Authorization') ?? '';
     const userClient = createClient(url, anonKey, { global: { headers: { Authorization: authHeader } } });
     const { data: { user }, error: userErr } = await userClient.auth.getUser();
@@ -43,44 +30,42 @@ Deno.serve(async (req) => {
     const admin = createClient(url, serviceKey);
     const byAgency = AGENCY_KINDS.includes(kind);
 
-    // Alıcıyı belirle
     let recipientId: string | null = null;
     if (byAgency) {
-      recipientId = candidateUserId; // adayı çaldır
+      recipientId = candidateUserId;
     } else {
       const { data: st } = await admin
         .from('candidate_status')
         .select('accepted_by')
         .eq('user_id', candidateUserId)
         .maybeSingle();
-      recipientId = st?.accepted_by ?? null; // adayı kabul eden acente
+      recipientId = st?.accepted_by ?? null;
     }
     if (!recipientId) return json({ ok: true, skipped: 'no_recipient' });
+    if (!byAgency && !(await recipientAllowsPush(admin, recipientId, 'general'))) {
+      return json({ ok: true, skipped: 'prefs_off' });
+    }
 
-    // Alıcının token'ları
-    const { data: toks } = await admin.from('push_tokens').select('token').eq('user_id', recipientId);
-    const tokens = (toks ?? []).map((t: { token: string }) => t.token).filter(Boolean);
+    const { data: toks } = await admin.from('push_tokens').select('token, locale').eq('user_id', recipientId);
+    const tokens = (toks ?? []) as PushTokenRow[];
     if (!tokens.length) return json({ ok: true, skipped: 'no_tokens' });
 
-    const txt = byAgency ? TEXT.ring : TEXT.normal;
-    const messages = tokens.map((to) => ({
-      to,
-      title: txt.title,
-      body: txt.body,
-      priority: 'high',
-      sound: byAgency ? 'ring.wav' : 'default',     // iOS özel ses / Android default
-      channelId: byAgency ? 'calls' : 'default',     // Android: zil kanalı vs normal
-      ...(byAgency ? { interruptionLevel: 'critical' } : {}),
-      data: { kind, candidateUserId },
-    }));
-
-    const resp = await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(messages),
+    const messages = tokens.filter((t) => t.token).map(({ token: to, locale }) => {
+      const txt = docPushText(kind, byAgency, locale);
+      return {
+        to,
+        title: txt.title,
+        body: txt.body,
+        priority: 'high',
+        sound: 'notify.wav',
+        channelId: byAgency ? 'calls' : 'default',
+        ...(byAgency ? { interruptionLevel: 'critical' } : {}),
+        data: { kind, candidateUserId },
+      };
     });
-    const result = await resp.json().catch(() => null);
-    return json({ ok: true, sent: tokens.length, result });
+
+    const result = await sendExpoPush(messages);
+    return json({ ok: true, sent: messages.length, result });
   } catch (e) {
     return json({ error: String(e?.message ?? e) }, 500);
   }
