@@ -2,24 +2,29 @@
 // Giriş / Kayıt ekranı (8 dilli, RTL uyumlu).
 // - E-posta + şifre ile giriş ve kayıt (kayıtta şifre iki kez + eşleşme kontrolü)
 // - Şifremi unuttum → e-posta linki turquz://reset-password (App.js recovery ekranı)
-// - Google / Apple butonları (Aşama 2'de OAuth bağlanacak; şimdilik "yakında")
+// - Google / Apple: Supabase OAuth (in-app tarayıcı) → register_as_* ile portal kilidi
 import React, { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Platform, Alert, Image,
+  ActivityIndicator, Platform, Image,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { useLanguage } from '../i18n/LanguageContext';
-import { signInWithEmail, signUpWithEmail, sendPasswordReset, signOut } from '../lib/auth';
+import { signInWithEmail, signUpWithEmail, sendPasswordReset, signOut, signInWithOAuth } from '../lib/auth';
+import { supabase } from '../lib/supabase';
 import { getRole } from '../lib/roles';
 import { registerAsAgency, registerAsCandidate } from '../lib/agencyProfile';
 import { GoogleIcon, AppleIcon } from '../components/BrandIcons';
 import { openPrivacy } from '../lib/config';
 
 const GOLD = '#c2a25a';
+const GOLD_D = '#9a7b1f';
 const NAVY = '#1b2533';
-const CARD = '#243042';
+const INK = '#1f2733';
+const MUTED = '#6b7280';
+const LINE = '#dfe3e8';
 
 const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || '').trim());
 
@@ -29,6 +34,19 @@ function PrivacyNote({ prefixKey, t, rtl }) {
       {t(prefixKey)}{' '}
       <Text style={styles.privacyLink} onPress={openPrivacy}>{t('privacy_link')} ↗</Text>
     </Text>
+  );
+}
+
+function Field({ label, ta, ...inputProps }) {
+  return (
+    <View style={styles.field}>
+      <Text style={[styles.label, ta]}>{label}</Text>
+      <TextInput
+        style={[styles.input, ta]}
+        placeholderTextColor="#a0a7b2"
+        {...inputProps}
+      />
+    </View>
   );
 }
 
@@ -43,7 +61,6 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   const [msg, setMsg] = useState(null);           // { type:'err'|'ok', text }
   const [showReset, setShowReset] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
-  // Acente: kayıt + OAuth UI açık. OAuth native bağlanınca soon kalkacak.
   const agencyMode = portal === 'agency';
 
   const rtl = dir === 'rtl';
@@ -156,14 +173,47 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
     }
   };
 
-  // --- Google / Apple (Aşama 2) ---
-  // OAuth bağlanınca options.data.portal = agency|candidate zorunlu; register_as_* ile kilitlenecek.
-  const soon = () => Alert.alert('Turquz', t('auth_soon'));
+  // --- Google / Apple OAuth ---
+  const oauth = async (provider) => {
+    clearMsg();
+    setBusy(true);
+    try {
+      const { session, error, cancelled } = await signInWithOAuth(provider);
+      if (cancelled) return;
+      if (error) {
+        setMsg({ type: 'err', text: error.message || t('auth_oauth_failed') });
+        return;
+      }
+      if (!session) {
+        setMsg({ type: 'err', text: t('auth_oauth_failed') });
+        return;
+      }
+      // Portal niyetini metadata'ya yaz (rol register_as_* ile gelir).
+      const p = agencyMode ? 'agency' : 'candidate';
+      await supabase.auth.updateUser({ data: { portal: p } }).catch(() => {});
+      if (agencyMode) await finishAgencySession(session);
+      else await finishCandidateSession(session);
+    } catch (e) {
+      setMsg({ type: 'err', text: String(e?.message || e) });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <View style={styles.flex}>
+      <LinearGradient
+        colors={['#101820', '#1b2533', '#2a3545']}
+        locations={[0, 0.45, 1]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={styles.glowA} pointerEvents="none" />
+      <View style={styles.glowB} pointerEvents="none" />
+
       <KeyboardAwareScrollView
-        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 2, paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 28 }]}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         enableOnAndroid
@@ -176,128 +226,136 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
             <Text style={styles.backText}>{rtl ? '›' : '‹'}</Text>
             <Text style={styles.backLabel}>{t('back') || ''}</Text>
           </TouchableOpacity>
-        ) : null}
+        ) : <View style={{ height: 8 }} />}
+
         <Image source={require('../assets/turquz-logo.png')} style={styles.logo} resizeMode="contain" />
-        <View style={styles.titleRule} />
-        <Text style={[styles.title, styles.titleCenter, fontsReady && styles.titleFont]}>{agencyMode ? t('auth_agency_login') : t('portal_candidate')}</Text>
-        <Text style={[styles.subtitle, ta]}>{agencyMode ? t('auth_subtitle_agency') : t('auth_subtitle')}</Text>
 
-        {/* Sekme: Giriş / Kayıt */}
-        <View style={styles.tabs}>
-          <TouchableOpacity
-            style={[styles.tab, mode === 'signin' && styles.tabActive]}
-            onPress={() => { setMode('signin'); clearMsg(); }}
-          >
-            <Text style={[styles.tabText, mode === 'signin' && styles.tabTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('auth_tab_signin')}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tab, mode === 'signup' && styles.tabActive]}
-            onPress={() => { setMode('signup'); clearMsg(); }}
-          >
-            <Text style={[styles.tabText, mode === 'signup' && styles.tabTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('auth_tab_signup')}</Text>
-          </TouchableOpacity>
-        </View>
+        <View style={styles.card}>
+          <Text style={styles.kicker}>{agencyMode ? t('auth_panel_kicker') : t('portal_candidate')}</Text>
+          <Text style={[styles.title, fontsReady && styles.titleFont]}>
+            {mode === 'signin' ? t('auth_tab_signin') : t('auth_tab_signup')}
+          </Text>
+          <Text style={[styles.subtitle, ta]}>{agencyMode ? t('auth_subtitle_agency') : t('auth_subtitle')}</Text>
 
-        {/* E-posta */}
-        <Text style={[styles.label, ta]}>{t('auth_email')}</Text>
-        <TextInput
-          style={[styles.input, ta]}
-          value={email}
-          onChangeText={(v) => { setEmail(v); clearMsg(); }}
-          placeholder={t('auth_email_ph')}
-          placeholderTextColor="#7d8794"
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoCorrect={false}
-          textContentType="emailAddress"
-          autoComplete="email"
-        />
-
-        {/* Şifre */}
-        <Text style={[styles.label, ta]}>{t('auth_password')}</Text>
-        <TextInput
-          style={[styles.input, ta]}
-          value={pass}
-          onChangeText={(v) => { setPass(v); clearMsg(); }}
-          placeholder="••••••"
-          placeholderTextColor="#7d8794"
-          secureTextEntry
-          autoCapitalize="none"
-        />
-
-        {/* Şifre tekrar (sadece kayıt) */}
-        {mode === 'signup' && (
-          <>
-            <Text style={[styles.label, ta]}>{t('auth_password2')}</Text>
-            <TextInput
-              style={[styles.input, ta]}
-              value={pass2}
-              onChangeText={(v) => { setPass2(v); clearMsg(); }}
-              placeholder="••••••"
-              placeholderTextColor="#7d8794"
-              secureTextEntry
-              autoCapitalize="none"
-            />
-            {passMismatch ? (
-              <Text style={[styles.warn, ta]}>{t('auth_err_pass_match')}</Text>
-            ) : passMatch ? (
-              <Text style={[styles.ok, ta]}>{t('auth_pass_ok')}</Text>
-            ) : null}
-          </>
-        )}
-
-        {/* Şifremi unuttum (sadece giriş) */}
-        {mode === 'signin' && (
-          <TouchableOpacity onPress={() => { setResetEmail(email); setShowReset(true); clearMsg(); }}>
-            <Text style={[styles.forgot, { textAlign: rtl ? 'left' : 'right' }]}>{t('auth_forgot')}</Text>
-          </TouchableOpacity>
-        )}
-
-        {/* Mesaj */}
-        {msg ? (
-          <Text style={[msg.type === 'err' ? styles.warn : styles.ok, ta, { marginTop: 10 }]}>{msg.text}</Text>
-        ) : null}
-
-        {/* Ana buton */}
-        <TouchableOpacity style={[styles.cta, busy && styles.ctaDisabled]} onPress={submit} disabled={busy}>
-          {busy ? (
-            <ActivityIndicator color={NAVY} />
-          ) : (
-            <Text style={styles.ctaText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{mode === 'signin' ? t('auth_signin_btn') : t('auth_signup_btn')}</Text>
-          )}
-        </TouchableOpacity>
-
-        {/* KVKK (e-posta kaydı) */}
-        {mode === 'signup' && (
-          <PrivacyNote prefixKey="auth_privacy_signup_before" t={t} rtl={rtl} />
-        )}
-
-        {/* Ayraç + Google / Apple (OAuth native bağlanınca aktif) */}
-        <View style={styles.divider}>
-          <View style={styles.line} />
-          <Text style={styles.or}>{t('auth_or')}</Text>
-          <View style={styles.line} />
-        </View>
-
-        <TouchableOpacity style={styles.oauth} onPress={soon} activeOpacity={0.85}>
-          <View style={styles.oauthInner}>
-            <GoogleIcon size={20} />
-            <Text style={styles.oauthText}>{t('auth_google')}</Text>
+          <View style={styles.tabs}>
+            <TouchableOpacity
+              style={[styles.tab, mode === 'signin' && styles.tabActive]}
+              onPress={() => { setMode('signin'); clearMsg(); }}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.tabText, mode === 'signin' && styles.tabTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('auth_tab_signin')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, mode === 'signup' && styles.tabActive]}
+              onPress={() => { setMode('signup'); clearMsg(); }}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.tabText, mode === 'signup' && styles.tabTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('auth_tab_signup')}</Text>
+            </TouchableOpacity>
           </View>
-        </TouchableOpacity>
-        {Platform.OS === 'ios' && (
-          <TouchableOpacity style={[styles.oauth, styles.apple]} onPress={soon} activeOpacity={0.85}>
+
+          <Field
+            label={t('auth_email')}
+            ta={ta}
+            value={email}
+            onChangeText={(v) => { setEmail(v); clearMsg(); }}
+            placeholder={t('auth_email_ph')}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            textContentType="emailAddress"
+            autoComplete="email"
+          />
+          <Field
+            label={t('auth_password')}
+            ta={ta}
+            value={pass}
+            onChangeText={(v) => { setPass(v); clearMsg(); }}
+            placeholder="••••••••"
+            secureTextEntry
+            autoCapitalize="none"
+          />
+
+          {mode === 'signup' ? (
+            <>
+              <Field
+                label={t('auth_password2')}
+                ta={ta}
+                value={pass2}
+                onChangeText={(v) => { setPass2(v); clearMsg(); }}
+                placeholder="••••••••"
+                secureTextEntry
+                autoCapitalize="none"
+              />
+              {passMismatch ? (
+                <Text style={[styles.warn, ta]}>{t('auth_err_pass_match')}</Text>
+              ) : passMatch ? (
+                <Text style={[styles.ok, ta]}>{t('auth_pass_ok')}</Text>
+              ) : null}
+            </>
+          ) : null}
+
+          {mode === 'signin' ? (
+            <TouchableOpacity onPress={() => { setResetEmail(email); setShowReset(true); clearMsg(); }} activeOpacity={0.7}>
+              <Text style={[styles.forgot, { textAlign: rtl ? 'left' : 'right' }]}>{t('auth_forgot')}</Text>
+            </TouchableOpacity>
+          ) : null}
+
+          {msg ? (
+            <Text style={[msg.type === 'err' ? styles.warn : styles.ok, ta, { marginTop: 10 }]}>{msg.text}</Text>
+          ) : null}
+
+          <TouchableOpacity style={[styles.cta, busy && styles.ctaDisabled]} onPress={submit} disabled={busy} activeOpacity={0.9}>
+            {busy ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.ctaText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                {mode === 'signin' ? t('auth_signin_btn') : t('auth_signup_btn')}
+              </Text>
+            )}
+          </TouchableOpacity>
+
+          {mode === 'signup' ? (
+            <PrivacyNote prefixKey="auth_privacy_signup_before" t={t} rtl={rtl} />
+          ) : null}
+
+          <View style={styles.divider}>
+            <View style={styles.line} />
+            <Text style={styles.or}>{t('auth_or')}</Text>
+            <View style={styles.line} />
+          </View>
+
+          <TouchableOpacity
+            style={[styles.oauth, busy && styles.ctaDisabled]}
+            onPress={() => oauth('google')}
+            disabled={busy}
+            activeOpacity={0.85}
+          >
             <View style={styles.oauthInner}>
-              <AppleIcon size={20} color="#ffffff" />
-              <Text style={[styles.oauthText, { color: '#fff' }]}>{t('auth_apple')}</Text>
+              <GoogleIcon size={20} />
+              <Text style={styles.oauthText}>{t('auth_google')}</Text>
             </View>
           </TouchableOpacity>
-        )}
-        <PrivacyNote prefixKey="auth_privacy_oauth_before" t={t} rtl={rtl} />
+          {Platform.OS === 'ios' ? (
+            <TouchableOpacity
+              style={[styles.oauth, styles.apple, busy && styles.ctaDisabled]}
+              onPress={() => oauth('apple')}
+              disabled={busy}
+              activeOpacity={0.85}
+            >
+              <View style={styles.oauthInner}>
+                <AppleIcon size={20} color="#ffffff" />
+                <Text style={[styles.oauthText, { color: '#fff' }]}>{t('auth_apple')}</Text>
+              </View>
+            </TouchableOpacity>
+          ) : null}
+          <PrivacyNote prefixKey="auth_privacy_oauth_before" t={t} rtl={rtl} />
+        </View>
+
+        <Text style={styles.trust}>{t('auth_trust')}</Text>
       </KeyboardAwareScrollView>
 
-      {/* Şifre sıfırlama paneli */}
-      {showReset && (
+      {showReset ? (
         <View style={styles.overlay}>
           <View style={styles.modal}>
             <Text style={[styles.modalTitle, ta]}>{t('auth_reset_title')}</Text>
@@ -307,7 +365,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
               value={resetEmail}
               onChangeText={setResetEmail}
               placeholder={t('auth_email_ph')}
-              placeholderTextColor="#7d8794"
+              placeholderTextColor="#a0a7b2"
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
@@ -318,72 +376,104 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
               <Text style={[msg.type === 'err' ? styles.warn : styles.ok, ta, { marginTop: 8 }]}>{msg.text}</Text>
             ) : null}
             <TouchableOpacity style={[styles.cta, busy && styles.ctaDisabled, { marginTop: 14 }]} onPress={doReset} disabled={busy}>
-              {busy ? <ActivityIndicator color={NAVY} /> : <Text style={styles.ctaText}>{t('auth_send_reset')}</Text>}
+              {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.ctaText}>{t('auth_send_reset')}</Text>}
             </TouchableOpacity>
             <TouchableOpacity style={styles.cancel} onPress={() => { setShowReset(false); clearMsg(); }}>
               <Text style={styles.cancelText}>{t('auth_cancel')}</Text>
             </TouchableOpacity>
           </View>
         </View>
-      )}
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: NAVY },
-  scroll: { paddingHorizontal: 24, minHeight: '100%' },
-  backBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', paddingVertical: 6, paddingRight: 12, marginBottom: 2 },
-  backText: { color: GOLD, fontSize: 30, fontWeight: '700', marginTop: -3 },
-  backLabel: { color: GOLD, fontSize: 15, fontWeight: '700', marginLeft: 4 },
-  logo: { width: 184, height: 153, alignSelf: 'center', marginBottom: 8 },
-  titleRule: { width: 44, height: 2, borderRadius: 1, backgroundColor: GOLD, alignSelf: 'center', marginBottom: 10, opacity: 0.85 },
-  title: { color: '#fff', fontSize: 22, fontWeight: '700', marginTop: 2, letterSpacing: 0.3 },
-  titleFont: { fontFamily: 'PlayfairDisplay_700Bold', fontWeight: '400' },
-  titleCenter: { textAlign: 'center', marginBottom: 6 },
-  subtitle: { color: '#9aa4b1', fontSize: 14, lineHeight: 20, textAlign: 'center', marginBottom: 16, paddingHorizontal: 4 },
+  glowA: {
+    position: 'absolute', top: -80, left: -60, width: 280, height: 280, borderRadius: 140,
+    backgroundColor: 'rgba(194,162,90,0.16)',
+  },
+  glowB: {
+    position: 'absolute', bottom: 40, right: -90, width: 260, height: 260, borderRadius: 130,
+    backgroundColor: 'rgba(42,157,184,0.12)',
+  },
+  scroll: { paddingHorizontal: 20, flexGrow: 1 },
+  backBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', paddingVertical: 6, paddingRight: 12, marginBottom: 4 },
+  backText: { color: '#e7dcc4', fontSize: 28, fontWeight: '700', marginTop: -2 },
+  backLabel: { color: '#e7dcc4', fontSize: 15, fontWeight: '700', marginLeft: 2 },
+  logo: { width: 148, height: 124, alignSelf: 'center', marginBottom: 10 },
 
-  tabs: { flexDirection: 'row', backgroundColor: CARD, borderRadius: 12, padding: 4, marginBottom: 18 },
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 22,
+    paddingBottom: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    shadowColor: '#000',
+    shadowOpacity: 0.22,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
+  },
+  kicker: {
+    color: GOLD_D, fontSize: 11, fontWeight: '800', letterSpacing: 1.6,
+    textTransform: 'uppercase', textAlign: 'center', marginBottom: 8,
+  },
+  title: { color: '#3d4654', fontSize: 26, fontWeight: '700', textAlign: 'center', letterSpacing: -0.3 },
+  titleFont: { fontFamily: 'PlayfairDisplay_700Bold', fontWeight: '400' },
+  subtitle: { color: MUTED, fontSize: 13.5, lineHeight: 19, textAlign: 'center', marginTop: 6, marginBottom: 18 },
+
+  tabs: { flexDirection: 'row', backgroundColor: '#f0f2f5', borderRadius: 12, padding: 4, marginBottom: 8 },
   tab: { flex: 1, paddingVertical: 11, borderRadius: 9, alignItems: 'center' },
-  tabActive: { backgroundColor: GOLD },
-  tabText: { color: '#9aa4b1', fontWeight: '700', fontSize: 15 },
+  tabActive: { backgroundColor: '#fff', shadowColor: '#1b2533', shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 2 },
+  tabText: { color: MUTED, fontWeight: '700', fontSize: 14.5 },
   tabTextActive: { color: NAVY },
 
-  label: { color: '#cbd2db', fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 12 },
+  field: { marginTop: 12 },
+  label: { color: '#3d4654', fontSize: 12.5, fontWeight: '700', marginBottom: 6 },
   input: {
-    backgroundColor: CARD, borderRadius: 11, paddingHorizontal: 14, paddingVertical: 13,
-    color: '#fff', fontSize: 15, borderWidth: 1, borderColor: '#33415680',
+    backgroundColor: '#fff', borderRadius: 11, paddingHorizontal: 14, paddingVertical: 13,
+    color: INK, fontSize: 15, borderWidth: 1, borderColor: LINE,
   },
-  warn: { color: '#e8806f', fontSize: 13, fontWeight: '600', marginTop: 6 },
-  ok: { color: '#5fc98a', fontSize: 13, fontWeight: '600', marginTop: 6 },
-  forgot: { color: GOLD, fontSize: 13, fontWeight: '600', marginTop: 10 },
+  warn: { color: '#c0392b', fontSize: 13, fontWeight: '600', marginTop: 6 },
+  ok: { color: '#1f8a4c', fontSize: 13, fontWeight: '600', marginTop: 6 },
+  forgot: { color: '#7a6550', fontSize: 13, fontWeight: '700', marginTop: 12 },
 
-  cta: { backgroundColor: GOLD, borderRadius: 12, paddingVertical: 16, alignItems: 'center', marginTop: 18 },
-  ctaDisabled: { opacity: 0.6 },
-  ctaText: { color: NAVY, fontSize: 16, fontWeight: '800' },
+  cta: { backgroundColor: NAVY, borderRadius: 12, paddingVertical: 15, alignItems: 'center', marginTop: 18 },
+  ctaDisabled: { opacity: 0.55 },
+  ctaText: { color: '#fff', fontSize: 16, fontWeight: '800' },
 
-  privacyNote: { color: '#9aa4b1', fontSize: 12, textAlign: 'center', marginTop: 14, lineHeight: 17, paddingHorizontal: 4 },
+  privacyNote: { color: MUTED, fontSize: 12, textAlign: 'center', marginTop: 14, lineHeight: 17, paddingHorizontal: 2 },
   privacyNoteRtl: { writingDirection: 'rtl' },
-  privacyLink: { color: GOLD, fontWeight: '700' },
+  privacyLink: { color: GOLD_D, fontWeight: '700' },
 
-  divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 20 },
-  line: { flex: 1, height: 1, backgroundColor: '#33415680' },
-  or: { color: '#7d8794', marginHorizontal: 12, fontSize: 13 },
+  divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 16 },
+  line: { flex: 1, height: 1, backgroundColor: LINE },
+  or: { color: '#9aa1ac', marginHorizontal: 12, fontSize: 12.5, fontWeight: '600' },
 
   oauth: {
-    backgroundColor: '#fff', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginBottom: 12,
+    backgroundColor: '#fff', borderRadius: 12, paddingVertical: 13, alignItems: 'center', marginBottom: 10,
+    borderWidth: 1, borderColor: LINE,
   },
   oauthInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
-  apple: { backgroundColor: '#000' },
-  oauthText: { color: '#1b2533', fontSize: 15, fontWeight: '700' },
+  apple: { backgroundColor: '#111', borderColor: '#111' },
+  oauthText: { color: NAVY, fontSize: 15, fontWeight: '700' },
+
+  trust: { color: 'rgba(231,220,196,0.72)', fontSize: 12, fontWeight: '600', textAlign: 'center', marginTop: 18 },
 
   overlay: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: '#000a', justifyContent: 'center', paddingHorizontal: 24,
+    backgroundColor: 'rgba(10,16,24,0.55)', justifyContent: 'center', paddingHorizontal: 22,
   },
-  modal: { backgroundColor: NAVY, borderRadius: 16, padding: 22, borderWidth: 1, borderColor: '#334156' },
-  modalTitle: { color: '#fff', fontSize: 18, fontWeight: '800' },
-  modalDesc: { color: '#9aa4b1', fontSize: 13, marginTop: 8, lineHeight: 19 },
+  modal: {
+    backgroundColor: '#fff', borderRadius: 18, padding: 22,
+    borderWidth: 1, borderColor: 'rgba(22,32,46,0.06)',
+  },
+  modalTitle: { color: NAVY, fontSize: 18, fontWeight: '800' },
+  modalDesc: { color: MUTED, fontSize: 13, marginTop: 8, lineHeight: 19 },
   cancel: { paddingVertical: 12, alignItems: 'center', marginTop: 6 },
-  cancelText: { color: '#9aa4b1', fontSize: 14, fontWeight: '600' },
+  cancelText: { color: MUTED, fontSize: 14, fontWeight: '600' },
 });

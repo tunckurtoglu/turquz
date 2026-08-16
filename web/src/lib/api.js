@@ -57,6 +57,7 @@ export async function getAgencyProfile(userId) {
   if (error) throw error;
   if (!data) return null;
   return {
+    regNo: data.reg_no ?? null,
     companyName: data.company_name || '',
     contactFirstName: data.contact_first_name || '',
     contactLastName: data.contact_last_name || '',
@@ -73,6 +74,33 @@ export async function uploadAgencyTaxPlate(userId, file) {
   const { error } = await supabase.storage.from('agency-docs').upload(path, file, { contentType: 'application/pdf', upsert: true });
   if (error) throw error;
   return path;
+}
+
+export async function saveAgencyTaxPlate(userId, file) {
+  const path = await uploadAgencyTaxPlate(userId, file);
+  const { error } = await supabase.from('agency_profiles').update({
+    tax_plate_path: path,
+    tax_plate_mime: 'application/pdf',
+    updated_at: new Date().toISOString(),
+  }).eq('user_id', userId);
+  if (error) throw error;
+  return path;
+}
+
+export async function getAgencyTaxPlateUrl(userId, expiresIn = 3600) {
+  const profile = await getAgencyProfile(userId);
+  if (!profile?.taxPlatePath) return null;
+  const { data, error } = await supabase.storage.from('agency-docs').createSignedUrl(profile.taxPlatePath, expiresIn);
+  if (error) throw error;
+  return data?.signedUrl || null;
+}
+
+export async function updateAgencyCompanyName(userId, companyName) {
+  const { error } = await supabase.from('agency_profiles').update({
+    company_name: (companyName || '').trim() || null,
+    updated_at: new Date().toISOString(),
+  }).eq('user_id', userId);
+  if (error) throw error;
 }
 
 export async function completeAgencySetup(userId, fields) {
@@ -130,8 +158,8 @@ export async function getRole(userId) {
 // candidate_pool (PII ayıklanmış görünüm) + candidate_status birleştirilir.
 export async function listPool() {
   const [{ data: cands, error: e1 }, { data: statuses }] = await Promise.all([
-    supabase.from('candidate_pool').select('user_id, title, data, reg_no, nationality, updated_at, last_seen_at').order('last_seen_at', { ascending: false, nullsFirst: false }),
-    supabase.from('candidate_status').select('user_id, docs_unlocked, stage, status'),
+    supabase.from('candidate_pool').select('user_id, title, data, reg_no, nationality, updated_at, last_seen_at, turquz_certified').order('last_seen_at', { ascending: false, nullsFirst: false }),
+    supabase.from('candidate_status').select('user_id, docs_unlocked, stage, status, accepted_by, docs_deadline_at, boarding_status, flight_depart_on, accepted_at'),
   ]);
   if (e1) throw e1;
   const byId = {};
@@ -140,16 +168,29 @@ export async function listPool() {
 }
 
 export async function getCandidate(userId) {
+  if (!userId) return null;
   const { data } = await supabase
     .from('candidate_pool')
-    .select('user_id, title, data, reg_no, nationality')
+    .select('user_id, title, data, reg_no, nationality, updated_at, last_seen_at')
     .eq('user_id', userId)
     .maybeSingle();
-  return data || null;
+  if (data) return data;
+  const { data: transit } = await supabase
+    .from('candidate_in_transit')
+    .select('user_id, title, data, reg_no, nationality, updated_at, last_seen_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (transit) return transit;
+  const { data: hired } = await supabase
+    .from('candidate_hired')
+    .select('user_id, title, data, reg_no, nationality, updated_at, last_seen_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+  return hired || null;
 }
 
 export async function getCandidateStatus(userId) {
-  const { data } = await supabase.from('candidate_status').select('user_id, docs_unlocked, stage, status').eq('user_id', userId).maybeSingle();
+  const { data } = await supabase.from('candidate_status').select('*').eq('user_id', userId).maybeSingle();
   return data || null;
 }
 
@@ -251,9 +292,121 @@ export async function withdrawCandidate(userId) {
   if (error) throw error;
 }
 
+export function isEmploymentNotif(type) {
+  const t = String(type || '');
+  return t.startsWith('employment_')
+    || t === 'work_start_confirm'
+    || t === 'work_start_remind';
+}
+
+export async function candidateIdFromNotif(n) {
+  if (!n) return null;
+  if (n.payload?.candidateId) return n.payload.candidateId;
+  const epId = n.payload?.episodeId;
+  if (epId) {
+    const { data } = await supabase
+      .from('employment_episodes')
+      .select('candidate_id')
+      .eq('id', epId)
+      .maybeSingle();
+    if (data?.candidate_id) return data.candidate_id;
+  }
+  return n.ref_user || null;
+}
+
 export async function endEmployment(userId) {
-  const { error } = await supabase.rpc('agency_end_employment', { p_candidate: userId });
+  const { data, error } = await supabase.rpc('request_employment_end', {
+    p_candidate: userId,
+    p_reason: null,
+  });
   if (error) throw error;
+  return data;
+}
+
+export async function undoEmploymentEnd(episodeId) {
+  const { error } = await supabase.rpc('undo_employment_end', { p_episode: episodeId });
+  if (error) throw error;
+}
+
+export async function contestEmploymentEnd(episodeId, note = null) {
+  const { error } = await supabase.rpc('contest_employment_end', {
+    p_episode: episodeId,
+    p_note: note,
+  });
+  if (error) throw error;
+}
+
+export async function acceptEmploymentEnd(episodeId) {
+  const { error } = await supabase.rpc('accept_employment_end', { p_episode: episodeId });
+  if (error) throw error;
+}
+
+export async function getCandidateEmploymentEpisode(candidateId) {
+  if (!candidateId) return null;
+  const { data, error } = await supabase.rpc('get_candidate_employment_episode', {
+    p_candidate: candidateId,
+  });
+  if (error) { console.warn(error.message); return null; }
+  return data || null;
+}
+
+export async function listFormerStaff(agencyId = null) {
+  const { data, error } = await supabase.rpc('list_former_staff', { p_agency: agencyId });
+  if (error) { console.warn(error.message); return []; }
+  return data || [];
+}
+
+export async function listCandidateWorkHistory(candidateId) {
+  if (!candidateId) return [];
+  const { data, error } = await supabase.rpc('list_candidate_work_history', {
+    p_candidate: candidateId,
+  });
+  if (error) { console.warn(error.message); return []; }
+  return data || [];
+}
+
+export async function setWorkStartAt(candidateId, startDate, flightDepart = null, endDate = null) {
+  const { error } = await supabase.rpc('agency_set_work_start', {
+    p_candidate: candidateId,
+    p_start: startDate,
+    p_flight_depart: flightDepart,
+    p_end: endDate,
+  });
+  if (error) throw error;
+}
+
+export async function confirmHire(candidateId) {
+  const { error } = await supabase.rpc('agency_confirm_hire', { p_candidate: candidateId });
+  if (error) throw error;
+}
+
+export async function deferWorkStart(candidateId, startDate) {
+  const { error } = await supabase.rpc('agency_defer_work_start', {
+    p_candidate: candidateId,
+    p_start: startDate,
+  });
+  if (error) throw error;
+}
+
+export async function listInTransit(agencyId) {
+  if (!agencyId) return [];
+  const { data, error } = await supabase
+    .from('candidate_in_transit')
+    .select('user_id, title, data, reg_no, nationality, work_start_at, flight_depart_on, planned_end_on, boarding_status, work_start_asked_at, last_seen_at')
+    .eq('accepted_by', agencyId);
+  if (error) { console.warn(error.message); return []; }
+  return (data || []).map((r) => ({ ...r, st: { status: 'in_transit', work_start_at: r.work_start_at, boarding_status: r.boarding_status, flight_depart_on: r.flight_depart_on } }));
+}
+
+export async function scanEmploymentLifecycle() {
+  try {
+    const { data, error } = await supabase.rpc('scan_employment_lifecycle');
+    if (error) throw error;
+    return data;
+  } catch (e) {
+    console.warn('İstihdam taraması:', e?.message || e);
+    return null;
+  }
 }
 
 // ---- Belgeler (aynı tablolar/storage) ----
@@ -409,7 +562,7 @@ export async function getLatestContractSignature(candidateUserId) {
 export async function listNotifications(userId, limit = 25) {
   const { data } = await supabase
     .from('notifications')
-    .select('id, type, ref_user, read_at, created_at')
+    .select('*')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -459,6 +612,7 @@ export {
 export function categoryOf(st) {
   if (!st) return 'pool';
   if (st.status === 'hired') return 'hired';
+  if (st.status === 'in_transit') return 'transit';
   if (st.docs_unlocked || st.status === 'accepted') return 'process';
   if (st.status === 'offered') return 'offered';
   return 'pool';

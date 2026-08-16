@@ -1,19 +1,18 @@
 // screens/PortalScreen.js
 // Açılış portalı: kullanıcı önce hangi tarafa gireceğini seçer (Aday / Acente / Otel).
-// Seçince ilgili AuthScreen akışı açılır. Otel henüz yok -> "yakında".
 import React from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Circle, Rect, Line } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
 import { HOTEL_PORTAL_ENABLED } from '../lib/features';
-const GOLD = '#c2a25a';
+
+const GOLD_D = '#9a7b1f';
 const TEAL = '#2a9db8';
 const NAVY = '#1b2533';
-const CARD = '#212d3e';
 
-// --- Çizgi stilinde marka ikonları (logoyla uyumlu) ---
-function PersonIcon({ color, size = 26 }) {
+function PersonIcon({ color, size = 24 }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Circle cx="12" cy="8" r="3.6" stroke={color} strokeWidth="1.8" />
@@ -21,7 +20,7 @@ function PersonIcon({ color, size = 26 }) {
     </Svg>
   );
 }
-function BuildingIcon({ color, size = 26 }) {
+function BuildingIcon({ color, size = 24 }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Rect x="4" y="3" width="16" height="18" rx="1.5" stroke={color} strokeWidth="1.8" />
@@ -35,7 +34,7 @@ function BuildingIcon({ color, size = 26 }) {
     </Svg>
   );
 }
-function BedIcon({ color, size = 26 }) {
+function BedIcon({ color, size = 24 }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Path d="M3 18v-5h18v5" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
@@ -44,7 +43,6 @@ function BedIcon({ color, size = 26 }) {
     </Svg>
   );
 }
-
 function ChevIcon({ color, size = 18 }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
@@ -56,12 +54,12 @@ function ChevIcon({ color, size = 18 }) {
 function PortalButton({ Icon, accent, label, desc, onPress, disabled, soonLabel }) {
   return (
     <TouchableOpacity
-      style={[styles.card, { borderColor: accent + '4d' }, disabled && styles.cardSoon]}
+      style={[styles.card, disabled && styles.cardSoon]}
       onPress={onPress}
-      activeOpacity={0.85}
+      activeOpacity={0.88}
       disabled={disabled}
     >
-      <View style={[styles.badge, { backgroundColor: accent + '1f', borderColor: accent + '59' }]}>
+      <View style={[styles.badge, { backgroundColor: accent + '18' }]}>
         <Icon color={accent} />
       </View>
       <View style={styles.cardMid}>
@@ -71,14 +69,12 @@ function PortalButton({ Icon, accent, label, desc, onPress, disabled, soonLabel 
       {disabled ? (
         <View style={styles.soonBadge}><Text style={styles.soonText}>{soonLabel}</Text></View>
       ) : (
-        <ChevIcon color={accent} />
+        <ChevIcon color="#9aa1ac" />
       )}
     </TouchableOpacity>
   );
 }
 
-// Cinzel (logo fontu) sadece Latin alfabesini destekler. Latin dışı dillerde
-// (Kiril/Tay/Fars) modern bold Inter'e düş; aksi halde karakterler kaybolur.
 const LATIN_LANGS = new Set(['tr', 'en', 'de', 'uz', 'tk']);
 
 export default function PortalScreen({ onSelect, fontsReady }) {
@@ -88,37 +84,54 @@ export default function PortalScreen({ onSelect, fontsReady }) {
 
   return (
     <View style={styles.flex}>
-      <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
+      <LinearGradient
+        colors={['#101820', '#1b2533', '#2a3545']}
+        locations={[0, 0.45, 1]}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={styles.glowA} pointerEvents="none" />
+      <View style={styles.glowB} pointerEvents="none" />
+
+      <ScrollView
+        contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 28, paddingBottom: insets.bottom + 28 }]}
+        showsVerticalScrollIndicator={false}
+      >
         <Image source={require('../assets/turquz-logo.png')} style={styles.logo} resizeMode="contain" />
-        <Text style={[styles.slogan, sloganFontStyle]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>– {t('portal_slogan')} –</Text>
+        <Text style={[styles.slogan, sloganFontStyle]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.7}>
+          {t('portal_slogan')}
+        </Text>
 
-        <View style={styles.divider} />
-
-        <PortalButton
-          Icon={PersonIcon}
-          accent={GOLD}
-          label={t('portal_candidate')}
-          desc={t('portal_candidate_desc')}
-          onPress={() => onSelect('candidate')}
-        />
-        <PortalButton
-          Icon={BuildingIcon}
-          accent={TEAL}
-          label={t('auth_agency_login')}
-          desc={t('portal_agency_desc')}
-          onPress={() => onSelect('agency')}
-        />
-        {HOTEL_PORTAL_ENABLED ? (
+        <View style={styles.sheet}>
           <PortalButton
-            Icon={BedIcon}
-            accent="#8a93a0"
-            label={t('portal_hotel')}
-            desc={t('portal_hotel_desc')}
-            disabled
-            soonLabel={t('soon')}
-            onPress={() => {}}
+            Icon={PersonIcon}
+            accent={GOLD_D}
+            label={t('portal_candidate')}
+            desc={t('portal_candidate_desc')}
+            onPress={() => onSelect('candidate')}
           />
-        ) : null}
+          <PortalButton
+            Icon={BuildingIcon}
+            accent={TEAL}
+            label={t('auth_agency_login')}
+            desc={t('portal_agency_desc')}
+            onPress={() => onSelect('agency')}
+          />
+          {HOTEL_PORTAL_ENABLED ? (
+            <PortalButton
+              Icon={BedIcon}
+              accent="#8a93a0"
+              label={t('portal_hotel')}
+              desc={t('portal_hotel_desc')}
+              disabled
+              soonLabel={t('soon')}
+              onPress={() => {}}
+            />
+          ) : null}
+        </View>
+
+        <Text style={styles.trust}>{t('auth_trust')}</Text>
       </ScrollView>
     </View>
   );
@@ -126,31 +139,50 @@ export default function PortalScreen({ onSelect, fontsReady }) {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: NAVY },
-  scroll: { paddingHorizontal: 24, minHeight: '100%' },
-  logo: { width: 240, height: 201, alignSelf: 'center', marginBottom: -10 },
+  glowA: {
+    position: 'absolute', top: -80, left: -60, width: 280, height: 280, borderRadius: 140,
+    backgroundColor: 'rgba(194,162,90,0.16)',
+  },
+  glowB: {
+    position: 'absolute', bottom: 60, right: -90, width: 260, height: 260, borderRadius: 130,
+    backgroundColor: 'rgba(42,157,184,0.12)',
+  },
+  scroll: { paddingHorizontal: 22, flexGrow: 1 },
+  logo: { width: 200, height: 168, alignSelf: 'center', marginBottom: 4 },
   slogan: {
-    color: '#b8923f', fontSize: 11.5, fontWeight: '700', textAlign: 'center', letterSpacing: 0.5, marginBottom: 22, lineHeight: 17,
-    textShadowColor: 'rgba(184,146,63,0.25)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2,
+    color: '#d4b978', fontSize: 11, fontWeight: '700', textAlign: 'center',
+    letterSpacing: 1.4, marginBottom: 12, textTransform: 'uppercase',
   },
   sloganFont: { fontFamily: 'Cinzel_700Bold', fontWeight: '400' },
   sloganFontAlt: { fontFamily: 'Inter_700Bold', fontWeight: '400' },
 
-  divider: { height: 1, backgroundColor: '#ffffff14', marginBottom: 22, marginHorizontal: 8 },
-
+  sheet: {
+    marginTop: 18,
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 6,
+  },
   card: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: CARD, borderRadius: 16, paddingVertical: 16, paddingHorizontal: 16,
-    marginBottom: 14, borderWidth: 1,
-    shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 4,
+    backgroundColor: '#fff', borderRadius: 14, paddingVertical: 14, paddingHorizontal: 12,
+    marginBottom: 6,
   },
-  cardSoon: { opacity: 0.55, shadowOpacity: 0 },
+  cardSoon: { opacity: 0.5 },
   badge: {
-    width: 50, height: 50, borderRadius: 25, borderWidth: 1,
-    alignItems: 'center', justifyContent: 'center', marginRight: 15,
+    width: 46, height: 46, borderRadius: 13,
+    alignItems: 'center', justifyContent: 'center', marginRight: 13,
   },
   cardMid: { flex: 1 },
-  cardLabel: { color: '#fff', fontSize: 16.5, fontWeight: '800', letterSpacing: 0.2 },
-  cardDesc: { color: '#97a2b0', fontSize: 12.5, marginTop: 3, lineHeight: 17 },
-  soonBadge: { backgroundColor: '#ffffff14', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
-  soonText: { color: '#cbd2db', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
+  cardLabel: { color: NAVY, fontSize: 16, fontWeight: '800', letterSpacing: -0.2 },
+  cardDesc: { color: '#6b7280', fontSize: 12.5, marginTop: 3, lineHeight: 17 },
+  soonBadge: { backgroundColor: '#f0f2f5', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  soonText: { color: '#6b7280', fontSize: 11, fontWeight: '800', letterSpacing: 0.4 },
+  trust: { color: 'rgba(231,220,196,0.72)', fontSize: 12, fontWeight: '600', textAlign: 'center', marginTop: 20 },
 });

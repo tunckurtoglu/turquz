@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { categoryOf, listInterviewCandidates, offerCandidate, notifyOffer } from '../lib/api';
+import { categoryOf, listInterviewCandidates, offerCandidate, notifyOffer, listFormerStaff, listInTransit } from '../lib/api';
+import { enrichProcessProgress } from '../lib/ops';
+import { attachEmployers, groupByEmployer, withFormerEmployerFields } from '../lib/employerAttach';
 import { useLang } from '../i18n.jsx';
-import { candidateCode, NATION_CODE } from '../../../lib/candidateCode';
+import { candidateCode, NATION_CODE, maskedName } from '../../../lib/candidateCode';
 import { formatLastSeen, lastSeenTier } from '../../../lib/lastSeenFormat';
 import { POSITION_LABELS, POSITION_SECTOR_LABELS, LANG_LABELS, SKILL_LABELS, EMPLOYMENT_STATUS_LABELS, WORK_AVAILABILITY_LABELS } from '../../../i18n/optionLabels';
 import { POSITIONS_BY_SECTOR, POSITION_SECTORS, LANGUAGES, SKILLS, EMPLOYMENT_STATUS, WORK_AVAILABILITY, normalizeWorkAvailability } from '../../../cv/options';
@@ -12,14 +14,16 @@ import { listFavoriteCandidateIds, removeFavorite } from '../lib/favorites';
 import FavoriteEmployerModal from '../components/FavoriteEmployerModal.jsx';
 import { JOIN_PERIOD_MIN, slotMs } from '../lib/interviews';
 
-const BADGE = { pool: 'gold', offered: 'navy', process: 'green', hired: 'teal' };
-const BADGE_TXT = { offered: 'Teklifli', process: 'Süreçte', hired: 'Personel' };
+const BADGE = { pool: 'gold', offered: 'navy', process: 'green', hired: 'teal', transit: 'navy' };
+const BADGE_TXT = { offered: 'Teklifli', process: 'Süreçte', hired: 'Personel', transit: 'Yolda' };
 const TITLES = { pool: 'Havuz', process: 'Süreç', hired: 'Personel' };
 const PROCESS_SUBS = [
   { id: 'interviews', key: 'sub_interviews' },
   { id: 'concluded', key: 'sub_concluded' },
+  { id: 'offered', key: 'sub_offered' },
   { id: 'inprocess', key: 'sub_inprocess' },
 ];
+const TURN_KEYS = { agency: 'turn_agency', candidate: 'turn_candidate', shared: 'docs_waiting' };
 const THIS_YEAR = new Date().getFullYear();
 const ageOf = (r) => { const y = parseInt(r.data?.birthYear, 10); return y ? THIS_YEAR - y : null; };
 const flagUrl = (nat) => { const cc = NATION_CODE[nat]; return cc && cc !== 'XX' ? `https://flagcdn.com/w40/${cc.toLowerCase()}.png` : ''; };
@@ -119,7 +123,7 @@ function WorkAreaFacet({ groups, selected, onToggle, title }) {
   );
 }
 
-export default function Pool({ category, query, rows, onOpen, agencyId, onRefresh }) {
+export default function Pool({ category, query, rows, onOpen, agencyId, onRefresh, processJump, onProcessJumpConsumed }) {
   const { t, lang } = useLang();
   const [fPos, setFPos] = useState([]);
   const [fLang, setFLang] = useState([]);
@@ -128,15 +132,22 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   const [fGender, setFGender] = useState([]);
   const [fEmployment, setFEmployment] = useState([]);
   const [fMonths, setFMonths] = useState([]);
+  const [fCertified, setFCertified] = useState(false);
   const [ageMin, setAgeMin] = useState('');
   const [ageMax, setAgeMax] = useState('');
   const [sort, setSort] = useState('online'); // son çevrimiçi (yeniden eskiye)
   const [collapsed, setCollapsed] = useState(false);
   const [ageOpen, setAgeOpen] = useState(false);
-  const [hiredView, setHiredView] = useState('cards'); // personeller: 'cards' | 'arrivals'
-  const [processSub, setProcessSub] = useState('interviews'); // interviews | concluded | inprocess
+  const [hiredView, setHiredView] = useState('cards'); // cards | transit | arrivals | former
+  const [processSub, setProcessSub] = useState('interviews'); // interviews | concluded | offered | inprocess
+  const [pipeStepFilter, setPipeStepFilter] = useState(null); // 1–6 | null
   const [ivRows, setIvRows] = useState([]);
   const [ivLoading, setIvLoading] = useState(false);
+  const [processMeta, setProcessMeta] = useState({}); // user_id -> { pipeStep, turn, titleKey }
+  const [formerRows, setFormerRows] = useState([]);
+  const [formerLoading, setFormerLoading] = useState(false);
+  const [transitRows, setTransitRows] = useState([]);
+  const [transitLoading, setTransitLoading] = useState(false);
   const [ratingMap, setRatingMap] = useState({});
   const [favEmployer, setFavEmployer] = useState(null); // { id, name }
   const [favIds, setFavIds] = useState(null); // string[] | null — shortlist sırası
@@ -144,6 +155,22 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [empSections, setEmpSections] = useState(null);
+
+  useEffect(() => {
+    if (!processJump) return;
+    if (['interviews', 'concluded', 'offered', 'inprocess'].includes(processJump)) {
+      setProcessSub(processJump);
+      setPipeStepFilter(null);
+    } else if (typeof processJump === 'string' && processJump.startsWith('pipe_')) {
+      setProcessSub('inprocess');
+      setPipeStepFilter(Number(processJump.slice(5)) || null);
+    }
+    if (processJump === 'transit') {
+      setHiredView('transit');
+    }
+    onProcessJumpConsumed?.();
+  }, [processJump, onProcessJumpConsumed]);
 
   const posLabel = (v) => (POSITION_LABELS[v]?.[lang] || POSITION_LABELS[v]?.en) || v;
   const langLabel = (v) => (LANG_LABELS[v]?.[lang] || LANG_LABELS[v]?.en) || v;
@@ -170,31 +197,110 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     return () => { alive = false; };
   }, [category, agencyId, rows]);
 
+  // Süreçtekiler: pipeline adımı + kimin sırası
+  useEffect(() => {
+    if (category !== 'process' || processSub !== 'inprocess' || !rows) {
+      setProcessMeta({});
+      return undefined;
+    }
+    let alive = true;
+    const inProc = rows.filter((r) => categoryOf(r.st) === 'process');
+    enrichProcessProgress(inProc).then((list) => {
+      if (!alive) return;
+      const m = {};
+      list.forEach((r) => {
+        m[r.user_id] = { pipeStep: r.pipeStep, turn: r.turn, titleKey: r.titleKey };
+      });
+      setProcessMeta(m);
+    });
+    return () => { alive = false; };
+  }, [category, processSub, rows]);
+
+  // Eski personel
+  useEffect(() => {
+    if (category !== 'hired' || hiredView !== 'former' || !agencyId) {
+      setFormerRows([]);
+      return undefined;
+    }
+    let alive = true;
+    setFormerLoading(true);
+    listFormerStaff(agencyId).then((list) => {
+      if (!alive) return;
+      setFormerRows((list || []).map((r) => ({
+        user_id: r.candidate_id,
+        title: r.title,
+        data: r.data || { positions: r.job_position ? [r.job_position] : [] },
+        reg_no: r.reg_no,
+        nationality: r.nationality,
+        last_seen_at: null,
+        st: { status: 'hired' },
+        former: true,
+        formerMeta: r,
+      })));
+      setFormerLoading(false);
+    }).catch(() => {
+      if (alive) { setFormerRows([]); setFormerLoading(false); }
+    });
+    return () => { alive = false; };
+  }, [category, hiredView, agencyId]);
+
+  // Yolda / transit
+  useEffect(() => {
+    if (category !== 'hired' || hiredView !== 'transit' || !agencyId) {
+      setTransitRows([]);
+      return undefined;
+    }
+    let alive = true;
+    setTransitLoading(true);
+    listInTransit(agencyId).then((list) => {
+      if (alive) { setTransitRows(list || []); setTransitLoading(false); }
+    }).catch(() => {
+      if (alive) { setTransitRows([]); setTransitLoading(false); }
+    });
+    return () => { alive = false; };
+  }, [category, hiredView, agencyId]);
+
   const base = useMemo(() => {
     if (!rows) return [];
     const term = (query || '').trim().toLocaleLowerCase('tr');
     const matchTerm = (r) => {
       if (!term) return true;
       const code = candidateCode(r.nationality, r.reg_no) || '';
+      const name = maskedName(r.data) || '';
+      const full = [r.data?.firstName, r.data?.lastName, r.data?.passportFirstName, r.data?.passportLastName].filter(Boolean).join(' ');
       const pos = (r.data?.positions || []).map(posLabel).join(' ');
-      return (`${code} ${pos} ${r.nationality || ''}`).toLocaleLowerCase('tr').includes(term);
+      return (`${code} ${name} ${full} ${pos} ${r.nationality || ''}`).toLocaleLowerCase('tr').includes(term);
     };
 
     if (category === 'hired') {
+      if (hiredView === 'former') return formerRows.filter(matchTerm);
+      if (hiredView === 'transit') return transitRows.filter(matchTerm);
       return rows.filter((r) => categoryOf(r.st) === 'hired' && matchTerm(r));
     }
     if (category === 'process') {
       if (processSub === 'inprocess') {
-        return rows.filter((r) => categoryOf(r.st) === 'process' && matchTerm(r));
+        return rows.filter((r) => {
+          if (categoryOf(r.st) !== 'process' || !matchTerm(r)) return false;
+          if (!pipeStepFilter) return true;
+          const step = processMeta[r.user_id]?.pipeStep;
+          if (pipeStepFilter === 6) return (step || 0) >= 6;
+          return step === pipeStepFilter;
+        });
+      }
+      if (processSub === 'offered') {
+        return rows.filter((r) => categoryOf(r.st) === 'offered' && matchTerm(r));
       }
       const now = Date.now();
       return ivRows
         .filter((r) => (processSub === 'concluded' ? isConcludedIv(r, now) : !isConcludedIv(r, now)))
         .filter(matchTerm);
     }
-    // Havuz: personel hariç
-    return rows.filter((r) => categoryOf(r.st) !== 'hired' && matchTerm(r));
-  }, [rows, query, category, lang, processSub, ivRows]);
+    // Havuz: personel + yolda hariç
+    return rows.filter((r) => {
+      const c = categoryOf(r.st);
+      return c !== 'hired' && c !== 'transit' && matchTerm(r);
+    });
+  }, [rows, query, category, lang, processSub, ivRows, hiredView, formerRows, transitRows, pipeStepFilter, processMeta]);
 
   const count = (pred) => base.reduce((n, r) => n + (pred(r) ? 1 : 0), 0);
   const byCount = (a, b) => b.count - a.count;
@@ -238,6 +344,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
       if (fGender.length && !fGender.includes(r.data?.gender)) return false;
       if (fEmployment.length && !fEmployment.includes(r.data?.employmentStatus)) return false;
       if (fMonths.length && !fMonths.includes(rowWorkAvail(r))) return false;
+      if (fCertified && !r.turquz_certified) return false;
       if (aMin || aMax) { const a = ageOf(r); if (a == null) return false; if (aMin && a < aMin) return false; if (aMax && a > aMax) return false; }
       return true;
     });
@@ -262,7 +369,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
       });
     }
     return out;
-  }, [base, fPos, fLang, fSkill, fNat, fGender, fEmployment, fMonths, ageMin, ageMax, sort, favIds, category, processSub]);
+  }, [base, fPos, fLang, fSkill, fNat, fGender, fEmployment, fMonths, fCertified, ageMin, ageMax, sort, favIds, category, processSub]);
 
   useEffect(() => {
     const ids = list.map((r) => r.user_id);
@@ -272,10 +379,37 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     return () => { alive = false; };
   }, [list]);
 
+  const groupByEmp = category === 'process' || (category === 'hired' && hiredView !== 'arrivals');
+  useEffect(() => {
+    if (!groupByEmp || !agencyId) {
+      setEmpSections(null);
+      return undefined;
+    }
+    if (!list.length) {
+      setEmpSections([]);
+      return undefined;
+    }
+    let alive = true;
+    (async () => {
+      let attached;
+      if (category === 'hired' && hiredView === 'former') {
+        attached = withFormerEmployerFields(list.map((r) => ({
+          ...r,
+          employer_title: r.formerMeta?.employer_title || r.employer_title,
+          employer_id: r.formerMeta?.employer_id,
+        })));
+      } else {
+        attached = await attachEmployers(agencyId, list);
+      }
+      if (alive) setEmpSections(groupByEmployer(attached, { noneLabel: t('employer_group_none') || 'İşletme atanmamış' }));
+    })();
+    return () => { alive = false; };
+  }, [list, groupByEmp, agencyId, category, hiredView, t]);
+
   const toggle = (set) => (v) => set((a) => (a.includes(v) ? a.filter((x) => x !== v) : [...a, v]));
   const rmFrom = (set) => (v) => set((a) => a.filter((x) => x !== v));
-  const activeCount = fPos.length + fLang.length + fSkill.length + fNat.length + fGender.length + fEmployment.length + fMonths.length + (ageMin || ageMax ? 1 : 0);
-  const clearAll = () => { setFPos([]); setFLang([]); setFSkill([]); setFNat([]); setFGender([]); setFEmployment([]); setFMonths([]); setAgeMin(''); setAgeMax(''); };
+  const activeCount = fPos.length + fLang.length + fSkill.length + fNat.length + fGender.length + fEmployment.length + fMonths.length + (fCertified ? 1 : 0) + (ageMin || ageMax ? 1 : 0);
+  const clearAll = () => { setFPos([]); setFLang([]); setFSkill([]); setFNat([]); setFGender([]); setFEmployment([]); setFMonths([]); setFCertified(false); setAgeMin(''); setAgeMax(''); };
 
   const chips = [
     ...fPos.map((v) => ({ id: 'p' + v, label: posLabel(v), rm: () => rmFrom(setFPos)(v) })),
@@ -285,6 +419,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     ...fEmployment.map((v) => ({ id: 'e' + v, label: employFilterLbl(v), rm: () => rmFrom(setFEmployment)(v) })),
     ...fMonths.map((v) => ({ id: 'm' + v, label: workLabel(v), rm: () => rmFrom(setFMonths)(v) })),
     ...fNat.map((v) => ({ id: 'n' + v, label: v, rm: () => rmFrom(setFNat)(v) })),
+    ...(fCertified ? [{ id: 'cert', label: '🏅 Turquz sertifikalı', rm: () => setFCertified(false) }] : []),
     ...((ageMin || ageMax) ? [{ id: 'age', label: `Yaş ${ageMin || '…'}–${ageMax || '…'}`, rm: () => { setAgeMin(''); setAgeMax(''); } }] : []),
   ];
 
@@ -379,6 +514,16 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
 
         <Facet title={t('f_gender') || 'Cinsiyet'} items={genderFacet} selected={fGender} onToggle={toggle(setFGender)} max={3} />
         <Facet title={t('f_employment_status') || 'Çalışma Durumu'} items={employFacet} selected={fEmployment} onToggle={toggle(setFEmployment)} max={2} />
+        <div className="facet">
+          <div className="facetTitle">{t('f_turquz_certified') || 'Turquz sertifikalı'}</div>
+          <button
+            type="button"
+            className={`facetChip ${fCertified ? 'on' : ''}`}
+            onClick={() => setFCertified((v) => !v)}
+          >
+            🏅 {t('f_turquz_certified') || 'Turquz sertifikalı'}
+          </button>
+        </div>
         <Facet title={t('f_work_duration') || 'Çalışma Süresi'} items={workFacet} selected={fMonths} onToggle={toggle(setFMonths)} max={2} />
 
         <WorkAreaFacet
@@ -399,8 +544,10 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
           <h1 className="ecTitle">{TITLES[category] || 'Adaylar'}</h1>
           {category === 'hired' ? (
             <div className="arrToggle">
-              <button className={`arrTab ${hiredView === 'cards' ? 'on' : ''}`} onClick={() => setHiredView('cards')}>Personeller</button>
-              <button className={`arrTab ${hiredView === 'arrivals' ? 'on' : ''}`} onClick={() => setHiredView('arrivals')}>🛬 Varışlar</button>
+              <button type="button" className={`arrTab ${hiredView === 'cards' ? 'on' : ''}`} onClick={() => setHiredView('cards')}>Personeller</button>
+              <button type="button" className={`arrTab ${hiredView === 'transit' ? 'on' : ''}`} onClick={() => setHiredView('transit')}>Yolda</button>
+              <button type="button" className={`arrTab ${hiredView === 'arrivals' ? 'on' : ''}`} onClick={() => setHiredView('arrivals')}>Varışlar</button>
+              <button type="button" className={`arrTab ${hiredView === 'former' ? 'on' : ''}`} onClick={() => setHiredView('former')}>Eski personel</button>
             </div>
           ) : null}
           {category === 'process' ? (
@@ -410,18 +557,41 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                   key={s.id}
                   type="button"
                   className={`arrTab ${processSub === s.id ? 'on' : ''}`}
-                  onClick={() => setProcessSub(s.id)}
+                  onClick={() => { setProcessSub(s.id); setPipeStepFilter(null); }}
                 >
-                  {t(s.key)}
+                  {s.id === 'offered' ? (t(s.key) || 'Teklif bekleyen') : t(s.key)}
                 </button>
               ))}
             </div>
           ) : null}
+          {category === 'process' && processSub === 'inprocess' && pipeStepFilter ? (
+            <div className="opsPipeFilter">
+              <span>
+                {t('ops_pipe_filter', {
+                  x: t(
+                    pipeStepFilter === 3 ? 'ops_funnel_ref'
+                      : pipeStepFilter === 4 ? 'ops_funnel_permit'
+                        : pipeStepFilter === 6 ? 'ops_funnel_transfer'
+                          : `pipe_step_${pipeStepFilter}`,
+                  ),
+                })}
+              </span>
+              <button type="button" onClick={() => setPipeStepFilter(null)}>{t('ops_pipe_clear')}</button>
+            </div>
+          ) : null}
           <div className="ecResultMeta">
             <span className="ecCount">
-              <b>{category === 'process' && ivLoading && processSub !== 'inprocess' ? '…' : list.length}</b>
+              <b>{
+                (category === 'process' && ivLoading && (processSub === 'interviews' || processSub === 'concluded'))
+                || (category === 'hired' && hiredView === 'former' && formerLoading)
+                || (category === 'hired' && hiredView === 'transit' && transitLoading)
+                  ? '…'
+                  : list.length
+              }</b>
               {' '}
-              {category === 'hired' ? 'personel' : 'aday'}
+              {category === 'hired'
+                ? (hiredView === 'former' ? 'eski' : hiredView === 'transit' ? 'yolda' : 'personel')
+                : 'aday'}
             </span>
             {agencyId && showFav ? (
               <button
@@ -492,14 +662,32 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                 ? (t('interviews_empty') || 'Mülakat teklif edilen aday yok.')
                 : category === 'process' && processSub === 'concluded'
                   ? (t('concluded_empty') || 'Sonuçlanan mülakat yok.')
-                  : category === 'process' && processSub === 'inprocess'
+                  : category === 'process' && processSub === 'offered'
+                ? (t('offered_empty') || 'Yanıt bekleyen teklif yok.')
+              : category === 'process' && processSub === 'inprocess'
                     ? (t('inprocess_empty') || 'Süreçte aday yok.')
+                    : category === 'hired' && hiredView === 'former'
+                      ? (t('former_empty') || 'Eski personel kaydı yok.')
+                    : category === 'hired' && hiredView === 'transit'
+                      ? 'Yolda / başlangıç bekleyen aday yok.'
                     : 'Bu görünümde aday yok.'}
           </div>
         ) : null}
 
-        <div className={`ecGrid ${collapsed ? 'wide' : ''}`}>
-          {list.map((r) => {
+        <div className="empGroups">
+          {(groupByEmp && empSections
+            ? empSections
+            : [{ key: 'all', title: null, data: list }]
+          ).map((sec) => (
+            <div key={sec.key} className="empGroup">
+              {sec.title ? (
+                <div className="empGroupHead">
+                  <strong>{sec.title}</strong>
+                  <span>{sec.data.length}</span>
+                </div>
+              ) : null}
+              <div className={`ecGrid ${collapsed ? 'wide' : ''}`}>
+                {sec.data.map((r) => {
             const c = categoryOf(r.st);
             const code = candidateCode(r.nationality, r.reg_no);
             const photo = r.data?.photoClose || r.data?.photo || r.data?.photoFull;
@@ -569,10 +757,43 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                 </div>
                 <div className="pcardBody">
                   <div className="pcardCode">{code}</div>
+                  {r.employerLabel ? <div className="pcardEmp">{r.employerLabel}</div> : null}
                   <div className="pcardNat">
                     {flag ? <img className="flag" src={flag} alt="" /> : null}
                     <span>{r.nationality || '—'}{age ? ` · ${age} yaş` : ''}</span>
                   </div>
+                  {category === 'process' && processSub === 'inprocess' && processMeta[r.user_id] ? (
+                    <div className={`pcardPipe turn-${processMeta[r.user_id].turn || 'none'}`}>
+                      <span className="pcardPipeStep">
+                        {processMeta[r.user_id].titleKey
+                          ? (t(processMeta[r.user_id].titleKey) || `Adım ${processMeta[r.user_id].pipeStep}`)
+                          : `Adım ${processMeta[r.user_id].pipeStep}`}
+                      </span>
+                      <span className="pcardPipeTurn">
+                        {TURN_KEYS[processMeta[r.user_id].turn]
+                          ? (t(TURN_KEYS[processMeta[r.user_id].turn]) || '')
+                          : ''}
+                      </span>
+                    </div>
+                  ) : null}
+                  {category === 'process' && processSub === 'offered' ? (
+                    <div className="pcardPipe turn-candidate">
+                      <span className="pcardPipeTurn">Aday yanıtı bekleniyor</span>
+                    </div>
+                  ) : null}
+                  {category === 'hired' && hiredView === 'transit' ? (
+                    <div className="pcardPipe turn-agency">
+                      <span className="pcardPipeStep">
+                        {r.work_start_at ? `Başlangıç ${String(r.work_start_at).slice(0, 10)}` : 'Başlangıç tarihi yok'}
+                      </span>
+                      <span className="pcardPipeTurn">Personel onayı bekleniyor</span>
+                    </div>
+                  ) : null}
+                  {r.former && r.formerMeta?.outcome ? (
+                    <div className="pcardPipe turn-none">
+                      <span className="pcardPipeTurn">{r.formerMeta.outcome}</span>
+                    </div>
+                  ) : null}
                   <div className={`pcardOnline tier-${lastSeenTier(r.last_seen_at)}`} title={r.last_seen_at || ''}>
                     <span className="onlineDot" />
                     <span className="pcardOnlineWhen">{formatLastSeen(r.last_seen_at, t)}</span>
@@ -584,7 +805,10 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                 </div>
               </div>
             );
-          })}
+                })}
+              </div>
+            </div>
+          ))}
         </div>
         </>
         )}

@@ -49,7 +49,9 @@ Deno.serve(async (req) => {
     ]);
     // Aday = user_roles satırı yok VEYA role=candidate. Acente/admin asla.
     const skip = new Set<string>();
-    (statuses || []).forEach((s) => { if (s.status === 'hired') skip.add(s.user_id); });
+    (statuses || []).forEach((s) => {
+      if (s.status === 'hired' || s.status === 'in_transit') skip.add(s.user_id);
+    });
     (roles || []).forEach((r) => {
       if (r.role === 'agency' || r.role === 'admin') skip.add(r.user_id);
     });

@@ -6,9 +6,13 @@ import Login from './screens/Login.jsx';
 import Agencies from './screens/Agencies.jsx';
 import Candidates from './screens/Candidates.jsx';
 import Hotels from './screens/Hotels.jsx';
+import Announcements from './screens/Announcements.jsx';
+import EmploymentDisputes from './screens/EmploymentDisputes.jsx';
 
 const TABS = [
   { id: 'overview', label: 'Özet' },
+  { id: 'announcements', label: 'Duyurular' },
+  { id: 'disputes', label: 'İstihdam' },
   { id: 'agencies', label: 'Acenteler' },
   { id: 'candidates', label: 'Adaylar' },
   { id: 'hotels', label: 'Oteller' },
@@ -117,6 +121,7 @@ export default function App() {
             <div className="card">
               <h2>Hızlı erişim</h2>
               <div className="actions">
+                <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('announcements')}>Duyuru gönder</button>
                 <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('agencies')}>Acenteleri aç</button>
                 <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('candidates')}>Adayları aç</button>
               </div>
@@ -144,6 +149,8 @@ export default function App() {
           <Candidates selectedId={candidateId} onSelect={setCandidateId} />
         ) : null}
 
+        {tab === 'announcements' ? <Announcements /> : null}
+        {tab === 'disputes' ? <EmploymentDisputes /> : null}
         {tab === 'hotels' ? <Hotels /> : null}
       </main>
     </div>

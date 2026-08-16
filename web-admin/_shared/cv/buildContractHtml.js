@@ -66,6 +66,29 @@ export function buildContractHtml(data = {}, contract = {}, opts = {}) {
     .signbox .sub { font-size: 11.5px; }
     .signbox .esign { font-size: 11.5px; }
     .signbox .esignmeta { font-size: 10px; }
+  }
+  /* Mobil / in-app tarayıcı: app önizlemesi gibi ekrana sığdır */
+  @media screen and (max-width: 640px) {
+    body {
+      font-size: 11px; line-height: 1.38; color: #1b2533;
+      padding: 12px 10px; max-width: none; margin: 0; width: 100%;
+      border-radius: 0; box-shadow: none; background: #fff;
+    }
+    h1 { font-size: 14px; margin-bottom: 6px; }
+    h1 .en { font-size: 11.5px; }
+    .sec { margin-top: 12px; }
+    p { margin: 5px 0; }
+    table.party { font-size: 11px; }
+    table.party td { padding: 5px 6px; }
+    table.party td.lbl { width: 40%; }
+    .signs { flex-direction: column; gap: 14px; margin-top: 14px; }
+    .signbox .area { height: 88px; }
+    .signbox .sub { font-size: 10.5px; }
+    .signbox .esign { font-size: 10.5px; }
+    .signbox .esignmeta { font-size: 9px; }
+    .page-break { padding-top: 10px; page-break-before: always; }
+    .letter .info .k { display: block; min-width: 0; margin-bottom: 2px; }
+    .letter .to { margin: 16px 0; font-size: 11px; }
   }` : ''}
   .en { font-style: italic; color: #1a1a1a; }
   h1 { text-align: center; font-size: 12pt; margin: 0 0 4px; }
@@ -78,7 +101,7 @@ export function buildContractHtml(data = {}, contract = {}, opts = {}) {
   table.party td.lbl { width: 32%; }
   table.party td.lbl .en { display: block; }
   .strong { font-weight: bold; }
-  .page-break { page-break-before: always; padding-top: 12mm; }
+  .page-break { page-break-before: always; break-before: page; padding-top: 12mm; }
   .signs { display: flex; gap: 24px; margin-top: 22px; }
   .signbox { flex: 1; text-align: center; }
   .signbox .head { font-weight: bold; }
@@ -133,6 +156,8 @@ export function buildContractHtml(data = {}, contract = {}, opts = {}) {
 <p><span class="num">4.</span> SÖZLEŞMENİN SÜRESİ: İşbu iş sözleşmesi Çalışma ve Sosyal Güvenlik Bakanlığından çalışma izni alınması halinde, çalışma izin belgesinde belirtilen tarihten itibaren 1(BİR) YIL sürelidir. Sözleşme, bitim tarihinde herhangi bir bildirim yapmaksızın kendiliğinden sona erer. İşçinin iş sözleşmesi sonunda da bu işyerinde çalışacak olması halinde iş sözleşmesinin yenilenerek Çalışma ve Sosyal Güvenlik Bakanlığına çalışma izni süre uzatım başvurusu yapılması ve izin alınması zorunludur.</p>
 <p class="en">DURATION OF THE CONTRACT: This employment contract is for 1 year, starting from the date specified in the work permit, in case the work permit is obtained from the Ministry of Labour and Social Security. The contract is terminated automatically on the expiry date without any notice. In the event that the employee will continue to work in this workplace after the end of the employment contract, it is obligatory to renew the employment contract and apply for a work permit extension to the Ministry of Labour and Social Security and obtain work permit.</p>
 
+<!-- 5–10 + imzalar 2. sayfada: 5. madde sayfa sonunda yalnız kalmasın -->
+<div class="page-break">
 <p><span class="num">5.</span> İŞE BAŞLAMA TARİHİ: Çalışma izni belgesinde belirtilen başlangıç tarihidir.</p>
 <p class="en">STARTING DATE OF EMPLOYMENT: It is the starting date specified in the work permit document.</p>
 
@@ -164,6 +189,7 @@ export function buildContractHtml(data = {}, contract = {}, opts = {}) {
     <div class="sub">Ad Soyad – İmza / <span class="en">Name Surname – Signature</span></div>
     <div class="area"></div>
   </div>
+</div>
 </div>
 
 <!-- ===================== SAYFA 3: KONSOLOSLUK BAŞVURU YAZISI ===================== -->

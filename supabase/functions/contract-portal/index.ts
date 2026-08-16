@@ -165,25 +165,57 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (action === 'checkout') {
+    // Ödeme sonrası: acentenin yüklediği contract_unsigned PDF (gerçek dosya).
+    if (action === 'download') {
+      if (!isPaid(row.payment_status)) {
+        return json({ error: 'payment_required' }, 402);
+      }
+      const { data: doc } = await admin
+        .from('user_documents')
+        .select('storage_path, mime_type')
+        .eq('user_id', row.user_id)
+        .eq('kind', 'contract_unsigned')
+        .maybeSingle();
+      if (!doc?.storage_path) {
+        return json({ error: 'pdf_missing' }, 404);
+      }
+      // Inline PDF (attachment değil): iOS Share → Dosyalara Kaydet
+      const { data: signed, error: signErr } = await admin.storage
+        .from('documents')
+        .createSignedUrl(doc.storage_path, 180);
+      if (signErr || !signed?.signedUrl) {
+        console.error('signed url error', signErr);
+        return json({ error: 'pdf_url_failed' }, 500);
+      }
+      return json({
+        downloadUrl: signed.signedUrl,
+        mimeType: doc.mime_type || 'application/pdf',
+        paid: true,
+      });
+    }
+
+    // Test / Stripe öncesi: CONTRACT_PAYMENT_DEV_BYPASS=true iken paid işaretle.
+    if (action === 'simulate_pay' || action === 'checkout') {
       if (isPaid(row.payment_status)) {
         return json({ paid: true, paymentStatus: row.payment_status });
       }
 
-      const stripeKey = Deno.env.get('STRIPE_SECRET_KEY') || '';
       const successBase = portalUrl(token, { paid: '1' });
       const cancelBase = portalUrl(token);
+      const bypass = Deno.env.get('CONTRACT_PAYMENT_DEV_BYPASS') === 'true';
 
-      // Geliştirme: Stripe yoksa ve bypass açıksa tek tıkla paid işaretle.
+      if (action === 'simulate_pay' || bypass) {
+        if (!bypass) return json({ error: 'simulate_pay_disabled' }, 403);
+        await admin.from('contracts').update({
+          payment_status: 'paid',
+          paid_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }).eq('user_id', row.user_id);
+        return json({ paid: true, paymentStatus: 'paid', simulated: true, checkoutUrl: successBase });
+      }
+
+      const stripeKey = Deno.env.get('STRIPE_SECRET_KEY') || '';
       if (!stripeKey) {
-        if (Deno.env.get('CONTRACT_PAYMENT_DEV_BYPASS') === 'true') {
-          await admin.from('contracts').update({
-            payment_status: 'paid',
-            paid_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          }).eq('user_id', row.user_id);
-          return json({ paid: true, paymentStatus: 'paid', checkoutUrl: successBase });
-        }
         return json({ error: 'stripe_not_configured' }, 503);
       }
 

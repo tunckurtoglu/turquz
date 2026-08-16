@@ -1,19 +1,31 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildContractHtml } from '../../cv/buildContractHtml.js';
 import { withLatinName } from '../../lib/translit.js';
 import { portalCall } from './api.js';
+import './styles.css';
 
 function tokenFromUrl() {
   const q = new URLSearchParams(window.location.search);
   return q.get('t') || '';
 }
 
-export default function App() {
+function fitFrame(iframe) {
+  try {
+    const doc = iframe?.contentDocument;
+    const h = doc?.documentElement?.scrollHeight || doc?.body?.scrollHeight;
+    if (h) iframe.style.height = `${Math.max(h + 24, 480)}px`;
+  } catch (_) { /* yoksay */ }
+}
+
+/** App’ten gelen token’lı sözleşme sayfası — kariyer landing’de menüde yok. */
+export default function ContractPortal() {
   const token = useMemo(() => tokenFromUrl(), []);
-  const [phase, setPhase] = useState('landing'); // landing | preview | busy | err
+  const frameRef = useRef(null);
+  const [phase, setPhase] = useState('landing');
   const [err, setErr] = useState('');
   const [paid, setPaid] = useState(false);
   const [html, setHtml] = useState('');
+  const [screenHtml, setScreenHtml] = useState('');
   const [busy, setBusy] = useState(false);
 
   const refreshStatus = async () => {
@@ -32,7 +44,7 @@ export default function App() {
     refreshStatus()
       .then(() => {
         if (q.get('paid') === '1') {
-          // Stripe dönüşü — durumu yenile, önizlemeyi açma zorunlu değil
+          // Stripe / test dönüşü
         }
       })
       .catch((e) => {
@@ -52,6 +64,7 @@ export default function App() {
         p.contract || {},
         p.signature ? { signature: p.signature, screen: true } : { screen: true },
       );
+      setScreenHtml(doc);
       setHtml(doc);
       setPhase('preview');
     } catch (e) {
@@ -62,40 +75,65 @@ export default function App() {
     }
   };
 
+  /** Görünür iframe üzerinden yazdır — yeni pencere / gizli iframe yok (in-app Safari uyumlu). */
   const printContract = async () => {
-    const w = window.open('', '_blank');
-    if (!w) {
-      setErr('Açılır pencere engellendi. Lütfen izin verin.');
-      return;
-    }
     const payload = await portalCall({ action: 'payload', token });
     const printHtml = buildContractHtml(
       withLatinName(payload.data || {}),
       payload.contract || {},
       payload.signature ? { signature: payload.signature, screen: false } : { screen: false },
     );
-    w.document.open();
-    w.document.write(printHtml);
-    w.document.close();
-    setTimeout(() => { try { w.focus(); w.print(); } catch (_) { /* yoksay */ } }, 400);
-    setPaid(true);
+
+    const iframe = frameRef.current;
+    if (!iframe) throw new Error('print_unavailable');
+
+    await new Promise((resolve, reject) => {
+      let done = false;
+      const finish = (err) => {
+        if (done) return;
+        done = true;
+        iframe.removeEventListener('load', onLoad);
+        if (err) reject(err);
+        else resolve();
+      };
+      const onLoad = () => {
+        fitFrame(iframe);
+        setTimeout(() => {
+          try {
+            iframe.contentWindow?.focus();
+            iframe.contentWindow?.print();
+            finish();
+          } catch (e) {
+            finish(e);
+          } finally {
+            // Önizlemeyi geri yükle
+            setTimeout(() => {
+              if (screenHtml) setHtml(screenHtml);
+            }, 800);
+          }
+        }, 350);
+      };
+      iframe.addEventListener('load', onLoad);
+      setHtml(printHtml);
+      // srcDoc aynı kalırsa load tetiklenmeyebilir
+      setTimeout(() => {
+        if (!done && iframe.contentDocument?.readyState === 'complete') onLoad();
+      }, 600);
+    });
   };
 
-  const onDownload = async () => {
+  const onPay = async () => {
     setBusy(true);
     setErr('');
     try {
       const st = await portalCall({ action: 'status', token });
       if (st.paid) {
-        await printContract();
+        setPaid(true);
         return;
       }
-
-      // Ödeme: Stripe Checkout (veya dev bypass)
-      const c = await portalCall({ action: 'checkout', token });
+      const c = await portalCall({ action: 'simulate_pay', token });
       if (c.paid) {
         setPaid(true);
-        await printContract();
         return;
       }
       if (c.checkoutUrl) {
@@ -104,8 +142,44 @@ export default function App() {
       }
       setErr('Ödeme başlatılamadı.');
     } catch (e) {
-      setErr(e.message === 'stripe_not_configured'
-        ? 'Ödeme henüz yapılandırılmadı. Turquz ile iletişime geçin.'
+      if (e.message === 'simulate_pay_disabled' || e.message === 'stripe_not_configured') {
+        try {
+          const c = await portalCall({ action: 'checkout', token });
+          if (c.paid) {
+            setPaid(true);
+            return;
+          }
+          if (c.checkoutUrl) {
+            window.location.href = c.checkoutUrl;
+            return;
+          }
+        } catch (e2) {
+          setErr(e2.message === 'stripe_not_configured'
+            ? 'Ödeme henüz yapılandırılmadı. Turquz ile iletişime geçin.'
+            : (e2.message || 'error'));
+          return;
+        }
+      }
+      setErr(e.message || 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onDownload = async () => {
+    setBusy(true);
+    setErr('');
+    try {
+      const st = await portalCall({ action: 'status', token });
+      if (!st.paid) {
+        setErr('Önce ödemeyi tamamlayın.');
+        return;
+      }
+      setPaid(true);
+      await printContract();
+    } catch (e) {
+      setErr(e.message === 'print_unavailable'
+        ? 'Yazdırma açılamadı. Lütfen tekrar deneyin.'
         : (e.message || 'error'));
     } finally {
       setBusy(false);
@@ -116,10 +190,7 @@ export default function App() {
     return (
       <div className="shell">
         <header className="top"><span className="brand">TURQUZ</span></header>
-        <main className="card">
-          <h1>Sözleşme</h1>
-          <p className="err">{err}</p>
-        </main>
+        <main className="card"><h1>Sözleşme</h1><p className="err">{err}</p></main>
       </div>
     );
   }
@@ -138,7 +209,7 @@ export default function App() {
           {paid ? <p className="ok">✓ İşlem ücreti alındı — indirebilirsiniz.</p> : null}
           {err ? <p className="err">{err}</p> : null}
           <button type="button" className="btn primary" disabled={busy} onClick={openPreview}>
-            {busy ? 'Yükleniyor…' : 'Sözleşmeyi görüntüle'}
+            {busy ? 'Yükleniyor…' : 'Sözleşmeyi incele'}
           </button>
         </main>
       </div>
@@ -149,20 +220,34 @@ export default function App() {
     <div className="shell preview">
       <header className="top bar">
         <span className="brand">TURQUZ</span>
-        <div className="actions">
-          <button type="button" className="btn ghost" onClick={() => setPhase('landing')}>Geri</button>
-          <button type="button" className="btn primary" disabled={busy} onClick={onDownload}>
-            {busy ? '…' : (paid ? 'İndir / Yazdır' : 'İndir')}
-          </button>
-        </div>
+        <button type="button" className="btn ghost" onClick={() => setPhase('landing')}>Geri</button>
       </header>
       {err ? <p className="err banner">{err}</p> : null}
       {!paid ? (
-        <p className="tip">İndir’e bastığınızda güvenli ödeme adımı açılır. Ödeme tamamlanınca sözleşmeyi indirebilirsiniz.</p>
+        <p className="tip">İnceledikten sonra ödemeyi tamamlayın. (Test: kart yok.)</p>
       ) : (
-        <p className="tip ok">Ödeme tamam — sözleşmeyi yazdırıp imzalayın, uygulamadan yükleyin.</p>
+        <p className="tip ok">Ödeme tamam — yazdırıp imzalayın, uygulamadan yükleyin.</p>
       )}
-      <iframe title="Sözleşme" className="frame" srcDoc={html} />
+      <div className="ctaBar">
+        {!paid ? (
+          <button type="button" className="btn primary" disabled={busy} onClick={onPay}>
+            {busy ? 'İşleniyor…' : 'Ödeme yap'}
+          </button>
+        ) : (
+          <button type="button" className="btn primary" disabled={busy} onClick={onDownload}>
+            {busy ? 'Hazırlanıyor…' : 'İndir / Yazdır'}
+          </button>
+        )}
+      </div>
+      <div className="frameWrap">
+        <iframe
+          ref={frameRef}
+          title="Sözleşme"
+          className="frame"
+          srcDoc={html}
+          onLoad={(e) => fitFrame(e.currentTarget)}
+        />
+      </div>
     </div>
   );
 }

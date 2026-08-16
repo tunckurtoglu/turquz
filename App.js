@@ -1,10 +1,11 @@
 // App.js
 // Akış: dil seçimi -> (oturum yoksa) giriş/kayıt -> karşılama -> form -> teşekkür -> home.
 // Oturum Supabase'te tutulur; uygulama açılışında okunur, değişimi dinlenir.
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, StyleSheet, StatusBar, ActivityIndicator } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Localization from 'expo-localization';
+import * as Notifications from 'expo-notifications';
 import { useFonts, PlayfairDisplay_700Bold } from '@expo-google-fonts/playfair-display';
 import { Inter_400Regular, Inter_700Bold } from '@expo-google-fonts/inter';
 import { Cinzel_700Bold } from '@expo-google-fonts/cinzel';
@@ -31,9 +32,10 @@ import {
   createSessionFromUrl, getInitialAuthUrl, isAuthCallbackUrl, subscribeAuthUrls,
 } from './lib/authDeepLink';
 import { saveProfile, loadProfile } from './lib/profile';
-import { getRole } from './lib/roles';
+import { getRole, getCandidateById } from './lib/roles';
 import { isAgencySetupComplete } from './lib/agencyProfile';
 import { registerForPush, notifyNewCandidate, scanInterviewReminders, scanInterviewSla, scheduleDailyActivityNudge, cancelDailyActivityNudge } from './lib/push';
+import { scanEmploymentLifecycle } from './lib/employment';
 import { startLastSeenTracking } from './lib/lastSeen';
 import { checkForOtaUpdate } from './lib/updates';
 import { syncAppIconTheme, watchAppIconTheme } from './lib/appIcon';
@@ -65,7 +67,12 @@ function Root() {
   const [roleReady, setRoleReady] = useState(false);  // getRole bitmeden aday varsayılanıyla nudge planlanmasın
   const [agencySetupOk, setAgencySetupOk] = useState(null); // null=yükleniyor, true/false
   const [selectedCandidate, setSelectedCandidate] = useState(null); // acente: seçili aday
+  const [docsOpenChat, setDocsOpenChat] = useState(false); // aday: bildirimden belgeleri+chat aç
+  const [docsScrollStep, setDocsScrollStep] = useState(null); // kariyer kartı: ilgili aşamaya kaydır
+  const [docsReturnJourney, setDocsReturnJourney] = useState(false); // detaylardan geri → yol haritası
+  const [homeJourneyOpen, setHomeJourneyOpen] = useState(false);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
+  const handledPushTapRef = useRef(null);
   const update = (patch) => setData((d) => ({ ...d, ...patch }));
 
   const [fontsReady] = useFonts({ PlayfairDisplay_700Bold, Inter_400Regular, Inter_700Bold, Cinzel_700Bold, DancingScript_700Bold });
@@ -191,13 +198,55 @@ function Root() {
       registerForPush(session.user.id, lang);
       scanInterviewReminders();
       scanInterviewSla();
+      scanEmploymentLifecycle();
     }
   }, [session?.user?.id, lang]);
 
+  // Push bildirimine tıklanınca (chat_message → sohbet ekranı).
+  useEffect(() => {
+    if (!authReady || !session?.user?.id || !roleReady) return undefined;
+
+    const openFromPushData = async (data) => {
+      if (!data || data.kind !== 'chat_message') return;
+      if (role === 'agency' || role === 'admin') {
+        const id = data.candidateUserId;
+        if (!id) return;
+        try {
+          const c = await getCandidateById(id);
+          if (c) {
+            setSelectedCandidate({ c, st: { _openChat: true } });
+            setStage(STAGE.AGENCY_CANDIDATE);
+          }
+        } catch (e) { /* yoksay */ }
+      } else {
+        setDocsOpenChat(true);
+        setDocsScrollStep(null);
+        setStage(STAGE.DOCS);
+      }
+    };
+
+    const handleResponse = (response) => {
+      if (!response) return;
+      const id = response?.notification?.request?.identifier;
+      if (id && handledPushTapRef.current === id) return;
+      if (id) handledPushTapRef.current = id;
+      openFromPushData(response?.notification?.request?.content?.data);
+      Notifications.clearLastNotificationResponseAsync?.().catch?.(() => {});
+    };
+
+    const sub = Notifications.addNotificationResponseReceivedListener(handleResponse);
+    Notifications.getLastNotificationResponseAsync?.()
+      .then(handleResponse)
+      .catch(() => {});
+
+    return () => sub.remove();
+  }, [authReady, session?.user?.id, roleReady, role]);
+
   // Aday: last_seen + günlük "app'e gir" hatırlatması. Acente/admin asla planlanmaz; eski plan iptal.
+  // role satırı henüz yoksa (OAuth defer) getRole 'candidate' döner — yine de izle.
   useEffect(() => {
     if (!session?.user?.id || !roleReady) return undefined;
-    if (role !== 'candidate') {
+    if (role === 'agency' || role === 'admin') {
       cancelDailyActivityNudge();
       return undefined;
     }
@@ -351,10 +400,17 @@ function Root() {
           fontsReady={fontsReady}
           data={data}
           userId={session?.user?.id}
+          openJourney={homeJourneyOpen}
+          onJourneyOpened={() => setHomeJourneyOpen(false)}
           onPreview={() => goForm(7, STAGE.HOME, true, STAGE.HOME)}
           onEdit={() => goForm(0, STAGE.HOME, false, STAGE.HOME)}
           onOpenSettings={() => setStage(STAGE.SETTINGS)}
-          onOpenDocs={() => setStage(STAGE.DOCS)}
+          onOpenDocs={(opts) => {
+            setDocsOpenChat(!!opts?.openChat);
+            setDocsScrollStep(opts?.scrollToStep || null);
+            setDocsReturnJourney(!!opts?.returnToJourney);
+            setStage(STAGE.DOCS);
+          }}
           onLogout={handleLogout}
           onSaveData={(patch) => { const nd = { ...data, ...patch }; setData(nd); persist(nd); }}
         />
@@ -366,7 +422,16 @@ function Root() {
           fontsReady={fontsReady}
           data={data}
           userId={session?.user?.id}
-          onBack={() => setStage(STAGE.HOME)}
+          initialChatOpen={docsOpenChat}
+          initialScrollStep={docsScrollStep}
+          onBack={() => {
+            const reopenJourney = docsReturnJourney;
+            setDocsOpenChat(false);
+            setDocsScrollStep(null);
+            setDocsReturnJourney(false);
+            setHomeJourneyOpen(reopenJourney);
+            setStage(STAGE.HOME);
+          }}
         />
       );
 
@@ -430,12 +495,16 @@ function Root() {
           fontsReady={fontsReady}
           candidate={selectedCandidate?.c}
           agencyUserId={session?.user?.id}
-          accepted={!!selectedCandidate?.st?.docs_unlocked || selectedCandidate?.st?.status === 'hired'}
+          accepted={!!selectedCandidate?.st?.docs_unlocked || selectedCandidate?.st?.status === 'hired' || selectedCandidate?.st?.status === 'in_transit'}
           offered={selectedCandidate?.st?.status === 'offered'}
           hired={selectedCandidate?.st?.status === 'hired'}
+          inTransit={selectedCandidate?.st?.status === 'in_transit'}
           openIvJoin={!!selectedCandidate?.st?._openIvJoin}
-          onBack={() => setStage(STAGE.AGENCY)}
-          onAccepted={() => setStage(STAGE.AGENCY)}
+          openChat={!!selectedCandidate?.st?._openChat}
+          openWorkStart={!!selectedCandidate?.st?._openWorkStart}
+          openHireConfirm={!!selectedCandidate?.st?._openHireConfirm || selectedCandidate?.st?.status === 'in_transit'}
+          onBack={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
+          onAccepted={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
         />
       );
 

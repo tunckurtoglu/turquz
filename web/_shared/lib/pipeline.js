@@ -2,26 +2,61 @@
 // Aday ↔ acenta sıralı belge akışı. Her adım bir öncekini bekler; belge yüklenince
 // sonraki adım otomatik açılır. Hem aday hem acente ekranı bu tanımı kullanır.
 //
-// owner: o adımdaki belgeyi kimin yükleyeceği ('candidate' | 'agency')
+// owner: adımın varsayılan sorumlusu ('candidate' | 'agency' | 'shared')
+// shared: aynı kartta acente + aday belgeleri (sözleşme görüntüle → imzalı yükle)
 export const PIPELINE = [
   // 1) İLK PAKET: aday tüm bu belgeleri TEK SEFERDE 10 gün içinde gönderir.
-  //    Pasaport dışındakiler PDF zorunlu (aday ekranında uygulanır).
-  { step: 1, owner: 'candidate', kinds: ['passport', 'diploma', 'criminal', 'health_report'] },
-  { step: 2, owner: 'agency',    kinds: ['contract_unsigned'] },               // acente hizmet sözleşmesi
-  { step: 3, owner: 'candidate', kinds: ['contract_signed'] },                 // aday imzalı sözleşme
-  { step: 4, owner: 'candidate', kinds: ['consulate_ref'] },                   // konsolosluk ref no
-  { step: 5, owner: 'candidate', kinds: ['work_permit'] },                     // çalışma izni / vize
-  { step: 6, owner: 'agency',    kinds: ['flight_ticket'] },                   // uçak bileti
+  { step: 1, owner: 'candidate', titleKey: 'pipe_step_1', kinds: ['passport', 'diploma', 'criminal', 'health_report'] },
+  // 2) Sözleşme: acente gönderir → aday görüntüler/indirir → imzalı yükler (tek aşama)
+  { step: 2, owner: 'shared', titleKey: 'pipe_step_2', kinds: ['contract_unsigned', 'contract_signed'] },
+  { step: 3, owner: 'candidate', titleKey: 'pipe_step_3', kinds: ['consulate_ref'] },
+  { step: 4, owner: 'candidate', titleKey: 'pipe_step_4', kinds: ['work_permit'] },
+  { step: 5, owner: 'agency', titleKey: 'pipe_step_5', kinds: ['flight_ticket'] },
 ];
 
 // İlk belge paketi için süre (gün).
 export const PASSPORT_DEADLINE_DAYS = 10;
+/** Adayın ilk paket için bir kez talep edebileceği ek süre. */
+export const DOCS_EXTRA_DAYS = 3;
+
+/** Belgeyi kim yükler / tamamlar? */
+export function kindOwner(kind) {
+  if (kind === 'success_certificate') return 'admin';
+  if (kind === 'contract_unsigned' || kind === 'flight_ticket') return 'agency';
+  return 'candidate';
+}
+
+/** Aktif adımda kart etiketinin kime göre gösterileceği (shared adım dinamik). */
+export function stepActor(stepDef, has) {
+  if (!stepDef) return 'candidate';
+  if (stepDef.owner !== 'shared') return stepDef.owner;
+  // Sözleşme: imzasız yoksa acente sırası; varsa aday sırası
+  if (!has('contract_unsigned')) return 'agency';
+  return 'candidate';
+}
 
 // Görüntü için sıralı tüm belgeler: [{ kind, owner, step }]
-export const PIPELINE_KINDS = PIPELINE.flatMap((s) => s.kinds.map((k) => ({ kind: k, owner: s.owner, step: s.step })));
+export const PIPELINE_KINDS = PIPELINE.flatMap((s) =>
+  s.kinds.map((k) => ({ kind: k, owner: kindOwner(k), step: s.step })),
+);
 
 export function stepDefForKind(kind) {
   return PIPELINE.find((s) => s.kinds.includes(kind));
+}
+
+export const JOURNEY_COUNT = 7;
+
+/** Görünen kariyer adımı (1–7). Pickup ve sertifika PIPELINE dışında. */
+export function journeyStep(has, pickupSent) {
+  const act = activeStep(has);
+  if (act <= 5) return act;
+  if (!has('success_certificate') && !pickupSent) return 6;
+  return 7;
+}
+
+export function journeyTitleKey(step) {
+  if (step >= 1 && step <= 7) return `pipe_step_${step}`;
+  return null;
 }
 
 // has: (kind) => boolean. Aktif adım = ilk tamamlanmamış adım. Hepsi tamamsa son+1.
@@ -32,20 +67,27 @@ export function activeStep(has) {
   return PIPELINE.length + 1;
 }
 
-// Bir belgenin durumu: 'done' (yüklü) | 'active' (sırası gelmiş) | 'locked' (kilitli)
+// Bir belgenin durumu: 'done' (gönderilmiş) | 'active' (sırası gelmiş) | 'locked' (kilitli)
+// Aynı adımdaki AYNI sorumlunun belgeleri birlikte açılır (ilk paket: 4 belge birden).
+// Farklı sorumlunun öncülü varsa o gönderilmeden kilitli kalır (sözleşme: imzasız → imzalı).
 export function kindState(kind, has) {
   if (has(kind)) return 'done';
   const def = stepDefForKind(kind);
   if (!def) return 'locked';
   const act = activeStep(has);
-  if (def.step <= act) return 'active';
-  return 'locked';
+  if (def.step > act) return 'locked';
+  const owner = kindOwner(kind);
+  const idx = def.kinds.indexOf(kind);
+  const waitFor = def.kinds.slice(0, idx).filter((k) => kindOwner(k) !== owner);
+  if (!waitFor.every((k) => has(k))) return 'locked';
+  return 'active';
 }
 
 // Adayın bekleyen (sırası gelmiş + henüz yüklenmemiş) belge sayısı (anasayfa uyarısı için).
 export function candidatePendingCount(has) {
   const act = activeStep(has);
   const def = PIPELINE.find((s) => s.step === act);
-  if (!def || def.owner !== 'candidate') return 0;
-  return def.kinds.filter((k) => !has(k)).length;
+  if (!def) return 0;
+  if (stepActor(def, has) !== 'candidate') return 0;
+  return def.kinds.filter((k) => kindOwner(k) === 'candidate' && !has(k)).length;
 }

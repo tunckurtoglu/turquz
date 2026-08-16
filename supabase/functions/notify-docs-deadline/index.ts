@@ -30,8 +30,10 @@ async function isStaff(admin: AdminClient, userId: string): Promise<boolean> {
   return data?.role === 'agency' || data?.role === 'admin';
 }
 
-function isOverdue(acceptedAt: string): boolean {
-  const end = new Date(new Date(acceptedAt).getTime() + DEADLINE_DAYS * 24 * 3600 * 1000);
+function isOverdue(st: { accepted_at?: string; docs_deadline_at?: string | null }): boolean {
+  const end = st.docs_deadline_at
+    ? new Date(st.docs_deadline_at)
+    : new Date(new Date(st.accepted_at!).getTime() + DEADLINE_DAYS * 24 * 3600 * 1000);
   return end.getTime() < Date.now();
 }
 
@@ -52,13 +54,13 @@ async function notifyOne(
 ): Promise<'sent' | 'skipped'> {
   const { data: st } = await admin
     .from('candidate_status')
-    .select('status, accepted_at, accepted_by, docs_deadline_notified_at')
+    .select('status, accepted_at, accepted_by, docs_deadline_notified_at, docs_deadline_at')
     .eq('user_id', candidateUserId)
     .maybeSingle();
 
   if (!st || st.status !== 'accepted' || !st.accepted_at) return 'skipped';
   if (st.docs_deadline_notified_at) return 'skipped';
-  if (!isOverdue(st.accepted_at)) return 'skipped';
+  if (!isOverdue(st)) return 'skipped';
   if (await step1Complete(admin, candidateUserId)) return 'skipped';
 
   const agencyRaw = st.accepted_by;

@@ -25,15 +25,31 @@ export async function syncChatLang(lang) {
 
 export function subscribeProcessMessages(chatId, onChange) {
   if (!chatId) return () => {};
+  let timer = null;
+  const fire = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      try { onChange(); } catch { /* */ }
+    }, 280);
+  };
   const ch = supabase
     .channel(`web_process_chat_${chatId}`)
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'process_chat_messages', filter: `chat_id=eq.${chatId}` },
-      () => { try { onChange(); } catch { /* */ } },
+      fire,
+    )
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'process_chat_messages', filter: `chat_id=eq.${chatId}` },
+      fire,
     )
     .subscribe();
-  return () => { try { supabase.removeChannel(ch); } catch { /* */ } };
+  return () => {
+    if (timer) clearTimeout(timer);
+    try { supabase.removeChannel(ch); } catch { /* */ }
+  };
 }
 
 export async function getAgencyNotifPrefs() {

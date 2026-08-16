@@ -18,12 +18,12 @@ export default function ProcessChat({ candidateId, peerLabel, onClose }) {
   const [err, setErr] = useState('');
   const endRef = useRef(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ spinner } = { spinner: true }) => {
     if (!candidateId) return;
-    setLoading(true);
+    if (spinner) setLoading(true);
     setErr('');
     try {
-      await syncChatLang(lang);
+      syncChatLang(lang);
       const data = await listProcessMessages(candidateId, lang);
       setChatId(data.chatId || null);
       setMessages(data.messages || []);
@@ -34,10 +34,10 @@ export default function ProcessChat({ candidateId, peerLabel, onClose }) {
     }
   }, [candidateId, lang, t]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load({ spinner: true }); }, [load]);
   useEffect(() => {
     if (!chatId) return undefined;
-    return subscribeProcessMessages(chatId, () => { load(); });
+    return subscribeProcessMessages(chatId, () => { load({ spinner: false }); });
   }, [chatId, load]);
   useEffect(() => { endRef.current?.scrollIntoView?.({ behavior: 'smooth' }); }, [messages]);
 
@@ -45,13 +45,32 @@ export default function ProcessChat({ candidateId, peerLabel, onClose }) {
     e?.preventDefault?.();
     const body = text.trim();
     if (!body || sending) return;
-    setSending(true);
+    const tempId = `local-${Date.now()}`;
+    setText('');
     setErr('');
+    setMessages((m) => [...m, {
+      id: tempId,
+      body,
+      original: body,
+      sourceLang: lang,
+      createdAt: new Date().toISOString(),
+      mine: true,
+    }]);
+    setSending(true);
     try {
       const data = await sendProcessMessage(candidateId, body, lang);
-      if (data?.message) setMessages((m) => [...m, data.message]);
-      setText('');
+      if (data?.message) {
+        setMessages((m) => {
+          const withoutTemp = m.filter((x) => x.id !== tempId);
+          if (withoutTemp.some((x) => x.id === data.message.id)) return withoutTemp;
+          return [...withoutTemp, data.message];
+        });
+      } else {
+        setMessages((m) => m.filter((x) => x.id !== tempId));
+      }
     } catch (ex) {
+      setMessages((m) => m.filter((x) => x.id !== tempId));
+      setText(body);
       setErr(ex?.message || t('chat_send_error'));
     } finally {
       setSending(false);
@@ -68,7 +87,7 @@ export default function ProcessChat({ candidateId, peerLabel, onClose }) {
           </div>
           <button type="button" className="chatClose" onClick={onClose}>✕</button>
         </div>
-        <div className="chatHint">{t('chat_hint')}</div>
+        <div className="chatHint"><span className="chatHintIcon" aria-hidden="true">✨</span>{t('chat_hint')}</div>
         <div className="chatBody">
           {loading && !messages.length ? <div className="chatEmpty">…</div> : null}
           {!loading && !messages.length && !err ? <div className="chatEmpty">{t('chat_empty')}</div> : null}

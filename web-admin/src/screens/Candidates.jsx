@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ConfirmDelete from '../components/ConfirmDelete.jsx';
 import {
   categoryOf, deleteUserFully, getCandidate, listCandidates, signedUrl,
   listCandidateRatings, adminSaveRating, adminDeleteRating,
+  uploadSuccessCertificate, removeSuccessCertificate,
 } from '../lib/api';
 import { candidateCode } from '../../../lib/candidateCode';
 import { buildCvHtml } from '../../../cv/buildCvHtml';
@@ -104,6 +105,8 @@ export default function Candidates({ selectedId, onSelect }) {
   const [ratings, setRatings] = useState([]);
   const [ratingEdits, setRatingEdits] = useState({}); // agency_id -> { discipline, communication, rehire }
   const [ratingBusy, setRatingBusy] = useState(null); // agency_id | 'load'
+  const [certBusy, setCertBusy] = useState(false);
+  const certInput = useRef(null);
 
   const [fPos, setFPos] = useState([]);
   const [fLang, setFLang] = useState([]);
@@ -292,6 +295,41 @@ export default function Candidates({ selectedId, onSelect }) {
     }
   };
 
+  const reloadDetail = async () => {
+    if (!selectedId) return;
+    const d = await getCandidate(selectedId);
+    setDetail(d);
+  };
+
+  const onCertFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !selectedId) return;
+    setCertBusy(true); setErr('');
+    try {
+      await uploadSuccessCertificate(selectedId, file);
+      await reloadDetail();
+    } catch (ex) {
+      setErr(ex?.message || 'Sertifika yüklenemedi');
+    } finally {
+      setCertBusy(false);
+    }
+  };
+
+  const doRemoveCert = async () => {
+    if (!selectedId) return;
+    if (!window.confirm('Başarı sertifikası silinsin mi? Aday ve acente belgelerinden de kalkar.')) return;
+    setCertBusy(true); setErr('');
+    try {
+      await removeSuccessCertificate(selectedId);
+      await reloadDetail();
+    } catch (ex) {
+      setErr(ex?.message || 'Sertifika silinemedi');
+    } finally {
+      setCertBusy(false);
+    }
+  };
+
   const doDelete = async () => {
     setBusy(true); setErr('');
     try {
@@ -348,6 +386,8 @@ export default function Candidates({ selectedId, onSelect }) {
     const ratingAvg = ratings.length
       ? (ratings.reduce((s, r) => s + Number(r.avg_score || 0), 0) / ratings.length)
       : null;
+    const certDoc = (detail.documents || []).find((d) => d.kind === 'success_certificate');
+    const otherDocs = (detail.documents || []).filter((d) => d.kind !== 'success_certificate');
     return (
       <div>
         <button type="button" className="backLink" onClick={() => onSelect(null)}>‹ Aday listesi</button>
@@ -387,11 +427,44 @@ export default function Candidates({ selectedId, onSelect }) {
           </div>
           <div className="card">
             <h2>Belgeler</h2>
-            {!detail.documents?.length ? (
-              <p className="empty" style={{ padding: 8 }}>Belge yok</p>
+            <div className="certBox">
+              <div className="certBoxHead">
+                <strong>Başarı sertifikası</strong>
+                {certDoc ? <span className="badge ok">Yüklü</span> : <span className="badge">Bekliyor</span>}
+              </div>
+              <p className="muted" style={{ fontSize: 13, lineHeight: 1.45, margin: '6px 0 10px' }}>
+                Sezonu başarıyla tamamlayan adaya yükleyin. Aday ve acente belgelerinde 7. adım olarak görünür.
+              </p>
+              <div className="certBoxActions">
+                <input
+                  ref={certInput}
+                  type="file"
+                  accept="application/pdf,image/jpeg,image/png,image/webp,.pdf,.jpg,.jpeg,.png,.webp"
+                  hidden
+                  onChange={onCertFile}
+                />
+                <button
+                  type="button"
+                  className="goldBtn"
+                  style={{ width: 'auto', marginTop: 0, padding: '8px 14px', fontSize: 13 }}
+                  disabled={certBusy}
+                  onClick={() => certInput.current?.click()}
+                >
+                  {certBusy ? 'Yükleniyor…' : (certDoc ? 'Değiştir' : 'Yükle')}
+                </button>
+                {certDoc?.storage_path ? (
+                  <button type="button" className="linkBtn" disabled={certBusy} onClick={() => openDoc(certDoc.storage_path)}>Aç</button>
+                ) : null}
+                {certDoc ? (
+                  <button type="button" className="linkBtn danger" disabled={certBusy} onClick={doRemoveCert}>Kaldır</button>
+                ) : null}
+              </div>
+            </div>
+            {!otherDocs.length ? (
+              <p className="empty" style={{ padding: 8 }}>Diğer belge yok</p>
             ) : (
               <ul className="docList">
-                {detail.documents.map((d) => (
+                {otherDocs.map((d) => (
                   <li key={d.kind}>
                     <span><strong>{d.kind}</strong> · {d.status || '—'}</span>
                     {d.storage_path

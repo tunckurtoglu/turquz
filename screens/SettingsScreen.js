@@ -17,7 +17,7 @@ function Switch({ on, onPress }) {
 }
 
 export default function SettingsScreen({
-  onBack, onChangeLanguage, onLogout, notifications, onToggleNotifications, fontsReady, isAgency,
+  onBack, onChangeLanguage, onLogout, fontsReady, isAgency,
 }) {
   const { t, lang, dir } = useLanguage();
   const insets = useSafeAreaInsets();
@@ -110,16 +110,7 @@ export default function SettingsScreen({
               {saving ? <Text style={styles.saving}>{t('chat_saving')}</Text> : null}
             </>
           )
-        ) : (
-          <View style={styles.row}>
-            <Text style={styles.rowIcon}>🔔</Text>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowLabel}>{t('set_notifications')}</Text>
-              <Text style={styles.rowDesc}>{t('set_notifications_desc')}</Text>
-            </View>
-            <Switch on={notifications} onPress={() => onToggleNotifications(!notifications)} />
-          </View>
-        )}
+        ) : null}
 
         <TouchableOpacity style={styles.row} onPress={openPrivacy} activeOpacity={0.7}>
           <Text style={styles.rowIcon}>🔒</Text>

@@ -71,6 +71,7 @@ export default function AgencyFilterSheet({ visible, initial, sort = 'online', o
   const [languages, setLanguages] = useState([]);
   const [skills, setSkills] = useState([]);
   const [sortBy, setSortBy] = useState(sort);
+  const [turquzCertified, setTurquzCertified] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
@@ -82,6 +83,7 @@ export default function AgencyFilterSheet({ visible, initial, sort = 'online', o
     setAvailableMonths((f.availableMonths || []).map(normalizeWorkAvailability).filter(Boolean));
     setNationalities(f.nationalities || []); setPositions(f.positions || []);
     setLanguages(f.languages || []); setSkills(f.skills || []);
+    setTurquzCertified(!!f.turquzCertified);
     setSortBy(sort || 'online');
     setOpen(null);
   }, [visible, initial, sort]);
@@ -92,6 +94,7 @@ export default function AgencyFilterSheet({ visible, initial, sort = 'online', o
     setCodeText(''); setAgeMin(''); setAgeMax(''); setGender('');
     setEmploymentStatus(''); setAvailableMonths([]);
     setNationalities([]); setPositions([]); setLanguages([]); setSkills([]);
+    setTurquzCertified(false);
   };
   const apply = () => {
     const cp = parseCode(codeText);
@@ -104,6 +107,7 @@ export default function AgencyFilterSheet({ visible, initial, sort = 'online', o
       employmentStatus: employmentStatus || undefined,
       availableMonths: availableMonths.length ? availableMonths : undefined,
       nationalities, positions, languages, skills,
+      turquzCertified: turquzCertified || undefined,
       sort: sortBy,
     });
   };
@@ -180,6 +184,14 @@ export default function AgencyFilterSheet({ visible, initial, sort = 'online', o
               })}
             </View>
           </Dropdown>
+
+          <TouchableOpacity
+            style={[styles.segBtn, styles.segBtnBlock, turquzCertified && styles.segBtnOn, { marginBottom: 10 }]}
+            onPress={() => setTurquzCertified((v) => !v)}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.segText, turquzCertified && styles.segTextOn]}>🏅 {t('f_turquz_certified')}</Text>
+          </TouchableOpacity>
 
           <Dropdown title={t('f_work_duration')} summary={availableMonths.map((v) => opts.WORK_AVAILABILITY.find((o) => o.value === v)?.label).filter(Boolean).join(', ')} open={open === 'months'} onToggle={() => toggleSec('months')}>
             <View style={styles.chips}>

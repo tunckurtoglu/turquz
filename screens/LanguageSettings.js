@@ -4,7 +4,7 @@
 import React from 'react';
 import { View, Text, Image, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LANGUAGES_SUPPORTED } from '../i18n/languages';
+import { LANGUAGES_ALPHA } from '../i18n/languages';
 import { useLanguage } from '../i18n/LanguageContext';
 
 // Dil kodu -> bayrak görseli
@@ -37,7 +37,7 @@ export default function LanguageSettings({ onBack, fontsReady }) {
       </View>
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-        {LANGUAGES_SUPPORTED.map((item, i) => {
+        {LANGUAGES_ALPHA.map((item, i) => {
           const active = item.code === lang;
           return (
             <TouchableOpacity

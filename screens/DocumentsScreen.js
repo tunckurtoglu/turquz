@@ -4,7 +4,7 @@
 // galeriden belge seç -> private 'documents' bucket'a güvenli yükleme -> "Yüklendi" durumu.
 // Doğrulama (son kullanma < 1 yıl / okunaklılık) Adım 4'te Edge Function ile eklenecek.
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, Image, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert, Modal, ActivityIndicator, Pressable, KeyboardAvoidingView, Platform, Keyboard, RefreshControl, useWindowDimensions } from 'react-native';
+import { View, Text, Image, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert, Modal, ActivityIndicator, Pressable, KeyboardAvoidingView, Platform, Keyboard, RefreshControl, useWindowDimensions, StatusBar, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -18,10 +18,10 @@ import { Select } from '../components/Select';
 import { DAYS, monthOptions, FLIGHT_YEARS } from '../cv/options';
 import { getLatestConsent, saveConsent, canUploadDocs, hasSensitiveConsent } from '../lib/consent';
 import { listDocuments, uploadDocument, verifyDocument, getSignedUrl, removeDocument, submitDocuments } from '../lib/documents';
-import { getCandidateStatus, docsUnlocked, passportDeadline } from '../lib/candidate';
+import { getCandidateStatus, docsUnlocked, passportDeadline, formatDeadlineRemain, requestDocsExtraTime } from '../lib/candidate';
 import { supabase } from '../lib/supabase';
 import { latinFirst, latinLast } from '../lib/translit';
-import { PIPELINE, kindState, activeStep } from '../lib/pipeline';
+import { PIPELINE, kindState, activeStep, stepActor, kindOwner, DOCS_EXTRA_DAYS } from '../lib/pipeline';
 import { notifyDocumentSubmit, notifyDocsDeadline } from '../lib/push';
 import { getContract } from '../lib/contracts';
 import { getFlight } from '../lib/flights';
@@ -31,8 +31,17 @@ import { CONTRACT_WEB_PAYMENT_ENABLED, PROCESS_CHAT_ENABLED } from '../lib/featu
 import { openContractPortal } from '../lib/contractPortal';
 import ContractPreview from '../components/ContractPreview';
 import ProcessChatSheet from '../components/ProcessChatSheet';
+import ProcessChatFab from '../components/ProcessChatFab';
 import PickupCard from '../components/PickupCard';
 import VerifyingOverlay from '../components/VerifyingOverlay';
+
+function fmtDocDate(v) {
+  if (!v) return '';
+  const s = String(v).slice(0, 10);
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[3]}.${iso[2]}.${iso[1]}`;
+  return String(v);
+}
 
 // Otomatik pasaport doğrulaması (Gemini Edge Function) AÇIK/KAPALI.
 // AÇIK: pasaport Gemini ile doğrulanır (verify-passport edge function + GEMINI_API_KEY secret gerekir).
@@ -83,7 +92,7 @@ function DocRow({ icon, label, desc, note, doc, badge, busy, t, onAdd, onView, o
   );
 }
 
-export default function DocumentsScreen({ userId, onBack, fontsReady }) {
+export default function DocumentsScreen({ userId, onBack, fontsReady, initialChatOpen = false, initialScrollStep = null }) {
   const { t, lang, dir } = useLanguage();
   const insets = useSafeAreaInsets();
   const { width: winW, height: winH } = useWindowDimensions();
@@ -99,7 +108,34 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
   const [saving, setSaving] = useState(false);
   const [pendingDoc, setPendingDoc] = useState(null); // rıza sonrası devam edilecek belge
   const pendingPick = useRef(null); // rıza penceresi kapanınca açılacak belge (tek seferlik)
-  const listRef = useRef(null);     // tebrik kartına otomatik kaydırma için
+  const listRef = useRef(null);     // tebrik kartı / aşama hizası
+  const stepAnchors = useRef({});   // adım -> wrap içi y
+  const stepsWrapY = useRef(0);
+  const docsFetchedRef = useRef(false);
+  const didScrollToStep = useRef(false);
+  const scrollStepTimer = useRef(null);
+  const initialStepRef = useRef(initialScrollStep);
+  initialStepRef.current = initialScrollStep;
+
+  const scheduleScrollToStep = useCallback(() => {
+    const target = Number(initialStepRef.current);
+    if (!target || !docsFetchedRef.current) return;
+    if (didScrollToStep.current && Date.now() - didScrollToStep.current > 900) return;
+    if (scrollStepTimer.current) clearTimeout(scrollStepTimer.current);
+    scrollStepTimer.current = setTimeout(() => {
+      const local = stepAnchors.current[target];
+      if (typeof local !== 'number') return;
+      const y = (stepsWrapY.current || 0) + local;
+      didScrollToStep.current = Date.now();
+      listRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true });
+    }, 220);
+  }, []);
+
+  const pinStep = (step, y) => {
+    if (!step || typeof y !== 'number') return;
+    stepAnchors.current[step] = y;
+    scheduleScrollToStep();
+  };
   const [psDay, setPsDay] = useState('');     // tercih edilen en erken başlangıç: gün/ay/yıl
   const [psMonth, setPsMonth] = useState('');
   const [psYear, setPsYear] = useState('');
@@ -108,6 +144,9 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
   const [downloading, setDownloading] = useState(false); // görüntüleyicide indir/paylaş
   const [unlocked, setUnlocked] = useState(null);     // null = henüz bilinmiyor, true/false
   const [deadline, setDeadline] = useState(null);     // pasaport 14 gün son tarihi
+  const [workStartAt, setWorkStartAt] = useState(null);
+  const [plannedEndOn, setPlannedEndOn] = useState(null);
+  const [flightDepartOn, setFlightDepartOn] = useState(null);
   const [contract, setContract] = useState(null);     // acentenin doldurduğu sözleşme verisi
   const [flight, setFlight] = useState(null);         // acentenin doldurduğu uçuş bilgisi
   const [nameSheet, setNameSheet] = useState(false);  // pasaport (Latin) isim düzeltme
@@ -117,7 +156,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
   const [cvData, setCvData] = useState(null);         // PDF üretmek için adayın CV'si
   const [contractPreview, setContractPreview] = useState(false);
   const [openingPortal, setOpeningPortal] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(!!initialChatOpen);
   const [passportSheet, setPassportSheet] = useState(false);
   const [passportMode, setPassportMode] = useState('upload'); // 'upload' | 'edit'
   const [pNo, setPNo] = useState('');
@@ -126,12 +165,58 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
   const [justUploaded, setJustUploaded] = useState(false); // kısa "✓ Güncellendi" göstergesi
   const [sending, setSending] = useState(false);           // "Belgeleri Gönder" sırasında
   const [refreshing, setRefreshing] = useState(false);     // aşağı çekerek yenile
+  const [extraBusy, setExtraBusy] = useState(false);
+  const [nowTick, setNowTick] = useState(Date.now());
+  const [docsReady, setDocsReady] = useState(false);
+  const [openStep, setOpenStep] = useState(null);          // null = aktif adım açık
+  const turnBlink = useRef(new Animated.Value(1)).current;
   // Tüm adımlar dosya ile tamamlanır (imzalı sözleşme dâhil). isUploaded: satır var (taslak da
   // olabilir). isSubmitted: gönderilmiş (karşı tarafa geçmiş).
   const isUploaded = (k) => !!docs[k];
   const isSubmitted = (k) => !!docs[k]?.submitted_at;
   // Akış (kindState/activeStep) GÖNDERİLEN belgeyle ilerler; taslak adımı ilerletmez.
   const has = isSubmitted;
+  const turnAct = unlocked ? activeStep(has) : 0;
+  const turnDef = PIPELINE.find((s) => s.step === turnAct);
+  const turnMine = !!(unlocked && turnDef && stepActor(turnDef, has) === 'candidate');
+  const turnStepKey = turnDef?.titleKey || (turnAct >= 6 ? 'pipe_step_6' : null);
+
+  // Yol haritası zaten tüm süreci gösteriyor — bu sayfada yalnızca odak adımı.
+  const navStep = Number(initialScrollStep);
+  const focusStep = (() => {
+    if (navStep >= 1 && navStep <= 7) return navStep;
+    if (!unlocked) return null;
+    if (turnAct >= 1 && turnAct <= 5) return turnAct;
+    if (turnAct >= 6) {
+      if (!(has('flight_ticket') || flight?.pickupSent)) return 6;
+      return 7;
+    }
+    return null;
+  })();
+  const headerTitle = t('docs_title');
+  const focusHintKey = focusStep === 7
+    ? (has('success_certificate') ? 'pipe_step_7_desc' : 'pipe_step_7_wait')
+    : (focusStep >= 1 && focusStep <= 6 ? `journey_hint_${focusStep}` : null);
+
+  useEffect(() => {
+    if (!turnMine) {
+      turnBlink.setValue(1);
+      return undefined;
+    }
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(turnBlink, { toValue: 0.38, duration: 620, useNativeDriver: true }),
+      Animated.timing(turnBlink, { toValue: 1, duration: 620, useNativeDriver: true }),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [turnMine, turnBlink]);
+
+  useEffect(() => {
+    if (!(docsReady && unlocked && turnAct === 1 && deadline?.end)) return undefined;
+    setNowTick(Date.now());
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [docsReady, unlocked, turnAct, deadline?.end]);
 
   // Rıza penceresi tam kapandığında galeriyi aç (modal çakışmasını önler). Tek sefer çalışır.
   const runPendingPick = () => {
@@ -142,14 +227,38 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
   };
 
 
+  // Bildirimden gelince sohbeti aç.
+  useEffect(() => {
+    if (initialChatOpen) setChatOpen(true);
+  }, [initialChatOpen]);
+
+  useEffect(() => {
+    const n = Number(initialScrollStep);
+    if (n >= 1 && n <= 7) setOpenStep(n);
+  }, [initialScrollStep]);
+
+  const applyStatus = useCallback((status) => {
+    setUnlocked(docsUnlocked(status));
+    setDeadline(passportDeadline(status));
+    setWorkStartAt(status?.work_start_at || null);
+    setPlannedEndOn(status?.planned_end_on || status?.work_end_at || null);
+    setFlightDepartOn(status?.flight_depart_on || null);
+  }, []);
+
   const refreshDocs = useCallback(async () => {
-    const [rows, con, fl] = await Promise.all([listDocuments(userId), getContract(userId), getFlight(userId)]);
+    const [rows, con, fl, status] = await Promise.all([
+      listDocuments(userId), getContract(userId), getFlight(userId), getCandidateStatus(userId),
+    ]);
     const map = {};
     rows.forEach((r) => { map[r.kind] = r; });
     setDocs(map);
     setContract(con);
     setFlight(fl);
-  }, [userId]);
+    applyStatus(status);
+    setDocsReady(true);
+    docsFetchedRef.current = true;
+    requestAnimationFrame(() => scheduleScrollToStep());
+  }, [userId, applyStatus, scheduleScrollToStep]);
 
   // Elle yenile (aşağı çek).
   const onRefresh = useCallback(async () => {
@@ -166,6 +275,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'user_documents', filter: `user_id=eq.${userId}` }, () => refreshDocs())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'contracts', filter: `user_id=eq.${userId}` }, () => refreshDocs())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'flights', filter: `user_id=eq.${userId}` }, () => refreshDocs())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'candidate_status', filter: `user_id=eq.${userId}` }, () => refreshDocs())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [userId, refreshDocs]);
@@ -175,10 +285,9 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
     (async () => {
       const status = await getCandidateStatus(userId);
       if (!alive) return;
+      applyStatus(status);
       const open = docsUnlocked(status);
-      setUnlocked(open);
       const dl = passportDeadline(status);
-      setDeadline(dl);
       if (open && dl?.overdue) notifyDocsDeadline(userId);
       if (!open) return; // kilitliyse rıza/belge çekmeye gerek yok
       const [row, prof] = await Promise.all([getLatestConsent(userId), loadProfile(userId)]);
@@ -188,7 +297,11 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
       await refreshDocs();
     })();
     return () => { alive = false; };
-  }, [userId, refreshDocs]);
+  }, [userId, refreshDocs, applyStatus]);
+
+  useEffect(() => () => {
+    if (scrollStepTimer.current) clearTimeout(scrollStepTimer.current);
+  }, []);
 
   // Ret nedenini kullanıcıya gösterilecek metne çevir.
   const rejectReason = (note) => {
@@ -198,6 +311,27 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
       case 'not_passport': return t('doc_st_notpassport');
       default: return t('doc_st_unreadable'); // unreadable / bad_date / diğer
     }
+  };
+
+  const askExtraTime = () => {
+    Alert.alert(t('docs_extra_btn'), t('docs_extra_confirm', { n: String(DOCS_EXTRA_DAYS) }), [
+      { text: t('consent_cancel'), style: 'cancel' },
+      { text: t('docs_extra_btn'), onPress: async () => {
+        setExtraBusy(true);
+        try {
+          await requestDocsExtraTime();
+          await refreshDocs();
+        } catch (e) {
+          const msg = String(e?.message || '');
+          Alert.alert(
+            t('docs_extra_btn'),
+            /already_requested/i.test(msg) ? t('docs_extra_done', { n: String(DOCS_EXTRA_DAYS) }) : t('docs_extra_fail'),
+          );
+        } finally {
+          setExtraBusy(false);
+        }
+      } },
+    ]);
   };
 
   // Pasaport PDF yüklendikten sonra Gemini ile doğrula (verify-passport edge function).
@@ -255,7 +389,10 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
       setUploading(null);
       setJustUploaded(true); setTimeout(() => setJustUploaded(false), 1500);
     } catch (e) {
-      Alert.alert(t('docs_title'), t('doc_upload_error'));
+      const msg = e?.message === 'contract_payment_required' || String(e?.message || '').includes('contract_payment_required')
+        ? t('contract_payment_required')
+        : t('doc_upload_error');
+      Alert.alert(t('docs_title'), msg);
       setUploading(null);
     }
   };
@@ -293,7 +430,10 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
       setJustUploaded(true); setTimeout(() => setJustUploaded(false), 1500);
       if (docKey === 'passport') await runPassportVerify(row);
     } catch (e) {
-      Alert.alert(t('docs_title'), t('doc_upload_error'));
+      const msg = e?.message === 'contract_payment_required' || String(e?.message || '').includes('contract_payment_required')
+        ? t('contract_payment_required')
+        : t('doc_upload_error');
+      Alert.alert(t('docs_title'), msg);
       setUploading(null);
     }
   };
@@ -335,6 +475,11 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
   // yüklenmemişse, geçmişte rıza verilmiş olsa bile HER seferinde yeniden sorulur
   // (kişi onaylayıp yüklemeden çıkabilir). Yüklü belgeyi değiştirirken sorulmaz.
   const handleAdd = (docKey, needsSensitive) => {
+    // Ödemesiz imzalı sözleşme yüklenemez (UI + DB kilidi).
+    if (docKey === 'contract_signed' && CONTRACT_WEB_PAYMENT_ENABLED && !contract?.isPaid) {
+      Alert.alert(t('docs_title'), t('contract_payment_required'));
+      return;
+    }
     const uploaded = !!docs[docKey];
     const consentOk = canUploadDocs(consent) && (!needsSensitive || hasSensitiveConsent(consent));
     if (uploaded && consentOk) { startUpload(docKey); return; }
@@ -398,21 +543,22 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
 
   const handleView = async (docKey) => {
     try {
-      // Sözleşme: yüklü dosya değil — web portal (ödeme) veya app içi önizleme.
-      if (docKey === 'contract_unsigned' && contract && !docs[docKey]) {
-        if (CONTRACT_WEB_PAYMENT_ENABLED) {
-          setOpeningPortal(true);
-          try {
-            await openContractPortal();
-            await refreshDocs(); // dönüşte ödeme durumunu yenile
-          } catch (e) {
-            console.warn('portal:', e?.message);
-            Alert.alert(t('docs_title'), e?.message || t('doc_upload_error'));
-          } finally {
-            setOpeningPortal(false);
-          }
-          return;
+      // Sözleşme: ödeme portalı açıkken her zaman web (app içi PDF atlanır — indir/yazdır orada).
+      if (docKey === 'contract_unsigned' && CONTRACT_WEB_PAYMENT_ENABLED) {
+        setOpeningPortal(true);
+        try {
+          await openContractPortal(lang);
+          await refreshDocs(); // dönüşte ödeme durumunu yenile
+        } catch (e) {
+          console.warn('portal:', e?.message);
+          Alert.alert(t('docs_title'), e?.message || t('doc_upload_error'));
+        } finally {
+          setOpeningPortal(false);
         }
+        return;
+      }
+      // Flag kapalı: yüklenmiş PDF varsa görüntüle; yoksa app içi önizleme.
+      if (docKey === 'contract_unsigned' && !docs[docKey]) {
         setContractPreview(true);
         return;
       }
@@ -559,23 +705,25 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
     }
   };
 
+  const remainMs = deadline?.end ? deadline.end.getTime() - nowTick : 0;
+
   return (
     <View style={styles.wrap}>
+      <StatusBar barStyle="dark-content" />
       <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
         <TouchableOpacity style={styles.backBtn} onPress={onBack} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
           <Text style={styles.backChevron}>{backChevron}</Text>
         </TouchableOpacity>
-        <Text style={[styles.title, fontsReady && styles.titleFont]}>{t('docs_title')}</Text>
-        {PROCESS_CHAT_ENABLED && contract?.isPaid ? (
-          <TouchableOpacity onPress={() => setChatOpen(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Text style={{ fontSize: 20 }}>💬</Text>
-          </TouchableOpacity>
-        ) : <View style={{ width: 28 }} />}
+        <Text style={[styles.title, fontsReady && styles.titleFont]}>{headerTitle}</Text>
+        <View style={{ width: 28 }} />
       </View>
 
       <ScrollView
         ref={listRef}
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: insets.bottom + (PROCESS_CHAT_ENABLED && contract?.isPaid ? 88 : 24) },
+        ]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#c2a25a" colors={['#c2a25a']} />}
       >
         {unlocked === null ? (
@@ -588,8 +736,25 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
           </View>
         ) : (
           <>
+            {focusStep ? (
+              <View style={styles.focusHero}>
+                <View style={styles.focusHeroTop}>
+                  <View style={styles.focusNum}>
+                    <Text style={styles.focusNumText}>{focusStep}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.focusKicker}>{t('step')} {focusStep} / 7</Text>
+                    <Text style={[styles.focusTitle, fontsReady && styles.titleFont]}>{t(`pipe_step_${focusStep}`)}</Text>
+                  </View>
+                </View>
+                {focusHintKey ? (
+                  <Text style={styles.focusHint}>{t(focusHintKey)}</Text>
+                ) : null}
+              </View>
+            ) : null}
+
             {/* Tüm aday adımları bitti (çalışma vizesi gönderildi) -> premium tebrik kartı */}
-            {has('work_permit') ? (
+            {has('work_permit') && (!focusStep || focusStep >= 4) ? (
               <View style={styles.doneCard}>
                 <View style={styles.doneFrame} pointerEvents="none" />
                 <Image source={require('../assets/turquz-logo.png')} style={styles.doneLogo} resizeMode="contain" />
@@ -604,54 +769,152 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
               </View>
             ) : null}
 
-            <Text style={styles.intro}>{t('docs_intro')}</Text>
-
-            <View style={styles.legend}>
-              <View style={styles.legendItem}>
-                <View style={[styles.ownerChip, styles.ownerYou]}><Text style={[styles.ownerChipText, styles.ownerYouText]}>{t('doc_owner_agency')}</Text></View>
-                <Text style={styles.legendText}>{t('doc_legend_agency_does')}</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.ownerChip, styles.ownerOther]}><Text style={[styles.ownerChipText, styles.ownerOtherText]}>{t('doc_owner_candidate')}</Text></View>
-                <Text style={styles.legendText}>{t('doc_legend_candidate_does')}</Text>
-              </View>
-            </View>
-
-            {activeStep(has) === 1 && deadline ? (
-              <View style={[styles.deadlineBox, deadline.overdue ? styles.deadlineOver : deadline.days <= 3 ? styles.deadlineWarn : null]}>
-                <Text style={styles.deadlineIcon}>⏳</Text>
-                <Text style={styles.deadlineText}>{deadline.overdue ? t('docs_pkg_overdue') : t('docs_pkg_deadline', { n: deadline.days })}</Text>
-              </View>
+            {turnStepKey && (!focusStep || turnAct === focusStep || (focusStep >= 6 && turnAct >= 6)) ? (
+              <Animated.View style={turnMine ? { opacity: turnBlink } : null}>
+                <View
+                  style={[styles.turnBox, turnMine ? styles.turnYou : styles.turnAgency]}
+                >
+                  {turnMine ? (
+                    <View style={styles.turnAlertRow}>
+                      <View style={styles.turnBang}><Text style={styles.turnBangText}>!</Text></View>
+                      <Text style={[styles.turnKicker, styles.turnKickerYou]}>{t('docs_turn_you')}</Text>
+                    </View>
+                  ) : (
+                    <Text style={[styles.turnKicker, styles.turnKickerAgency]}>{t('docs_turn_agency')}</Text>
+                  )}
+                  <Text style={styles.turnSub}>{turnMine ? t('docs_turn_you_sub', { step: t(turnStepKey) }) : t('docs_turn_agency_sub', { step: t(turnStepKey) })}</Text>
+                </View>
+              </Animated.View>
             ) : null}
 
-            {PIPELINE.map((s) => {
-              const mine = s.owner === 'candidate';
+            <View
+              collapsable={false}
+              onLayout={(e) => {
+                stepsWrapY.current = e.nativeEvent.layout.y;
+                scheduleScrollToStep();
+              }}
+            >
+            {PIPELINE.filter((s) => !focusStep || s.step === focusStep).map((s) => {
+              const actor = stepActor(s, has);
+              const mine = actor === 'candidate';
               const act = activeStep(has);
-              const mode = s.kinds.every(has) ? 'done' : s.step === act ? 'active' : 'locked';
-              // Acenteden gelen (agency-owned) tamamlanmış adım: gri "Tamamlandı" değil, belirgin "geldi".
-              const agencyDone = mode === 'done' && !mine;
-              const cardStyle = mode === 'active' ? [styles.stepCard, mine ? styles.prowYou : styles.prowOther]
-                : agencyDone ? [styles.stepCard, styles.prowOther]
-                  : mode === 'done' ? [styles.stepCard, styles.cardDone]
-                    : [styles.stepCard, styles.cardLocked];
-              const circleStyle = agencyDone ? styles.circleAgency : mode === 'done' ? styles.circleDone : mode === 'active' ? (mine ? styles.circleYou : styles.circleAgency) : styles.circleLocked;
+              const pipelineMode = s.kinds.every(has) ? 'done' : s.step === act ? 'active' : 'locked';
+              // Acente sırası (örn. uçuş bileti): aday tıklayamaz → diğer kilitli adımlar gibi pasif/renksiz.
+              const waitingAgency = pipelineMode === 'active' && !mine;
+              const mode = waitingAgency ? 'locked' : pipelineMode;
+              const doneN = s.kinds.filter(has).length;
+              const totalN = s.kinds.length;
+              const tabDone = totalN > 0 && doneN === totalN;
+              const cardStyle = mode === 'active'
+                ? [styles.stepCard, styles.cardActive]
+                : waitingAgency ? [styles.stepCard, styles.cardWait]
+                : (tabDone || mode === 'done') ? [styles.stepCard, styles.cardDone]
+                  : [styles.stepCard, styles.cardLocked];
+              const circleStyle = (tabDone || mode === 'done') ? styles.circleDone
+                : mode === 'active' ? styles.circleYou
+                  : waitingAgency ? styles.circleWait
+                  : styles.circleLocked;
+              const expanded = focusStep === s.step
+                ? true
+                : (mode === 'locked' && !waitingAgency)
+                  ? false
+                  : (openStep == null ? (mode === 'active' || waitingAgency) : openStep === s.step);
+              const canToggle = !focusStep && (mode !== 'locked' || waitingAgency || tabDone || mode === 'done');
               return (
-                <View key={s.step} style={cardStyle}>
-                  <View style={styles.stepHead}>
-                    <View style={[styles.stepNo, circleStyle]}><Text style={styles.stepNoText}>{mode === 'done' && mine ? '✓' : s.step}</Text></View>
-                    {agencyDone ? (
-                      <View style={[styles.ownerChip, styles.ownerOther]}><Text style={[styles.ownerChipText, styles.ownerOtherText]}>{t('doc_from_agency')}</Text></View>
-                    ) : mode === 'done' ? (
-                      <Text style={styles.doneLabel}>✓ {t('doc_sent')}</Text>
-                    ) : (
-                      <View style={[styles.ownerChip, mode === 'locked' ? styles.ownerMuted : mine ? styles.ownerYou : styles.ownerOther]}>
-                        <Text style={[styles.ownerChipText, mode === 'locked' ? styles.ownerMutedText : mine ? styles.ownerYouText : styles.ownerOtherText]}>{mine ? t('doc_owner_candidate') : t('doc_owner_agency')}</Text>
+                <View
+                  key={s.step}
+                  style={cardStyle}
+                  collapsable={false}
+                  onLayout={(e) => pinStep(s.step, e.nativeEvent.layout.y)}
+                >
+                  {focusStep === s.step ? (
+                    <View style={styles.focusMetaRow}>
+                      {pipelineMode !== 'locked' ? (
+                        <View style={[styles.ownerChip, waitingAgency || !mine ? styles.ownerOther : styles.ownerYou]}>
+                          <Text style={[styles.ownerChipText, waitingAgency || !mine ? styles.ownerOtherText : styles.ownerYouText]}>
+                            {mine && !waitingAgency ? t('doc_owner_you') : t('doc_owner_agency')}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <View style={{ flex: 1 }} />
+                      {mode === 'active' ? (
+                        <View style={styles.nowChip}><Text style={styles.nowChipText}>{t('docs_now')}</Text></View>
+                      ) : waitingAgency ? (
+                        <Text style={styles.waitLabel}>{t('docs_waiting')}</Text>
+                      ) : pipelineMode === 'locked' && !tabDone ? (
+                        <Text style={styles.lockedIcon}>🔒</Text>
+                      ) : (
+                        <Text style={[styles.progressLabel, tabDone && styles.progressDone]}>
+                          {t('docs_progress', { n: String(doneN), m: String(totalN) })}
+                        </Text>
+                      )}
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.stepHead}
+                      onPress={() => {
+                        if (!canToggle) return;
+                        setOpenStep((cur) => (cur === s.step ? null : s.step));
+                      }}
+                      activeOpacity={canToggle ? 0.85 : 1}
+                      disabled={!canToggle}
+                    >
+                      <View style={[styles.stepNo, circleStyle]}>
+                        <Text style={styles.stepNoText}>{(tabDone || mode === 'done') ? '✓' : s.step}</Text>
                       </View>
-                    )}
-                  </View>
+                      <Text style={[styles.stepTitle, pipelineMode === 'locked' && styles.stepTitleMuted]} numberOfLines={2}>{t(s.titleKey)}</Text>
+                      {pipelineMode !== 'locked' ? (
+                        <View style={[styles.ownerChip, waitingAgency || !mine ? styles.ownerOther : styles.ownerYou]}>
+                          <Text style={[styles.ownerChipText, waitingAgency || !mine ? styles.ownerOtherText : styles.ownerYouText]}>
+                            {mine && !waitingAgency ? t('doc_owner_you') : t('doc_owner_agency')}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {mode === 'active' ? (
+                        <View style={styles.nowChip}><Text style={styles.nowChipText}>{t('docs_now')}</Text></View>
+                      ) : waitingAgency ? (
+                        <Text style={styles.waitLabel}>{t('docs_waiting')}</Text>
+                      ) : pipelineMode === 'locked' && !tabDone ? (
+                        <Text style={styles.lockedIcon}>🔒</Text>
+                      ) : (
+                        <Text style={[styles.progressLabel, tabDone && styles.progressDone]}>
+                          {t('docs_progress', { n: String(doneN), m: String(totalN) })}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  )}
 
+                  {s.step === 1 && docsReady && deadline && !s.kinds.every(has) ? (
+                    <View style={[styles.deadlineBox, remainMs <= 0 ? styles.deadlineOver : remainMs <= 3 * 24 * 3600 * 1000 ? styles.deadlineWarn : null]}>
+                      <Text style={[styles.deadlineClock, remainMs <= 0 && styles.deadlineClockOver]}>
+                        {remainMs <= 0 ? t('deadline_overdue_short') : formatDeadlineRemain(remainMs, t)}
+                      </Text>
+                      <Text style={styles.deadlineText}>
+                        {remainMs <= 0 ? t('docs_pkg_overdue') : t('docs_countdown_sub')}
+                      </Text>
+                      {deadline.extraRequested ? (
+                        <Text style={styles.deadlineExtraDone}>{t('docs_extra_done', { n: String(DOCS_EXTRA_DAYS) })}</Text>
+                      ) : (
+                        <TouchableOpacity
+                          style={[styles.deadlineExtraBtn, extraBusy && { opacity: 0.6 }]}
+                          onPress={askExtraTime}
+                          disabled={extraBusy}
+                          activeOpacity={0.88}
+                        >
+                          {extraBusy
+                            ? <ActivityIndicator color="#1b2533" />
+                            : <Text style={styles.deadlineExtraText}>{t('docs_extra_btn')}</Text>}
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  ) : null}
+
+                  {expanded ? (
+                    <>
                   {s.kinds.map((kind) => {
                     const kst = kindState(kind, has);
+                    // Acente beklerken satırı da kilitli göster (yükle butonu / canlı renk yok).
+                    const showState = waitingAgency && kst === 'active' ? 'locked' : kst;
                     const sensitive = kind === 'criminal' || kind === 'health_report';
                     const langNote = kind === 'diploma' || kind === 'criminal' || kind === 'health_report';
                     const busy = uploading === kind || verifying === kind;
@@ -660,23 +923,23 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
                     return (
                       <View key={kind} style={styles.subRow}>
                         <View style={styles.subMain}>
-                          <Text style={[styles.subBullet, (kst === 'done' || draft) && styles.subBulletDone]}>{(kst === 'done' || draft) ? '✓' : '•'}</Text>
+                          <Text style={[styles.subBullet, (showState === 'done' || draft) && styles.subBulletDone]}>{(showState === 'done' || draft) ? '✓' : '•'}</Text>
                           <Text style={[styles.subLabel, muteLabel && styles.subLabelMuted]}>{t(`doc_${kind}`)}</Text>
                           {draft ? <View style={styles.draftBadge}><Text style={styles.draftText}>{t('doc_draft')}</Text></View> : null}
                           <View style={{ flex: 1 }} />
-                          {kst === 'done' && !mine ? (
+                          {showState === 'done' && !mine ? (
                             <TouchableOpacity onPress={() => handleView(kind)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><Text style={styles.linkAgency}>{t('doc_view')}</Text></TouchableOpacity>
-                          ) : kst === 'done' ? (
+                          ) : showState === 'done' ? (
                             <TouchableOpacity onPress={() => handleView(kind)}><Text style={styles.linkMuted}>{t('doc_view')}</Text></TouchableOpacity>
                           ) : draft ? (
                             <TouchableOpacity onPress={() => handleView(kind)}><Text style={styles.link}>{t('doc_view')}</Text></TouchableOpacity>
-                          ) : kst === 'active' && mine && kind === 'contract_signed' ? (
+                          ) : showState === 'active' && mine && kind === 'contract_signed' ? (
                             null /* sözleşme: indir + yükle butonları aşağıdaki kutuda (sıralı) */
-                          ) : kst === 'active' && mine ? (
+                          ) : showState === 'active' && mine ? (
                             <TouchableOpacity style={styles.addBtnSm} onPress={() => (kind === 'passport' ? startPassport() : handleAdd(kind, sensitive))} disabled={busy} activeOpacity={0.8}>
                               {busy ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.addBtnText}>{t('doc_upload')}</Text>}
                             </TouchableOpacity>
-                          ) : kst === 'locked' ? (
+                          ) : showState === 'locked' ? (
                             <Text style={styles.lockedIcon}>🔒</Text>
                           ) : null}
                         </View>
@@ -701,7 +964,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
                             </TouchableOpacity>
                           </View>
                         ) : null}
-                        {kind === 'passport' && mine && kst === 'active' && !draft ? (
+                        {kind === 'passport' && mine && showState === 'active' && !draft ? (
                           <View style={styles.langNoteBox}>
                             <Text style={styles.langNoteText}>ℹ️ {t('doc_passport_desc')}</Text>
                             <Text style={[styles.langNoteText, styles.langNoteTextGap]}>{t('doc_passport_upload_hint')}</Text>
@@ -710,14 +973,14 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
                         {langNote && mode === 'active' && !draft ? (
                           <View style={styles.langNoteBox}><Text style={styles.langNoteText}>⚠ {t('doc_lang_note')}</Text></View>
                         ) : null}
-                        {kind === 'consulate_ref' && mine && kst === 'active' && !draft ? (
+                        {kind === 'consulate_ref' && mine && showState === 'active' && !draft ? (
                           <View style={[styles.page3Note, { marginLeft: 22 }]}><Text style={styles.page3NoteText}>📌 {t('consulate_ref_note')}</Text></View>
                         ) : null}
-                        {kind === 'work_permit' && mine && kst === 'active' && !draft ? (
+                        {kind === 'work_permit' && mine && showState === 'active' && !draft ? (
                           <View style={[styles.page3Note, { marginLeft: 22 }]}><Text style={styles.page3NoteText}>📌 {t('doc_work_permit_desc')}</Text></View>
                         ) : null}
                         {/* Çalışma vizesiyle birlikte: başlamayı tercih ettiği en erken tarih */}
-                        {kind === 'work_permit' && mine && kst === 'active' ? (
+                        {kind === 'work_permit' && mine && showState === 'active' ? (
                           <View style={styles.startDateBox}>
                             <Text style={styles.startDateLabel}>{t('start_date_label')}</Text>
                             <View style={styles.startDateRow}>
@@ -728,49 +991,47 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
                             <Text style={styles.startDateNote}>ℹ️ {t('start_date_note')}</Text>
                           </View>
                         ) : null}
-                        {/* İmzalı sözleşme adımı: ÜSTTE indir (işveren e-imzalı), ALTTA yükle + 3. sayfa notu */}
-                        {kind === 'contract_signed' && mine && kst === 'active' && !draft ? (
+                        {kind === 'work_permit' && mine && showState === 'done' && cvData?.preferredStartDate ? (
+                          <View style={styles.startDateBox}>
+                            <Text style={styles.startDateLabel}>📅 {t('start_date_label')}: {cvData.preferredStartDate}</Text>
+                          </View>
+                        ) : null}
+                        {kind === 'flight_ticket' && isSubmitted('flight_ticket') && (workStartAt || flightDepartOn) ? (
+                          <View style={styles.startDateBox}>
+                            {flightDepartOn ? (
+                              <Text style={styles.startDateLabel}>✈️ {t('flight_depart_label')}: {fmtDocDate(flightDepartOn)}</Text>
+                            ) : null}
+                            {workStartAt ? (
+                              <Text style={styles.startDateLabel}>📅 {t('work_start_label')}: {fmtDocDate(workStartAt)}</Text>
+                            ) : null}
+                            {plannedEndOn ? (
+                              <Text style={styles.startDateNote}>{t('work_end_label')}: {fmtDocDate(plannedEndOn)}</Text>
+                            ) : null}
+                          </View>
+                        ) : null}
+                        {/* İmzalı sözleşme: tek yükleme butonu (ödeme sonrası aktif) */}
+                        {kind === 'contract_signed' && mine && showState === 'active' && !draft ? (
                           <View style={styles.signBox}>
-                            {/* Adım ①: sözleşmeyi görüntüle/indir */}
-                            <View style={styles.stRow}>
-                              <View style={styles.stRail}>
-                                <View style={styles.stDot}><Text style={styles.stDotText}>1</Text></View>
-                                <View style={styles.stLine} />
-                              </View>
-                              <View style={styles.stBody}>
-                                <Text style={styles.stTitle}>{t('contract_step_a')}</Text>
-                                <Text style={styles.stSub}>{t('contract_step_a_sub')}</Text>
-                                <TouchableOpacity
-                                  style={[styles.stBtnDark, openingPortal && { opacity: 0.6 }]}
-                                  onPress={() => handleView('contract_unsigned')}
-                                  disabled={openingPortal}
-                                  activeOpacity={0.85}
-                                >
-                                  {openingPortal
-                                    ? <ActivityIndicator color="#fff" />
-                                    : <Text style={styles.stBtnDarkText}>{CONTRACT_WEB_PAYMENT_ENABLED ? t('contract_btn_web') : t('contract_btn_open')}</Text>}
-                                </TouchableOpacity>
-                              </View>
-                            </View>
-
-                            {/* Adım ②: imzalı sözleşmeyi yükle (web ödemede: önce paid) */}
-                            <View style={styles.stRow}>
-                              <View style={styles.stRail}>
-                                <View style={styles.stDot}><Text style={styles.stDotText}>2</Text></View>
-                              </View>
-                              <View style={[styles.stBody, { paddingBottom: 0 }]}>
-                                <Text style={styles.stTitle}>{t('contract_step_b')}</Text>
-                                <Text style={styles.stSub}>{t('contract_step_b_sub')}</Text>
-                                {CONTRACT_WEB_PAYMENT_ENABLED && !contract?.isPaid ? (
-                                  <Text style={styles.payGate}>{t('contract_pay_gate')}</Text>
-                                ) : (
-                                  <TouchableOpacity style={[styles.stBtnGold, busy && { opacity: 0.6 }]} onPress={() => handleAdd('contract_signed', false)} disabled={busy} activeOpacity={0.85}>
-                                    {busy ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.stBtnGoldText}>⬆  {t('contract_btn_send')}</Text>}
-                                  </TouchableOpacity>
-                                )}
-                              </View>
-                            </View>
-
+                            <Text style={styles.stSub}>{t('contract_upload_sub')}</Text>
+                            {CONTRACT_WEB_PAYMENT_ENABLED && !contract?.isPaid ? (
+                              <>
+                                <View style={[styles.stBtnGold, styles.stBtnDisabled]}>
+                                  <Text style={styles.stBtnGoldText}>⬆  {t('contract_btn_upload')}</Text>
+                                </View>
+                                <Text style={styles.payGate}>{t('contract_pay_gate')}</Text>
+                              </>
+                            ) : (
+                              <TouchableOpacity
+                                style={[styles.stBtnGold, busy && { opacity: 0.6 }]}
+                                onPress={() => handleAdd('contract_signed', false)}
+                                disabled={busy}
+                                activeOpacity={0.85}
+                              >
+                                {busy
+                                  ? <ActivityIndicator color="#1b2533" />
+                                  : <Text style={styles.stBtnGoldText}>⬆  {t('contract_btn_upload')}</Text>}
+                              </TouchableOpacity>
+                            )}
                             <View style={styles.page3Note}>
                               <Text style={styles.page3NoteText}>{t('contract_page3_note')}</Text>
                             </View>
@@ -780,25 +1041,132 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
                     );
                   })}
 
-                  {/* Belgeleri Gönder: sıra bende + adımın tüm belgeleri yüklü (taslak) */}
-                  {mode === 'active' && mine && s.kinds.every((k) => isUploaded(k)) ? (
+                  {/* Belgeleri Gönder: adayın bu adımdaki belgeleri yüklü (taslak) */}
+                  {mode === 'active' && mine && s.kinds.filter((k) => kindOwner(k) === 'candidate').every((k) => isUploaded(k)) ? (
                     <TouchableOpacity style={[styles.sendBtn, sending && { opacity: 0.6 }]} onPress={() => submitStep(s)} disabled={sending} activeOpacity={0.9}>
                       {sending ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.sendBtnText}>{t('docs_send')}  →</Text>}
                     </TouchableOpacity>
                   ) : null}
 
-                  {mode === 'active' && !mine ? (
+                  {waitingAgency ? (
                     <View style={styles.waitBanner}><Text style={styles.waitBannerText}>⏳ {t('doc_agency_turn')}</Text></View>
+                  ) : null}
+                    </>
                   ) : null}
                 </View>
               );
             })}
 
-            {/* Havaalanı karşılama — uçak bileti geldiyse veya karşılama bilgisi iletildiyse */}
-            {(has('flight_ticket') || flight?.pickupSent) ? (
-              <PickupCard userId={userId} role="candidate" flight={flight}
-                label={[cvData?.firstName, cvData?.lastName].filter(Boolean).join(' ')} />
-            ) : null}
+            {/* 6) Havaalanı transfer — bilet gelmeden kilitli */}
+            {(!focusStep || focusStep === 6) ? (() => {
+              const pickupOpen = has('flight_ticket') || flight?.pickupSent;
+              return (
+                <View
+                  style={[styles.stepCard, pickupOpen ? styles.cardDone : styles.cardLocked]}
+                  collapsable={false}
+                  onLayout={(e) => pinStep(6, e.nativeEvent.layout.y)}
+                >
+                  {focusStep === 6 ? (
+                    <View style={styles.focusMetaRow}>
+                      <View style={[styles.ownerChip, pickupOpen ? styles.ownerOther : styles.ownerMuted]}>
+                        <Text style={[styles.ownerChipText, pickupOpen ? styles.ownerOtherText : styles.ownerMutedText]}>{t('doc_owner_agency')}</Text>
+                      </View>
+                      <View style={{ flex: 1 }} />
+                      {pickupOpen ? (
+                        <Text style={[styles.progressLabel, styles.progressDone]}>{t('docs_progress', { n: '1', m: '1' })}</Text>
+                      ) : (
+                        <Text style={styles.lockedIcon}>🔒</Text>
+                      )}
+                    </View>
+                  ) : (
+                    <View style={styles.stepHead}>
+                      <View style={[styles.stepNo, pickupOpen ? styles.circleDone : styles.circleLocked]}>
+                        <Text style={styles.stepNoText}>{pickupOpen ? '✓' : '6'}</Text>
+                      </View>
+                      <Text style={[styles.stepTitle, !pickupOpen && styles.stepTitleMuted]}>{t('pipe_step_6')}</Text>
+                      <View style={[styles.ownerChip, pickupOpen ? styles.ownerOther : styles.ownerMuted]}>
+                        <Text style={[styles.ownerChipText, pickupOpen ? styles.ownerOtherText : styles.ownerMutedText]}>{t('doc_owner_agency')}</Text>
+                      </View>
+                      {pickupOpen ? (
+                        <Text style={[styles.progressLabel, styles.progressDone]}>{t('docs_progress', { n: '1', m: '1' })}</Text>
+                      ) : (
+                        <Text style={styles.lockedIcon}>🔒</Text>
+                      )}
+                    </View>
+                  )}
+                  {pickupOpen ? (
+                    <PickupCard
+                      embedded
+                      userId={userId}
+                      role="candidate"
+                      flight={flight}
+                      label={[cvData?.firstName, cvData?.lastName].filter(Boolean).join(' ')}
+                    />
+                  ) : (
+                    <Text style={styles.pickupLockText}>🔒 {t('pickup_lock')}</Text>
+                  )}
+                </View>
+              );
+            })() : null}
+
+            {/* 7) Turquz başarı sertifikası — admin yükler */}
+            {(!focusStep || focusStep === 7) ? (() => {
+              const certOpen = has('success_certificate');
+              return (
+                <View
+                  style={[styles.stepCard, certOpen ? styles.cardDone : styles.cardLocked]}
+                  collapsable={false}
+                  onLayout={(e) => pinStep(7, e.nativeEvent.layout.y)}
+                >
+                  {focusStep === 7 ? (
+                    <View style={styles.focusMetaRow}>
+                      <View style={[styles.ownerChip, certOpen ? styles.ownerOther : styles.ownerMuted]}>
+                        <Text style={[styles.ownerChipText, certOpen ? styles.ownerOtherText : styles.ownerMutedText]}>{t('doc_owner_turquz')}</Text>
+                      </View>
+                      <View style={{ flex: 1 }} />
+                      {certOpen ? (
+                        <Text style={[styles.progressLabel, styles.progressDone]}>{t('docs_progress', { n: '1', m: '1' })}</Text>
+                      ) : (
+                        <Text style={styles.lockedIcon}>🔒</Text>
+                      )}
+                    </View>
+                  ) : (
+                    <View style={styles.stepHead}>
+                      <View style={[styles.stepNo, certOpen ? styles.circleDone : styles.circleLocked]}>
+                        <Text style={styles.stepNoText}>{certOpen ? '✓' : '7'}</Text>
+                      </View>
+                      <Text style={[styles.stepTitle, !certOpen && styles.stepTitleMuted]}>{t('pipe_step_7')}</Text>
+                      <View style={[styles.ownerChip, certOpen ? styles.ownerOther : styles.ownerMuted]}>
+                        <Text style={[styles.ownerChipText, certOpen ? styles.ownerOtherText : styles.ownerMutedText]}>{t('doc_owner_turquz')}</Text>
+                      </View>
+                      {certOpen ? (
+                        <Text style={[styles.progressLabel, styles.progressDone]}>{t('docs_progress', { n: '1', m: '1' })}</Text>
+                      ) : (
+                        <Text style={styles.lockedIcon}>🔒</Text>
+                      )}
+                    </View>
+                  )}
+                  {certOpen ? (
+                    <>
+                      <Text style={styles.certCongrats}>🎉 {t('pipe_step_7_desc')}</Text>
+                      <View style={styles.subRow}>
+                        <View style={styles.subMain}>
+                          <Text style={[styles.subBullet, styles.subBulletDone]}>✓</Text>
+                          <Text style={styles.subLabel}>{t('doc_success_certificate')}</Text>
+                          <View style={{ flex: 1 }} />
+                          <TouchableOpacity onPress={() => handleView('success_certificate')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                            <Text style={styles.linkAgency}>{t('doc_view')}</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </>
+                  ) : (
+                    <Text style={styles.pickupLockText}>🔒 {t('pipe_step_7_wait')}</Text>
+                  )}
+                </View>
+              );
+            })() : null}
+            </View>
           </>
         )}
       </ScrollView>
@@ -911,6 +1279,10 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
         onClose={() => setContractPreview(false)}
       />
 
+      <ProcessChatFab
+        visible={PROCESS_CHAT_ENABLED && !!contract?.isPaid && !chatOpen}
+        onPress={() => setChatOpen(true)}
+      />
       <ProcessChatSheet
         visible={chatOpen}
         onClose={() => setChatOpen(false)}
@@ -924,11 +1296,10 @@ export default function DocumentsScreen({ userId, onBack, fontsReady }) {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: '#f4f5f7' },
+  wrap: { flex: 1, backgroundColor: '#fff' },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingBottom: 12, backgroundColor: '#fff',
-    borderBottomWidth: 0.5, borderBottomColor: '#e6e8ec',
+    paddingHorizontal: 16, paddingBottom: 14, backgroundColor: '#fff',
   },
   backBtn: { width: 28, alignItems: 'flex-start' },
   backChevron: { fontSize: 28, color: '#1b2533', fontWeight: '700', marginTop: -4 },
@@ -936,6 +1307,59 @@ const styles = StyleSheet.create({
   titleFont: { fontFamily: 'PlayfairDisplay_700Bold', fontWeight: '400' },
 
   content: { padding: 16 },
+  focusHero: {
+    backgroundColor: '#0e141c',
+    borderRadius: 18,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(194,162,90,0.4)',
+  },
+  focusHeroTop: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  focusNum: {
+    width: 48, height: 48, borderRadius: 24,
+    backgroundColor: 'rgba(194,162,90,0.18)', borderWidth: 1.5, borderColor: '#c2a25a',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  focusNumText: { color: '#e7dcc4', fontSize: 20, fontWeight: '900' },
+  focusKicker: {
+    color: '#c2a25a', fontSize: 11, fontWeight: '800', letterSpacing: 1.1,
+    textTransform: 'uppercase', marginBottom: 4,
+  },
+  focusTitle: { color: '#fff', fontSize: 22, fontWeight: '800', lineHeight: 26 },
+  focusHint: { color: '#a8b6c8', fontSize: 13.5, fontWeight: '500', lineHeight: 20, marginTop: 14 },
+  focusMetaRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12,
+  },
+  seg: {
+    flexDirection: 'row', backgroundColor: '#f3efe4', borderRadius: 14, padding: 4, marginBottom: 16, gap: 4,
+  },
+  segBtn: { flex: 1, borderRadius: 11, paddingVertical: 11, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
+  segBtnOn: { backgroundColor: '#c2a25a' },
+  segText: { fontSize: 12.5, fontWeight: '800', color: '#6b6457', textAlign: 'center', lineHeight: 16 },
+  segTextOn: { color: '#1b2533' },
+  progressLabel: { fontSize: 12, fontWeight: '800', color: '#9a7b1f', flexShrink: 0, marginLeft: 6 },
+  progressDone: { color: '#1f8a4c' },
+  cardActive: { borderColor: '#c2a25a', backgroundColor: '#fffdf6' },
+  cardWait: { borderColor: '#c5dbe2', backgroundColor: '#f4fafb' },
+  turnBox: { borderRadius: 16, paddingVertical: 14, paddingHorizontal: 16, marginBottom: 14 },
+  turnYou: { backgroundColor: '#fff3cc', borderWidth: 1.5, borderColor: '#c2a25a' },
+  turnAgency: { backgroundColor: '#e8f3f6' },
+  turnKicker: { fontSize: 15, fontWeight: '900', letterSpacing: 0.2, marginBottom: 4 },
+  turnKickerYou: { color: '#8a6a1f', marginBottom: 0 },
+  turnKickerAgency: { color: '#1f7d96' },
+  turnSub: { fontSize: 13.5, fontWeight: '600', color: '#3d4450', lineHeight: 19, marginTop: 6 },
+  turnAlertRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  turnBang: {
+    width: 26, height: 26, borderRadius: 13, backgroundColor: '#c2a25a',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  turnBangText: { color: '#1b2533', fontSize: 16, fontWeight: '900', marginTop: -1 },
+  nowChip: { backgroundColor: '#c2a25a', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  nowChipText: { color: '#1b2533', fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  waitLabel: { fontSize: 12, fontWeight: '800', color: '#1f7d96', flexShrink: 0, marginLeft: 6 },
+  circleWait: { backgroundColor: '#2a9db8' },
   intro: { fontSize: 13, color: '#6b6457', lineHeight: 19, backgroundColor: '#f7f4ec', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 10, padding: 12, marginBottom: 14 },
   // Süreç tamamlandı — premium tebrik kartı (açık kâğıt + altın; logo çerçevesiz net dursun)
   doneCard: {
@@ -1001,17 +1425,30 @@ const styles = StyleSheet.create({
   ownerYouText: { color: '#9a7b1f' },
   ownerOtherText: { color: '#1f7d96' },
 
-  deadlineBox: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#fff7e6', borderWidth: 1, borderColor: '#f0d79a', borderRadius: 12, padding: 13, marginBottom: 14 },
+  deadlineBox: {
+    backgroundColor: '#fff7e6', borderWidth: 1, borderColor: '#f0d79a', borderRadius: 14,
+    paddingVertical: 14, paddingHorizontal: 14, marginTop: 14, alignItems: 'center',
+  },
   deadlineWarn: { backgroundColor: '#fbeede', borderColor: '#e8b15a' },
   deadlineOver: { backgroundColor: '#fbeaea', borderColor: '#e8b5b0' },
-  deadlineIcon: { fontSize: 17 },
-  deadlineText: { flex: 1, fontSize: 13, color: '#6b5a2a', fontWeight: '700', lineHeight: 18 },
-  stepCard: { backgroundColor: '#fff', borderWidth: 0.5, borderColor: '#e6e8ec', borderRadius: 12, padding: 14, marginBottom: 12, borderLeftWidth: 4, borderLeftColor: '#e6e8ec' },
-  cardDone: { backgroundColor: '#f5f6f8', borderColor: '#eceef1', borderLeftColor: '#cdd4cf' },
-  cardLocked: { backgroundColor: '#f7f8f9', borderColor: '#eceef1', borderLeftColor: '#e1e4e9' },
+  deadlineClock: {
+    color: '#1b2533', fontSize: 16, fontWeight: '800', letterSpacing: 0.2,
+    textAlign: 'center', lineHeight: 24, marginBottom: 8, paddingHorizontal: 4,
+  },
+  deadlineClockOver: { color: '#b5413a' },
+  deadlineText: { fontSize: 13, color: '#6b5a2a', fontWeight: '700', lineHeight: 18, textAlign: 'center' },
+  deadlineExtraBtn: {
+    marginTop: 12, backgroundColor: '#c2a25a', borderRadius: 12,
+    paddingVertical: 11, paddingHorizontal: 18, minWidth: 180, alignItems: 'center',
+  },
+  deadlineExtraText: { color: '#1b2533', fontSize: 14.5, fontWeight: '800' },
+  deadlineExtraDone: { marginTop: 10, color: '#9a7b1f', fontSize: 13, fontWeight: '800', textAlign: 'center' },
+  stepCard: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#eee8dc', borderRadius: 16, padding: 16, marginBottom: 12 },
+  cardDone: { backgroundColor: '#f7faf8', borderColor: '#dce8e0' },
+  cardLocked: { backgroundColor: '#f7f7f8', borderColor: '#ececec' },
   circleYou: { backgroundColor: '#c2a25a' },
-  circleAgency: { backgroundColor: '#2a9db8' },
-  circleDone: { backgroundColor: '#9bb8a6' },
+  circleAgency: { backgroundColor: '#c2a25a' },
+  circleDone: { backgroundColor: '#1f8a4c' },
   circleLocked: { backgroundColor: '#cfd3da' },
   doneLabel: { fontSize: 12.5, fontWeight: '800', color: '#6f8a78', letterSpacing: 0.3 },
   ownerMuted: { backgroundColor: '#eceef1' },
@@ -1019,7 +1456,9 @@ const styles = StyleSheet.create({
   subLabelMuted: { color: '#9aa1ac', fontWeight: '600' },
   linkMuted: { fontSize: 13, color: '#9aa1ac', fontWeight: '700' },
   linkMutedSm: { fontSize: 12.5, color: '#aeb4bd', fontWeight: '700' },
-  stepHead: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 },
+  stepHead: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 0 },
+  stepTitle: { flex: 1, fontSize: 15, fontWeight: '800', color: '#1b2533', lineHeight: 19 },
+  stepTitleMuted: { color: '#9aa1ac' },
   subRow: { marginTop: 12, paddingTop: 12, borderTopWidth: 0.5, borderTopColor: '#f0f1f3' },
   subMain: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   subBullet: { fontSize: 15, color: '#c9ccd2', fontWeight: '800', width: 14, textAlign: 'center' },
@@ -1035,7 +1474,7 @@ const styles = StyleSheet.create({
   draftText: { color: '#9a6b16', fontSize: 10.5, fontWeight: '800' },
   sendBtn: { backgroundColor: '#c2a25a', borderRadius: 11, paddingVertical: 13, alignItems: 'center', justifyContent: 'center', marginTop: 14 },
   sendBtnText: { color: '#1b2533', fontSize: 15, fontWeight: '800' },
-  signBox: { marginTop: 12, marginLeft: 22, backgroundColor: '#f7f4ec', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 10, padding: 12 },
+  signBox: { marginTop: 10, marginLeft: 22, backgroundColor: '#f7f4ec', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 10, padding: 12 },
   signHelp: { fontSize: 12.5, color: '#6b6457', lineHeight: 18, marginBottom: 10 },
   signRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   // Dikey adım çizelgesi (stepper)
@@ -1046,12 +1485,13 @@ const styles = StyleSheet.create({
   stLine: { width: 2, flex: 1, backgroundColor: '#e0cfa0', marginTop: 4, minHeight: 18 },
   stBody: { flex: 1, paddingLeft: 12, paddingBottom: 20 },
   stTitle: { fontSize: 14.5, fontWeight: '900', color: '#1b2533' },
-  stSub: { fontSize: 12, color: '#8a8270', fontWeight: '600', marginTop: 2, marginBottom: 10 },
+  stSub: { fontSize: 12.5, color: '#6b6457', fontWeight: '600', lineHeight: 18, marginTop: 2, marginBottom: 10 },
   stBtnDark: { backgroundColor: '#1b2533', borderRadius: 10, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
   stBtnDarkText: { color: '#fff', fontWeight: '800', fontSize: 13.5 },
-  stBtnGold: { backgroundColor: '#c2a25a', borderRadius: 10, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' },
+  stBtnGold: { backgroundColor: '#c2a25a', borderRadius: 10, paddingVertical: 12, alignItems: 'center', justifyContent: 'center', marginTop: 4 },
   stBtnGoldText: { color: '#1b2533', fontWeight: '800', fontSize: 13.5 },
-  payGate: { fontSize: 12.5, color: '#6b6457', fontWeight: '600', lineHeight: 18, backgroundColor: '#f7f4ec', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 9, padding: 10 },
+  stBtnDisabled: { opacity: 0.4 },
+  payGate: { fontSize: 12.5, color: '#6b6457', fontWeight: '600', lineHeight: 18, marginTop: 8 },
   page3Note: { flexDirection: 'row', gap: 8, backgroundColor: '#eef4f6', borderWidth: 1, borderColor: '#cfe0e6', borderRadius: 9, padding: 10, marginTop: 10 },
   page3NoteText: { flex: 1, fontSize: 12, color: '#2a5560', fontWeight: '600', lineHeight: 17 },
   startDateBox: { marginTop: 12, marginLeft: 22, backgroundColor: '#f7f4ec', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 10, padding: 12 },
@@ -1066,7 +1506,7 @@ const styles = StyleSheet.create({
   langNoteTextGap: { marginTop: 6 },
   waitBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#e4f1f5', borderRadius: 9, paddingHorizontal: 12, paddingVertical: 10, marginTop: 12 },
   waitBannerText: { color: '#1f7d96', fontSize: 13, fontWeight: '700' },
-  stepNo: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', marginRight: 11 },
+  stepNo: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   stepNoText: { color: '#fff', fontSize: 12.5, fontWeight: '800' },
   stepDone: { backgroundColor: '#1f8a4c' },
   stepActive: { backgroundColor: '#c2a25a' },
@@ -1105,4 +1545,9 @@ const styles = StyleSheet.create({
   viewerFooter: { paddingHorizontal: 16, paddingTop: 12, backgroundColor: '#1b2533' },
   viewerDl: { backgroundColor: '#c2a25a', borderRadius: 12, paddingVertical: 15, alignItems: 'center', justifyContent: 'center' },
   viewerDlText: { color: '#1b2533', fontWeight: '800', fontSize: 15.5 },
+
+  pickupLock: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#eadfc2', borderRadius: 16, padding: 16, marginTop: 14 },
+  pickupLockTitle: { fontSize: 16, fontWeight: '800', color: '#1b2533' },
+  pickupLockText: { fontSize: 13, color: '#9a6b16', marginTop: 8, lineHeight: 19, fontWeight: '600' },
+  certCongrats: { fontSize: 13.5, color: '#6a5418', marginTop: 8, marginBottom: 6, lineHeight: 20, fontWeight: '700' },
 });

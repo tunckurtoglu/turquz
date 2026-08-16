@@ -1,7 +1,7 @@
 // screens/CVPreview.js
 // CV'yi WebView'de gösterir; pinch-zoom + her yöne kaydırma açık.
 // "PDF İndir" -> logolu PDF'i doğrudan üretir ve paylaş/kaydet menüsünü açar.
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useImperativeHandle, forwardRef, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { WebView } from 'react-native-webview';
 import * as Print from 'expo-print';
@@ -28,7 +28,9 @@ function cvContentFingerprint(d = {}, lang = '') {
   ].join('\u001f');
 }
 
-export default function CVPreview({ data, langOverride, masked = false, candidateNo, contentKey }) {
+const CVPreview = forwardRef(function CVPreview({
+  data, langOverride, masked = false, candidateNo, contentKey, hidePdfBtn = false,
+}, ref) {
   const { lang, t } = useLanguage();
   const activeLang = langOverride || lang;
   const [busy, setBusy] = useState(false);
@@ -45,7 +47,7 @@ export default function CVPreview({ data, langOverride, masked = false, candidat
   // contentKey: parent (override) bilgisini doğrudan geçirir — title-only değişimde kaçmasın.
   const webKey = contentKey || cvContentFingerprint(screenData, activeLang);
 
-  const downloadPdf = async () => {
+  const downloadPdf = useCallback(async () => {
     if (busy) return;
     setBusy(true);
     try {
@@ -61,7 +63,9 @@ export default function CVPreview({ data, langOverride, masked = false, candidat
     } finally {
       setBusy(false);
     }
-  };
+  }, [busy, htmlPdf, t]);
+
+  useImperativeHandle(ref, () => ({ downloadPdf }), [downloadPdf]);
 
   return (
     <View style={styles.wrap}>
@@ -82,20 +86,24 @@ export default function CVPreview({ data, langOverride, masked = false, candidat
         />
       </View>
 
-      <TouchableOpacity
-        style={[styles.pdfBtn, busy && styles.pdfBtnBusy]}
-        onPress={downloadPdf}
-        disabled={busy}
-        activeOpacity={0.85}
-      >
-        <Text style={styles.pdfText}>{busy ? t('pdf_preparing') : t('pdf_download')}</Text>
-      </TouchableOpacity>
+      {!hidePdfBtn ? (
+        <TouchableOpacity
+          style={[styles.pdfBtn, busy && styles.pdfBtnBusy]}
+          onPress={downloadPdf}
+          disabled={busy}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.pdfText}>{busy ? t('pdf_preparing') : t('pdf_download')}</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
-}
+});
+
+export default CVPreview;
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, width: '100%', padding: 16 },
+  wrap: { flex: 1, width: '100%', padding: 0 },
   frame: {
     flex: 1,
     width: '100%',

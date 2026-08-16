@@ -2,12 +2,13 @@
 // Acente paneli — premium aday havuzu (2 sütun foto galeri + alt bilgi).
 // Arama yok; bulma ⚙ Filtreler (tam ekran) ile. FlatList sanallaştırma + sonsuz kaydırma.
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, Image, FlatList, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Keyboard, Modal, Pressable, useWindowDimensions } from 'react-native';
+import { View, Text, Image, FlatList, SectionList, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Keyboard, Modal, Pressable, useWindowDimensions, Animated, Linking } from 'react-native';
 import Svg, { Line, Circle, Path, Polyline, Rect } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
-import { listCandidates, listCandidateIds, listStatuses, listCandidatesWithDocs, offerCandidate, findCandidateByCode, listInterviewCandidates, listStaff, listInProcess, declineInterview, getCandidateById } from '../lib/roles';
+import { listCandidates, listCandidateIds, listStatuses, listCandidatesWithDocs, offerCandidate, findCandidateByCode, findCandidatesByName, listInterviewCandidates, listStaff, listInProcess, listInTransit, declineInterview, getCandidateById } from '../lib/roles';
+import { listFormerStaff, scanEmploymentLifecycle, isEmploymentNotif, candidateIdFromNotif } from '../lib/employment';
 import { updateMyProfile, getSession } from '../lib/auth';
 import { candidateCode, parseCode, maskedName } from '../lib/candidateCode';
 import { formatLastSeen, lastSeenTier } from '../lib/lastSeenFormat';
@@ -19,17 +20,33 @@ import { DAYS, monthOptions, FLIGHT_YEARS } from '../cv/options';
 import AgencyFilterSheet from '../components/AgencyFilterSheet';
 import NotificationBell from '../components/NotificationBell';
 import PhotoWatermark from '../components/PhotoWatermark';
-import { LANGUAGES_SUPPORTED } from '../i18n/languages';
+import AgencyOpsDesk from '../components/AgencyOpsDesk';
+import AgencyChatInbox from '../components/AgencyChatInbox';
+import AgencyRemindersSheet from '../components/AgencyRemindersSheet';
+import AnnouncementsListSheet from '../components/AnnouncementsListSheet';
+import ContactSheet from '../components/ContactSheet';
+import { LANGUAGES_ALPHA, nameOf } from '../i18n/languages';
 import { getAgencyNotifPrefs, setAgencyNotifPrefs } from '../lib/agencyNotifPrefs';
+import {
+  getAgencyProfile, saveAgencyTaxPlate, getAgencyTaxPlateUrl, updateAgencyCompanyName,
+} from '../lib/agencyProfile';
+import { agencyCode } from '../lib/agencyCode';
 import { syncChatLang } from '../lib/processChat';
+import { enrichProcessProgress, unreadChatCount, loadAgencyOps } from '../lib/ops';
+import { attachEmployers, groupByEmployer, withFormerEmployerFields } from '../lib/employerAttach';
+import { urgentTotal } from '../lib/opsUi';
+import { unreadAnnouncementCount } from '../lib/notifications';
 import { listRatingStats } from '../lib/ratings';
 import RatingBadge from '../components/RatingBadge';
 import FavoriteEmployerSheet from '../components/FavoriteEmployerSheet';
 import { listFavoriteCandidates, removeFavorite } from '../lib/favorites';
 import { readAgencyHomeUi, writeAgencyHomeUi, resetAgencyHomeUi } from '../lib/agencyHomeUi';
 import AgencyArrivals from '../components/AgencyArrivals';
+import ProcessChatSheet from '../components/ProcessChatSheet';
 
 const PAGE = 24;
+const FOOTER_LOGO = require('../assets/icon-dark.png');
+const FOOTER_CONTENT_PAD = 78;
 
 // Uyruk -> ülke bayrağı (elimizde olanlar; diğerlerinde bayrak gösterilmez).
 const NATION_FLAG = {
@@ -69,6 +86,16 @@ function LogoutIcon({ color = '#cbd2db', size = 24 }) {
   );
 }
 
+function MenuIcon({ color = '#e7dcc4', size = 22 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Line x1="4" y1="7" x2="20" y2="7" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Line x1="4" y1="12" x2="20" y2="12" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Line x1="4" y1="17" x2="20" y2="17" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+    </Svg>
+  );
+}
+
 function SearchIcon({ color = '#fff', size = 22 }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
@@ -96,6 +123,7 @@ function countFilters(f) {
   if (f.ageMin || f.ageMax) n += 1;
   if (f.gender) n += 1;
   if (f.employmentStatus) n += 1;
+  if (f.turquzCertified) n += 1;
   if (f.availableMonths && f.availableMonths.length) n += 1;
   ['nationalities', 'positions', 'languages', 'skills'].forEach((k) => { if (f[k] && f[k].length) n += 1; });
   return n;
@@ -112,6 +140,41 @@ function PrefSwitch({ on, onToggle }) {
     >
       <View style={[styles.swThumb, on && styles.swThumbOn]} />
     </TouchableOpacity>
+  );
+}
+
+function FooterMegaphoneIcon({ color = '#e7dcc4', size = 20 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M3.5 10.2v3.6c0 .7.5 1.3 1.2 1.4l3.3.5 2.2 3.8c.3.5 1.1.3 1.1-.3v-2.8l6.2 1.1c1.1.2 2-.7 2-1.8V9.1c0-1.1-.9-2-2-1.8l-6.2 1.1V5.8c0-.6-.8-.8-1.1-.3L7.9 9.3l-3.3.5c-.6.1-1.1.7-1.1 1.4Z"
+        stroke={color} strokeWidth="1.7" strokeLinejoin="round"
+      />
+      <Path d="M19.8 9.6c.8.7.8 2.1 0 2.8" stroke={color} strokeWidth="1.7" strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+function FooterStopwatchIcon({ color = '#e7dcc4', size = 20 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Circle cx="12" cy="13.2" r="7.2" stroke={color} strokeWidth="1.8" />
+      <Path d="M12 13.2V9.6" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Path d="M10 3.6h4" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Path d="M12 3.6v2.2" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Path d="M17.6 7.2l1.2-1.2" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+function FooterChatIcon({ color = '#e7dcc4', size = 20 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M4 7a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-4.2L8.2 21.1c-.72.5-1.7-.02-1.7-.86V17A4 4 0 0 1 4 13V7Z"
+        stroke={color} strokeWidth="1.7" strokeLinejoin="round"
+      />
+    </Svg>
   );
 }
 
@@ -139,21 +202,48 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const [codeError, setCodeError] = useState(false);
   const filterKey = JSON.stringify(advFilters);
   const activeCount = countFilters(advFilters);
-  const [menuOpen, setMenuOpen] = useState(false);    // header ⋮ menüsü (dil + çıkış)
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [langOpen, setLangOpen] = useState(false);
+  const [agencyProfile, setAgencyProfile] = useState(null);
+  const [taxBusy, setTaxBusy] = useState(false);
   // Acente bilgilerini düzenle modalı
   const [profOpen, setProfOpen] = useState(false);
   const [profFirst, setProfFirst] = useState('');
   const [profLast, setProfLast] = useState('');
   const [profPhone, setProfPhone] = useState('');
+  const [profCompany, setProfCompany] = useState('');
   const [profBusy, setProfBusy] = useState(false);
   const [profErr, setProfErr] = useState('');
+
+  const refreshAgencyProfile = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const p = await getAgencyProfile(userId);
+      setAgencyProfile(p);
+    } catch { /* ignore */ }
+  }, [userId]);
+
+  useEffect(() => { refreshAgencyProfile(); }, [refreshAgencyProfile]);
+
+  const openSettings = () => {
+    setLangOpen(false);
+    setMenuOpen(true);
+    refreshAgencyProfile();
+  };
+
   const openProfile = async () => {
     setMenuOpen(false);
     try {
       const { session } = await getSession();
       const m = session?.user?.user_metadata || {};
-      setProfFirst(m.first_name || ''); setProfLast(m.last_name || ''); setProfPhone(m.phone || '');
-    } catch (e) { setProfFirst(''); setProfLast(''); setProfPhone(''); }
+      setProfFirst(m.first_name || '');
+      setProfLast(m.last_name || '');
+      setProfPhone(m.phone || '');
+      const p = agencyProfile || await getAgencyProfile(userId);
+      setProfCompany(p?.companyName || '');
+    } catch (e) {
+      setProfFirst(''); setProfLast(''); setProfPhone(''); setProfCompany('');
+    }
     setProfErr(''); setProfOpen(true);
   };
   const saveProfile = async () => {
@@ -162,26 +252,84 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     if (p.replace(/\D/g, '').length < 10) { setProfErr('Geçerli bir telefon numarası girin.'); return; }
     setProfErr(''); setProfBusy(true);
     const { error } = await updateMyProfile({ firstName: f, lastName: l, phone: p });
+    if (error) { setProfBusy(false); setProfErr(error.message || 'Kaydedilemedi'); return; }
+    try {
+      await updateAgencyCompanyName(userId, profCompany);
+      await refreshAgencyProfile();
+    } catch (e) {
+      setProfBusy(false);
+      setProfErr(e?.message || 'Şirket adı kaydedilemedi');
+      return;
+    }
     setProfBusy(false);
-    if (error) { setProfErr(error.message || 'Kaydedilemedi'); return; }
     setProfOpen(false);
   };
+
+  const pickTaxPdf = async () => {
+    try {
+      const DocumentPicker = await import('expo-document-picker');
+      const { File } = await import('expo-file-system');
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf'],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (res.canceled || !res.assets?.length) return;
+      const asset = res.assets[0];
+      const isPdf = (asset.mimeType || '').includes('pdf') || (asset.name || '').toLowerCase().endsWith('.pdf');
+      if (!isPdf) { Alert.alert(t('agency_tax_section'), t('agency_tax_pdf_only') || 'Yalnızca PDF yükleyin.'); return; }
+      setTaxBusy(true);
+      const base64 = await new File(asset.uri).base64();
+      await saveAgencyTaxPlate(userId, base64);
+      await refreshAgencyProfile();
+    } catch (e) {
+      Alert.alert(t('agency_tax_section'), e?.message || 'PDF yüklenemedi');
+    } finally {
+      setTaxBusy(false);
+    }
+  };
+
+  const viewTaxPdf = async () => {
+    try {
+      setTaxBusy(true);
+      const url = await getAgencyTaxPlateUrl(userId);
+      if (!url) { Alert.alert(t('agency_tax_section'), t('agency_tax_missing') || 'Vergi levhası yok.'); return; }
+      await Linking.openURL(url);
+    } catch (e) {
+      Alert.alert(t('agency_tax_section'), e?.message || 'Açılamadı');
+    } finally {
+      setTaxBusy(false);
+    }
+  };
+
   const [searchOpen, setSearchOpen] = useState(false); // header'da açılır arama
-  const [view, setView] = useState(() => savedUi.view || 'pool');          // pool | process | staff
-  const [subView, setSubView] = useState(() => savedUi.subView || 'interviews'); // interviews | concluded | inprocess
+  const [pipeStepFilter, setPipeStepFilter] = useState(null); // 1–6 | null
+  const [view, setView] = useState(() => savedUi.view || 'ops');          // ops | pool | process | staff | messages
+  const [subView, setSubView] = useState(() => savedUi.subView || 'interviews'); // interviews | concluded | offered | inprocess
   const [ivList, setIvList] = useState([]);
   const [inProcessList, setInProcessList] = useState([]);
+  const [offeredList, setOfferedList] = useState([]);
   const [staffList, setStaffList] = useState([]);
   const [listLoading, setListLoading] = useState(false);
   const [ivSortDesc, setIvSortDesc] = useState(true);   // yeni -> eski
   // Havuz sıralaması: son görünürlük (yeniden eskiye) | eskiden yeniye | CV tarihi
   const [poolSort, setPoolSort] = useState(() => savedUi.poolSort || 'online'); // online | online_old
-  const [staffView, setStaffView] = useState('cards'); // cards | arrivals
+  const [staffView, setStaffView] = useState('cards'); // cards | transit | arrivals | former
+  const [formerList, setFormerList] = useState([]);
+  const [transitList, setTransitList] = useState([]);
   const [rangeOpen, setRangeOpen] = useState(false);
   const [range, setRange] = useState({ s: null, e: null }); // seçili tarih aralığı (Date)
   const [draftFrom, setDraftFrom] = useState({ d: '', m: '', y: '' });
   const [draftTo, setDraftTo] = useState({ d: '', m: '', y: '' });
   const [nowTick, setNowTick] = useState(Date.now());
+  const [chatBadge, setChatBadge] = useState(0);
+  const [announceUnread, setAnnounceUnread] = useState(0);
+  const [remindWarn, setRemindWarn] = useState(false);
+  const [announcementsOpen, setAnnouncementsOpen] = useState(false);
+  const [remindersOpen, setRemindersOpen] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
+  const [chatPeer, setChatPeer] = useState(null); // { id, label } — inbox’tan açılan sohbet
+  const remindBlink = React.useRef(new Animated.Value(1)).current;
 
   const [generalPush, setGeneralPush] = useState(true);
   const [chatPush, setChatPush] = useState(true);
@@ -225,19 +373,90 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   // Süreç / Personel sekmesine geçince ilgili listeleri yükle.
   const reloadProcess = useCallback(async () => {
     const [ivs, inp] = await Promise.all([listInterviewCandidates(userId), listInProcess(userId)]);
-    setIvList(ivs); setInProcessList(inp);
+    const enriched = await enrichProcessProgress(inp);
+    const [ivAttached, inAttached] = await Promise.all([
+      attachEmployers(userId, ivs),
+      attachEmployers(userId, enriched),
+    ]);
+    setIvList(ivAttached);
+    setInProcessList(inAttached);
   }, [userId]);
+
+  const reloadOffered = useCallback(async () => {
+    const st = await listStatuses();
+    setStatuses(st);
+    const ids = Object.keys(st).filter((id) => st[id]?.status === 'offered' && st[id]?.accepted_by === userId);
+    if (!ids.length) { setOfferedList([]); return; }
+    const rows = await Promise.all(ids.map((id) => getCandidateById(id)));
+    const list = rows.filter(Boolean).map((r) => ({ ...r, st: st[r.user_id] }));
+    setOfferedList(await attachEmployers(userId, list));
+  }, [userId]);
+
   useEffect(() => {
-    if (view === 'pool') return undefined;
+    if (view === 'pool' || view === 'ops' || view === 'messages') return undefined;
     let alive = true;
     (async () => {
       setListLoading(true);
-      if (view === 'process') { await reloadProcess(); }
-      else { const rows = await listStaff(userId); if (alive) setStaffList(rows); }
+      if (view === 'process') {
+        await reloadProcess();
+        if (subView === 'offered') await reloadOffered();
+      } else {
+        const [rows, former, transit] = await Promise.all([
+          listStaff(userId),
+          listFormerStaff(userId),
+          listInTransit(userId),
+        ]);
+        if (alive) {
+          const [staffAttached, transitAttached] = await Promise.all([
+            attachEmployers(userId, rows),
+            attachEmployers(userId, transit),
+          ]);
+          setStaffList(staffAttached);
+          setFormerList(withFormerEmployerFields(former));
+          setTransitList(transitAttached);
+        }
+        scanEmploymentLifecycle();
+      }
       if (alive) setListLoading(false);
     })();
     return () => { alive = false; };
-  }, [view, userId, reloadProcess]);
+  }, [view, subView, userId, reloadProcess, reloadOffered]);
+
+  useEffect(() => {
+    if (!userId) return undefined;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const [chatN, annN, ops] = await Promise.all([
+          unreadChatCount(userId),
+          unreadAnnouncementCount(userId),
+          loadAgencyOps(userId),
+        ]);
+        if (!alive) return;
+        setChatBadge(chatN || 0);
+        setAnnounceUnread(annN || 0);
+        setRemindWarn(urgentTotal(ops?.metrics || {}) > 0);
+      } catch { /* ignore */ }
+    };
+    tick();
+    const tmr = setInterval(tick, 20000);
+    return () => { alive = false; clearInterval(tmr); };
+  }, [userId, view]);
+
+  useEffect(() => {
+    if (!remindWarn) {
+      remindBlink.setValue(1);
+      return undefined;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(remindBlink, { toValue: 0.2, duration: 550, useNativeDriver: true }),
+        Animated.timing(remindBlink, { toValue: 1, duration: 550, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [remindWarn, remindBlink]);
 
   useEffect(() => {
     let alive = true;
@@ -313,35 +532,82 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const category = (id) => (isAccepted(id) ? 'active' : isOffered(id) ? 'offered' : 'pending');
   const isSelected = (id) => selectedIds.includes(id);
 
-  // Bildirime tıklayınca: ilgili aday (ref_user) varsa o adayın ekranını aç.
-  const NOTIF_TO_CANDIDATE = ['interview_scheduled', 'document', 'offer_accepted', 'offer_rejected', 'docs_deadline'];
+  // Bildirime tıklayınca: ilgili adayı aç (chat_message → sohbet; boarding_missed → tarih düzenle).
+  const NOTIF_TO_CANDIDATE = [
+    'interview_scheduled', 'document', 'offer_accepted', 'offer_rejected', 'docs_deadline', 'docs_extra',
+    'chat_message', 'boarding_missed', 'boarding_no_response', 'boarding_confirmed', 'flight_ticket_sent',
+    'work_start_confirm', 'work_start_remind', 'employment_started',
+  ];
   const onNotifNavigate = async (n) => {
-    if (!n?.ref_user || !NOTIF_TO_CANDIDATE.includes(n.type)) return;
+    if (!n?.type) return;
+    if (!NOTIF_TO_CANDIDATE.includes(n.type) && !isEmploymentNotif(n.type)) return;
+    const candId = isEmploymentNotif(n.type)
+      ? await candidateIdFromNotif(n)
+      : (n.payload?.candidateId || n.ref_user);
+    if (!candId) return;
     try {
-      const c = await getCandidateById(n.ref_user);
-      if (c) onOpenCandidate(c, statuses[n.ref_user]);
+      let c = await getCandidateById(candId);
+      if (!c) c = staffList.find((r) => r.user_id === candId) || null;
+      if (!c) {
+        const f = formerList.find((r) => r.candidate_id === candId || r.user_id === candId);
+        if (f) c = { user_id: f.candidate_id || f.user_id, title: f.employer_title || f.title, data: f.data || {}, reg_no: f.reg_no, nationality: f.nationality };
+      }
+      if (c) {
+        onOpenCandidate(c, {
+          ...(statuses[candId] || {}),
+          ...(n.type === 'chat_message' ? { _openChat: true } : {}),
+          ...((n.type === 'boarding_missed' || n.type === 'boarding_no_response' || n.payload?.openWorkStart)
+            ? { _openWorkStart: true } : {}),
+          ...((n.type === 'work_start_confirm' || n.type === 'work_start_remind' || n.payload?.openHireConfirm)
+            ? { _openHireConfirm: true, status: 'in_transit' } : {}),
+        });
+      }
     } catch (e) { /* yoksay */ }
   };
 
   const toggleSelect = (id) => setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   const exitSelect = () => { setSelectMode(false); setSelectedIds([]); setCodeChips([]); setCodeInput(''); setCodeError(false); };
 
-  // Koda göre adayı bul: seçim modunda seçime ekle, değilse adayı aç. (Her zaman erişilebilir.)
+  // Kod veya isimle aday bul: seçim modunda seçime ekle; tek sonuçta aç; çok sonuçta havuzu filtrele.
   const handleCode = async () => {
-    const parsed = parseCode(codeInput);
-    if (!parsed) { setCodeError(true); return; }
+    const raw = String(codeInput || '').trim();
+    if (!raw) { setCodeError(true); return; }
     setCodeBusy(true); setCodeError(false);
     try {
-      const row = await findCandidateByCode(parsed.nationality, parsed.regNo);
-      if (!row) { setCodeError(true); return; }
+      const parsed = parseCode(raw);
+      let rows = [];
+      if (parsed) {
+        const row = await findCandidateByCode(parsed.nationality, parsed.regNo);
+        if (row) rows = [row];
+      } else {
+        rows = await findCandidatesByName(raw);
+      }
+      if (!rows.length) { setCodeError(true); return; }
       Keyboard.dismiss();
       setCodeInput('');
       if (selectMode) {
-        const code = candidateCode(row.data?.nationality, row.reg_no);
-        setSelectedIds((prev) => (prev.includes(row.user_id) ? prev : [...prev, row.user_id]));
-        setCodeChips((prev) => (prev.find((c) => c.user_id === row.user_id) ? prev : [...prev, { user_id: row.user_id, code, photo: row.data?.photoClose || row.data?.photo || row.data?.photoFull }]));
+        setSelectedIds((prev) => {
+          const next = [...prev];
+          rows.forEach((row) => { if (!next.includes(row.user_id)) next.push(row.user_id); });
+          return next;
+        });
+        setCodeChips((prev) => {
+          const next = [...prev];
+          rows.forEach((row) => {
+            if (next.find((c) => c.user_id === row.user_id)) return;
+            const code = candidateCode(row.nationality || row.data?.nationality, row.reg_no);
+            next.push({ user_id: row.user_id, code, photo: row.data?.photoClose || row.data?.photo || row.data?.photoFull });
+          });
+          return next;
+        });
+      } else if (rows.length === 1) {
+        onOpenCandidate(rows[0], statuses[rows[0].user_id]);
       } else {
-        onOpenCandidate(row, statuses[row.user_id]);
+        setView('pool');
+        setItems(rows);
+        setPage(0);
+        setHasMore(false);
+        setSearchOpen(false);
       }
     } finally {
       setCodeBusy(false);
@@ -480,13 +746,13 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   };
 
   // Aktif mod: pool dışındayken hangi alt liste gösteriliyor.
-  const mode = view === 'process' ? subView : view; // interviews | concluded | inprocess | staff
+  const mode = view === 'process' ? subView : view; // interviews | concluded | offered | inprocess | staff
 
   // Premium kart — moda göre rozet/aksiyon değişir.
   const renderRich = ({ item: c }) => {
     const photo = c.data?.photoClose || c.data?.photo || c.data?.photoFull;
-    const code = candidateCode(c.data?.nationality, c.reg_no);
-    const flag = NATION_FLAG[c.data?.nationality];
+    const code = candidateCode(c.data?.nationality || c.nationality, c.reg_no);
+    const flag = NATION_FLAG[c.data?.nationality || c.nationality];
     let badgeLabel = ''; let badgeStyle = styles.bMuted; let dotColor = '#9aa1ac';
     let dateDay = ''; let dateTime = ''; let strip = 'none'; // none | gold | red
 
@@ -500,8 +766,16 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     } else if (mode === 'concluded') {
       badgeLabel = t('sub_concluded'); badgeStyle = styles.bMuted; dotColor = '#6b7280';
       if (c.ivSlot) { dateDay = `${weekdayOf(c.ivSlot, lang)}, ${slotDateKey(c.ivSlot)}`; dateTime = slotTime(c.ivSlot); strip = 'gold'; }
+    } else if (mode === 'offered') {
+      badgeLabel = t('agency_filter_offered') || 'Teklifli'; badgeStyle = styles.bAmber; dotColor = '#1f3a63';
     } else if (mode === 'inprocess') {
-      badgeLabel = t('in_process_label'); badgeStyle = styles.bGreen; dotColor = '#1f8a4c';
+      const turn = c.turn === 'agency'
+        ? (t('turn_agency') || 'Sıra sizde')
+        : (t('turn_candidate') || 'Aday bekleniyor');
+      const step = c.titleKey ? (t(c.titleKey) || `Adım ${c.pipeStep}`) : (c.pipeStep ? `Adım ${c.pipeStep}` : '');
+      badgeLabel = step ? `${step} · ${turn}` : (t('in_process_label') || 'Süreçte');
+      badgeStyle = c.turn === 'agency' ? styles.bAmber : styles.bGreen;
+      dotColor = c.turn === 'agency' ? '#9a7b1f' : '#1f8a4c';
     } else { // staff
       const end = c.work_end_at ? new Date(c.work_end_at) : null;
       const expired = end ? Date.now() >= end.getTime() : false;
@@ -531,7 +805,10 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
             <Text style={styles.richName} numberOfLines={1}>{maskedName(c.data) || code}</Text>
-            <Text style={styles.richCode} numberOfLines={1}>{code}{c.title ? `  ·  ${c.title}` : ''}</Text>
+            <Text style={styles.richCode} numberOfLines={1}>
+              {code}
+              {c.employerLabel ? `  ·  ${c.employerLabel}` : ''}
+            </Text>
             <View style={[styles.badge, badgeStyle]}>
               <View style={[styles.badgeDot, { backgroundColor: dotColor }]} />
               <Text style={[styles.badgeText, { color: dotColor }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{badgeLabel}</Text>
@@ -652,6 +929,23 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     .sort((a, b) => (a.ivSortDate || '').localeCompare(b.ivSortDate || ''));
   if (ivSortDesc) shownIv.reverse();
 
+  const noneEmp = t('employer_group_none') || 'İşletme atanmamış';
+  const richListData = mode === 'staff' ? staffList : mode === 'inprocess'
+    ? (pipeStepFilter
+      ? inProcessList.filter((c) => (pipeStepFilter === 6 ? (c.pipeStep || 0) >= 6 : c.pipeStep === pipeStepFilter))
+      : inProcessList)
+    : mode === 'offered' ? offeredList : shownIv;
+  const richSections = groupByEmployer(richListData, { noneLabel: noneEmp });
+  const transitSections = groupByEmployer(transitList, { noneLabel: noneEmp });
+  const formerSections = groupByEmployer(formerList, { noneLabel: noneEmp });
+
+  const renderEmpHeader = ({ section }) => (
+    <View style={styles.empSec}>
+      <Text style={styles.empSecTitle} numberOfLines={1}>{section.title}</Text>
+      <Text style={styles.empSecN}>{section.data.length}</Text>
+    </View>
+  );
+
   const fmtRange = (dt) => (dt ? `${String(dt.getDate()).padStart(2, '0')}.${String(dt.getMonth() + 1).padStart(2, '0')}.${dt.getFullYear()}` : '');
   const openRange = () => {
     const toDraft = (dt) => (dt ? { d: String(dt.getDate()).padStart(2, '0'), m: String(dt.getMonth() + 1).padStart(2, '0'), y: String(dt.getFullYear()) } : { d: '', m: '', y: '' });
@@ -675,10 +969,10 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
               <TextInput
                 style={styles.heroSearchInput}
                 value={codeInput}
-                onChangeText={(v) => { setCodeInput(v.toUpperCase()); setCodeError(false); }}
+                onChangeText={(v) => { setCodeInput(v); setCodeError(false); }}
                 placeholder={t('agency_code_ph')}
                 placeholderTextColor="rgba(255,255,255,0.45)"
-                autoCapitalize="characters"
+                autoCapitalize="words"
                 autoCorrect={false}
                 autoFocus
                 onSubmitEditing={handleCode}
@@ -696,11 +990,18 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           </View>
         ) : (
           <View style={styles.heroRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.heroHi} numberOfLines={1}>
-                {view === 'pool' ? t('agency_title') : view === 'process' ? t('nav_process') : t('nav_staff')}
-              </Text>
-              <Text style={[styles.heroTitle, fontsReady && styles.heroTitleFont]} numberOfLines={1}>{t('agency_panel_name')}</Text>
+            <View style={styles.heroBrand}>
+              <Image source={require('../assets/turquz-logo.png')} style={styles.heroLogo} resizeMode="contain" />
+              <View style={styles.heroTitles}>
+                <Text style={styles.heroHi} numberOfLines={1}>{t('agency_panel_kicker')}</Text>
+                <Text style={[styles.heroTitle, fontsReady && styles.heroTitleFont]} numberOfLines={1}>
+                  {view === 'ops' ? t('nav_today')
+                    : view === 'messages' ? t('nav_messages')
+                    : view === 'pool' ? t('agency_title')
+                    : view === 'process' ? t('nav_process')
+                    : t('nav_staff')}
+                </Text>
+              </View>
             </View>
             <View style={styles.headerActions}>
               {view === 'pool' ? (
@@ -709,8 +1010,8 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
                 </TouchableOpacity>
               ) : null}
               <NotificationBell userId={userId} color="#e7dcc4" onNavigate={onNotifNavigate} />
-              <TouchableOpacity onPress={() => setMenuOpen(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Text style={styles.menuDots}>⋮</Text>
+              <TouchableOpacity onPress={openSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} accessibilityLabel={t('settings')}>
+                <MenuIcon />
               </TouchableOpacity>
             </View>
           </View>
@@ -718,48 +1019,73 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       </View>
       <View style={styles.accent} />
 
-      {/* Ayarlar: dil + bildirim + hesap — tek kaydırılabilir alt sayfa */}
+      {/* Ayarlar: kimlik + dil + bildirim + vergi levhası + hesap */}
       <Modal visible={menuOpen} transparent animationType="slide" onRequestClose={() => setMenuOpen(false)}>
         <View style={styles.menuBackdrop}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setMenuOpen(false)} />
-          <View style={[styles.menuSheet, { maxHeight: winH * 0.86, paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => { setMenuOpen(false); setLangOpen(false); }} />
+          <View style={[styles.menuSheet, { maxHeight: winH * 0.9, paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
             <View style={styles.menuHandle} />
             <View style={styles.menuHeadRow}>
               <Text style={styles.menuHeadTitle}>{t('settings')}</Text>
-              <TouchableOpacity onPress={() => setMenuOpen(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.menuCloseBtn}>
+              <TouchableOpacity onPress={() => { setMenuOpen(false); setLangOpen(false); }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.menuCloseBtn}>
                 <Text style={styles.menuCloseX}>✕</Text>
               </TouchableOpacity>
             </View>
 
             <ScrollView
-              style={{ maxHeight: winH * 0.86 - 72 }}
+              style={{ maxHeight: winH * 0.9 - 72 }}
               contentContainerStyle={styles.menuScrollContent}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
               bounces={false}
               nestedScrollEnabled
             >
-              <Text style={styles.menuSection}>{t('set_language')}</Text>
-              <View style={styles.langGrid}>
-                {LANGUAGES_SUPPORTED.map((l) => {
-                  const on = l.code === lang;
-                  return (
-                    <TouchableOpacity
-                      key={l.code}
-                      style={[styles.langChip, on && styles.langChipOn]}
-                      onPress={() => {
-                        if (on) return;
-                        setLang(l.code);
-                        setAgencyNotifPrefs({ generalPush, chatPush, preferredLang: l.code }).catch(() => {});
-                      }}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={[styles.langChipText, on && styles.langChipTextOn]} numberOfLines={1}>{l.name}</Text>
-                      {on ? <Text style={styles.langChipCheck}>✓</Text> : null}
-                    </TouchableOpacity>
-                  );
-                })}
+              <View style={styles.idCard}>
+                <Text style={styles.idCode}>{agencyCode(agencyProfile?.regNo)}</Text>
+                <Text style={styles.idName} numberOfLines={2}>
+                  {agencyProfile?.companyName || t('agency_company_fallback') || 'Acente'}
+                </Text>
+                <Text style={styles.idHint}>{t('agency_id_hint') || 'Acente kimlik kodunuz'}</Text>
               </View>
+
+              <Text style={[styles.menuSection, { marginTop: 16 }]}>{t('set_language')}</Text>
+              <TouchableOpacity
+                style={styles.langDrop}
+                onPress={() => setLangOpen((v) => !v)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.langDropValue}>{nameOf(lang)}</Text>
+                <Text style={styles.langDropChev}>{langOpen ? '▴' : '▾'}</Text>
+              </TouchableOpacity>
+              {langOpen ? (
+                <ScrollView
+                  style={styles.langDropList}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator
+                >
+                  {LANGUAGES_ALPHA.map((l) => {
+                    const on = l.code === lang;
+                    return (
+                      <TouchableOpacity
+                        key={l.code}
+                        style={[styles.langDropRow, on && styles.langDropRowOn]}
+                        onPress={() => {
+                          if (!on) {
+                            setLang(l.code);
+                            setAgencyNotifPrefs({ generalPush, chatPush, preferredLang: l.code }).catch(() => {});
+                          }
+                          setLangOpen(false);
+                        }}
+                        activeOpacity={0.75}
+                      >
+                        <Text style={[styles.langDropName, on && styles.langDropNameOn]}>{l.name}</Text>
+                        {on ? <Text style={styles.langDropCheck}>✓</Text> : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              ) : null}
 
               <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('set_notifications')}</Text>
               <View style={styles.prefCard}>
@@ -794,6 +1120,33 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
                 </View>
               </View>
 
+              <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('agency_tax_section') || 'Vergi levhası'}</Text>
+              <View style={styles.taxCard}>
+                <Text style={styles.taxStatus} numberOfLines={2}>
+                  {agencyProfile?.taxPlatePath
+                    ? (t('agency_tax_ready') || 'PDF yüklü')
+                    : (t('agency_tax_missing') || 'Henüz yüklenmedi')}
+                </Text>
+                <View style={styles.taxBtns}>
+                  {agencyProfile?.taxPlatePath ? (
+                    <TouchableOpacity style={styles.taxBtnGhost} onPress={viewTaxPdf} disabled={taxBusy} activeOpacity={0.85}>
+                      <Text style={styles.taxBtnGhostText}>{t('agency_tax_view') || 'Görüntüle'}</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  <TouchableOpacity style={styles.taxBtn} onPress={pickTaxPdf} disabled={taxBusy} activeOpacity={0.85}>
+                    {taxBusy
+                      ? <ActivityIndicator color="#1b2533" />
+                      : (
+                        <Text style={styles.taxBtnText}>
+                          {agencyProfile?.taxPlatePath
+                            ? (t('agency_tax_replace') || 'Yeniden yükle')
+                            : (t('agency_tax_upload') || 'PDF yükle')}
+                        </Text>
+                      )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+
               <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('set_account')}</Text>
               <TouchableOpacity style={styles.actionRow} onPress={openProfile} activeOpacity={0.85}>
                 <View style={[styles.menuLogoutIcon, { backgroundColor: '#eef3fb' }]}><Text style={{ fontSize: 16 }}>👤</Text></View>
@@ -818,7 +1171,9 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       <Modal visible={profOpen} transparent animationType="fade" onRequestClose={() => setProfOpen(false)}>
         <Pressable style={styles.profOverlay} onPress={() => setProfOpen(false)}>
           <Pressable style={styles.profCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.profTitle}>Bilgilerimi Düzenle</Text>
+            <Text style={styles.profTitle}>{t('set_edit_profile')}</Text>
+            <Text style={styles.profLbl}>{t('agency_company_name') || 'Şirket / işletme adı'}</Text>
+            <TextInput style={styles.profInput} value={profCompany} onChangeText={setProfCompany} placeholder="Örn. ABC Turizm Ltd." placeholderTextColor="#9aa1ac" />
             <Text style={styles.profLbl}>Ad</Text>
             <TextInput style={styles.profInput} value={profFirst} onChangeText={setProfFirst} placeholder="Ad" placeholderTextColor="#9aa1ac" />
             <Text style={styles.profLbl}>Soyad</Text>
@@ -836,23 +1191,37 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         </Pressable>
       </Modal>
 
-      {/* Üst menü: Havuz / Süreç / Personel — segment kontrol */}
+      {/* Üst menü: Bugün / Havuz / Süreç / Personel */}
       <View style={styles.menu}>
-        <View style={styles.segTrack}>
-          {['pool', 'process', 'staff'].map((v) => (
-            <TouchableOpacity key={v} style={[styles.menuItem, view === v && styles.menuItemOn]} onPress={() => { setView(v); setSearchOpen(false); }} activeOpacity={0.85}>
-              <Text style={[styles.menuText, view === v && styles.menuTextOn]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t(v === 'pool' ? 'nav_pool' : v === 'process' ? 'nav_process' : 'nav_staff')}</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segTrack}>
+          {[
+            { id: 'ops', label: t('nav_today') },
+            { id: 'pool', label: t('nav_pool') },
+            { id: 'process', label: t('nav_process') },
+            { id: 'staff', label: t('nav_staff') },
+          ].map((v) => (
+            <TouchableOpacity
+              key={v.id}
+              style={[styles.menuItem, view === v.id && styles.menuItemOn]}
+              onPress={() => { setView(v.id); setSearchOpen(false); }}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.menuText, view === v.id && styles.menuTextOn]} numberOfLines={1}>
+                {v.label}
+              </Text>
             </TouchableOpacity>
           ))}
-        </View>
+        </ScrollView>
       </View>
 
       {/* Süreç / Personel alt sekmeleri */}
       {view === 'process' ? (
         <View style={styles.subTabs}>
-          {['interviews', 'concluded', 'inprocess'].map((sv) => (
-            <TouchableOpacity key={sv} style={[styles.subChip, subView === sv && styles.subChipOn]} onPress={() => setSubView(sv)} activeOpacity={0.85}>
-              <Text style={[styles.subChipText, subView === sv && styles.subChipTextOn]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>{t(sv === 'interviews' ? 'sub_interviews' : sv === 'concluded' ? 'sub_concluded' : 'sub_inprocess')}</Text>
+          {['interviews', 'concluded', 'offered', 'inprocess'].map((sv) => (
+            <TouchableOpacity key={sv} style={[styles.subChip, subView === sv && styles.subChipOn]} onPress={() => { setSubView(sv); setPipeStepFilter(null); }} activeOpacity={0.85}>
+              <Text style={[styles.subChipText, subView === sv && styles.subChipTextOn]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
+                {sv === 'offered' ? (t('sub_offered') || 'Teklif bekleyen') : t(sv === 'interviews' ? 'sub_interviews' : sv === 'concluded' ? 'sub_concluded' : 'sub_inprocess')}
+              </Text>
             </TouchableOpacity>
           ))}
         </View>
@@ -862,19 +1231,145 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           <TouchableOpacity style={[styles.subChip, staffView === 'cards' && styles.subChipOn]} onPress={() => setStaffView('cards')} activeOpacity={0.85}>
             <Text style={[styles.subChipText, staffView === 'cards' && styles.subChipTextOn]}>{t('staff_tab_list')}</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={[styles.subChip, staffView === 'transit' && styles.subChipOn]} onPress={() => setStaffView('transit')} activeOpacity={0.85}>
+            <Text style={[styles.subChipText, staffView === 'transit' && styles.subChipTextOn]}>Yolda</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.subChip, staffView === 'former' && styles.subChipOn]} onPress={() => setStaffView('former')} activeOpacity={0.85}>
+            <Text style={[styles.subChipText, staffView === 'former' && styles.subChipTextOn]}>{t('staff_tab_former')}</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={[styles.subChip, staffView === 'arrivals' && styles.subChipOn]} onPress={() => setStaffView('arrivals')} activeOpacity={0.85}>
             <Text style={[styles.subChipText, staffView === 'arrivals' && styles.subChipTextOn]}>🛬 {t('staff_tab_arrivals')}</Text>
           </TouchableOpacity>
         </View>
       ) : null}
 
-      {view !== 'pool' ? (
+      {view === 'ops' ? (
+        <AgencyOpsDesk
+          agencyId={userId}
+          padBottom={insets.bottom + FOOTER_CONTENT_PAD}
+          onOpen={(c, st) => onOpenCandidate(c, { ...(statuses[c.user_id] || {}), ...(st || {}) })}
+          onNavigateCat={(cat, sub) => {
+            if (cat === 'messages') {
+              setView('messages');
+              return;
+            }
+            setView(cat === 'hired' ? 'staff' : cat);
+            if (cat === 'staff' || cat === 'hired') {
+              if (sub === 'transit') setStaffView('transit');
+              else setStaffView('cards');
+              setPipeStepFilter(null);
+            } else if (cat === 'process') {
+              if (typeof sub === 'string' && sub.startsWith('pipe_')) {
+                setSubView('inprocess');
+                setPipeStepFilter(Number(sub.slice(5)) || null);
+              } else if (sub) {
+                setSubView(sub);
+                setPipeStepFilter(null);
+              }
+            } else {
+              setPipeStepFilter(null);
+            }
+          }}
+        />
+      ) : view === 'messages' ? (
+        <AgencyChatInbox
+          agencyId={userId}
+          padBottom={insets.bottom + FOOTER_CONTENT_PAD}
+          onBadgeChange={(n) => setChatBadge(n || 0)}
+          onOpen={(c) => {
+            const code = candidateCode(c.nationality || c.data?.nationality, c.reg_no);
+            const label = [maskedName(c.data), code].filter(Boolean).join(' · ') || code;
+            setChatPeer({ id: c.user_id, label });
+          }}
+        />
+      ) : view !== 'pool' ? (
         listLoading ? (
           <ActivityIndicator color="#c2a25a" style={{ marginTop: 50 }} />
+        ) : view === 'staff' && staffView === 'transit' ? (
+          <SectionList
+            sections={transitSections}
+            keyExtractor={(c) => c.user_id}
+            stickySectionHeadersEnabled
+            renderSectionHeader={renderEmpHeader}
+            contentContainerStyle={[styles.richContent, { paddingBottom: insets.bottom + FOOTER_CONTENT_PAD }]}
+            ListEmptyComponent={<Text style={styles.empty}>Yolda / başlangıç bekleyen aday yok.</Text>}
+            renderItem={({ item: c }) => {
+              const code = candidateCode(c.nationality || c.data?.nationality, c.reg_no);
+              const start = c.work_start_at ? String(c.work_start_at).slice(0, 10) : '—';
+              return (
+                <TouchableOpacity
+                  style={styles.rich}
+                  activeOpacity={0.9}
+                  onPress={() => onOpenCandidate(c, {
+                    ...(statuses[c.user_id] || {}),
+                    status: 'in_transit',
+                    work_start_at: c.work_start_at,
+                    boarding_status: c.boarding_status,
+                    flight_depart_on: c.flight_depart_on,
+                    _openHireConfirm: true,
+                  })}
+                >
+                  <View style={{ flex: 1, padding: 14 }}>
+                    <Text style={styles.richName} numberOfLines={1}>{maskedName(c.data) || code}</Text>
+                    <Text style={styles.richCode} numberOfLines={1}>{code} · başlangıç {start}</Text>
+                    <Text style={[styles.richCode, { color: '#9a7b1f', marginTop: 4 }]}>Personel onayı bekleniyor</Text>
+                  </View>
+                  <Text style={styles.richChev}>›</Text>
+                </TouchableOpacity>
+              );
+            }}
+          />
+        ) : view === 'staff' && staffView === 'former' ? (
+          <SectionList
+            sections={formerSections}
+            keyExtractor={(c) => c.episode_id || c.candidate_id}
+            stickySectionHeadersEnabled
+            renderSectionHeader={renderEmpHeader}
+            contentContainerStyle={[styles.richContent, { paddingBottom: insets.bottom + FOOTER_CONTENT_PAD }]}
+            ListEmptyComponent={<Text style={styles.empty}>{t('staff_former_empty')}</Text>}
+            renderItem={({ item: row }) => {
+              const c = {
+                user_id: row.candidate_id,
+                title: row.title,
+                data: row.data,
+                reg_no: row.reg_no,
+                nationality: row.nationality,
+              };
+              const code = candidateCode(c.nationality, c.reg_no);
+              const outcomeLabel = row.outcome === 'completed' ? t('staff_outcome_completed') : t('staff_outcome_early');
+              return (
+                <TouchableOpacity
+                  style={styles.rich}
+                  activeOpacity={0.9}
+                  onPress={() => onOpenCandidate(c, { ...(statuses[c.user_id] || {}), status: 'new' })}
+                >
+                  <View style={{ flex: 1, padding: 14 }}>
+                    <Text style={styles.richName} numberOfLines={1}>{maskedName(c.data) || code}</Text>
+                    <Text style={styles.richCode} numberOfLines={1}>{code} · {outcomeLabel}</Text>
+                    <TouchableOpacity
+                      style={[styles.subChip, styles.subChipOn, { alignSelf: 'flex-start', marginTop: 10 }]}
+                      onPress={async (e) => {
+                        e?.stopPropagation?.();
+                        try {
+                          await offerCandidate(c.user_id);
+                          notifyOffer(c.user_id, 'offer');
+                          Alert.alert(t('agency_offer'), t('offer_sent_note'));
+                        } catch (err) {
+                          Alert.alert(t('agency_offer'), err?.message || 'error');
+                        }
+                      }}
+                    >
+                      <Text style={[styles.subChipText, styles.subChipTextOn]}>{t('agency_offer')}</Text>
+                    </TouchableOpacity>
+                  </View>
+                </TouchableOpacity>
+              );
+            }}
+          />
         ) : view === 'staff' && staffView === 'arrivals' ? (
           <AgencyArrivals
             candidates={staffList}
-            contentPadBottom={insets.bottom + 24}
+            contentPadBottom={insets.bottom + FOOTER_CONTENT_PAD}
             onOpen={(c) => onOpenCandidate(c, { ...(statuses[c.user_id] || {}), status: 'hired', docs_unlocked: true })}
           />
         ) : (
@@ -897,12 +1392,37 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
                 </TouchableOpacity>
               </View>
             ) : null}
-            <FlatList
-              data={mode === 'staff' ? staffList : mode === 'inprocess' ? inProcessList : shownIv}
+            {view === 'process' && mode === 'inprocess' && pipeStepFilter ? (
+              <View style={styles.pipeFilterBar}>
+                <Text style={styles.pipeFilterText} numberOfLines={1}>
+                  {t('ops_pipe_filter', {
+                    x: t(
+                      pipeStepFilter === 3 ? 'ops_funnel_ref'
+                        : pipeStepFilter === 4 ? 'ops_funnel_permit'
+                          : pipeStepFilter === 6 ? 'ops_funnel_transfer'
+                            : `pipe_step_${pipeStepFilter}`,
+                    ),
+                  })}
+                </Text>
+                <TouchableOpacity onPress={() => setPipeStepFilter(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={styles.pipeFilterClear}>{t('ops_pipe_clear')}</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            <SectionList
+              sections={richSections}
               keyExtractor={(c) => c.user_id}
+              stickySectionHeadersEnabled
+              renderSectionHeader={renderEmpHeader}
               renderItem={renderRich}
-              contentContainerStyle={[styles.richContent, { paddingBottom: insets.bottom + 24 }]}
-              ListEmptyComponent={<Text style={styles.empty}>{t(mode === 'staff' ? 'staff_empty' : mode === 'concluded' ? 'concluded_empty' : mode === 'inprocess' ? 'inprocess_empty' : 'interviews_empty')}</Text>}
+              contentContainerStyle={[styles.richContent, { paddingBottom: insets.bottom + FOOTER_CONTENT_PAD }]}
+              ListEmptyComponent={(
+                <Text style={styles.empty}>
+                  {mode === 'offered'
+                    ? (t('offered_empty') || 'Yanıt bekleyen teklif yok.')
+                    : t(mode === 'staff' ? 'staff_empty' : mode === 'concluded' ? 'concluded_empty' : mode === 'inprocess' ? 'inprocess_empty' : 'interviews_empty')}
+                </Text>
+              )}
             />
           </>
         )
@@ -986,7 +1506,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           renderItem={renderItem}
           numColumns={2}
           columnWrapperStyle={styles.colWrap}
-          contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+          contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + FOOTER_CONTENT_PAD }]}
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           onEndReached={loadMore}
@@ -1013,6 +1533,76 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       ) : null}
       </>
       )}
+
+      {!selectMode ? (
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+          <View style={styles.footerGold} />
+          <TouchableOpacity style={styles.footerTab} onPress={() => setAnnouncementsOpen(true)} activeOpacity={0.85}>
+            <View style={styles.footerIconWrap}>
+              <FooterMegaphoneIcon color="#e7dcc4" size={20} />
+              {announceUnread > 0 ? (
+                <View style={styles.footerBadge}>
+                  <Text style={styles.footerBadgeText}>{announceUnread > 9 ? '9+' : announceUnread}</Text>
+                </View>
+              ) : null}
+            </View>
+            <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_announcements')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.footerTab} onPress={() => setRemindersOpen(true)} activeOpacity={0.85}>
+            <View style={styles.footerIconWrap}>
+              <FooterStopwatchIcon color="#e7dcc4" size={20} />
+              {remindWarn ? <Animated.View style={[styles.footerWarnDot, { opacity: remindBlink }]} /> : null}
+            </View>
+            <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_remind_short')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.footerTab} onPress={() => setView('messages')} activeOpacity={0.85}>
+            <View style={[styles.footerIconWrap, view === 'messages' && styles.footerIconOn]}>
+              <FooterChatIcon color="#e7dcc4" size={20} />
+              {chatBadge > 0 ? (
+                <View style={styles.footerBadge}>
+                  <Text style={styles.footerBadgeText}>{chatBadge > 9 ? '9+' : chatBadge}</Text>
+                </View>
+              ) : null}
+            </View>
+            <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('nav_messages')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.footerTab} onPress={() => setContactOpen(true)} activeOpacity={0.85}>
+            <View style={styles.footerLogoWrap}>
+              <Image source={FOOTER_LOGO} style={styles.footerLogo} resizeMode="cover" />
+            </View>
+            <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_support_short')}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      <ProcessChatSheet
+        visible={!!chatPeer}
+        onClose={() => {
+          setChatPeer(null);
+          unreadChatCount(userId).then(setChatBadge).catch(() => {});
+        }}
+        candidateId={chatPeer?.id}
+        peerLabel={chatPeer?.label}
+      />
+
+      <AnnouncementsListSheet
+        visible={announcementsOpen}
+        onClose={() => {
+          setAnnouncementsOpen(false);
+          unreadAnnouncementCount(userId).then(setAnnounceUnread).catch(() => {});
+        }}
+        userId={userId}
+      />
+      <AgencyRemindersSheet
+        visible={remindersOpen}
+        onClose={() => setRemindersOpen(false)}
+        agencyId={userId}
+        onPick={(a) => {
+          if (a?.cat === 'messages' || a?.filter === 'chat') setView('messages');
+          else setView('ops');
+        }}
+      />
+      <ContactSheet visible={contactOpen} onClose={() => setContactOpen(false)} />
 
       <AgencyFilterSheet
         visible={sheetVisible}
@@ -1069,22 +1659,24 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   );
 }
 
-const INK = '#1b2533';
-const GOLD = '#c2a25a';
+const INK = '#142033';
+const GOLD = '#b8954a';
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: '#f6f3ec' },
-  header: { flexDirection: 'row', alignItems: 'center', paddingLeft: 8, paddingRight: 18, paddingBottom: 16, backgroundColor: '#16202e', shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 14, shadowOffset: { width: 0, height: 4 }, elevation: 7, zIndex: 2 },
-  hero: { paddingLeft: 22, paddingRight: 16, paddingBottom: 22, backgroundColor: '#16202e', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 8, zIndex: 2 },
+  wrap: { flex: 1, backgroundColor: '#f3f0ea' },
+  header: { flexDirection: 'row', alignItems: 'center', paddingLeft: 8, paddingRight: 18, paddingBottom: 16, backgroundColor: '#0f1826', shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 14, shadowOffset: { width: 0, height: 4 }, elevation: 7, zIndex: 2 },
+  hero: { paddingLeft: 8, paddingRight: 16, paddingBottom: 20, backgroundColor: '#0f1826', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 8, zIndex: 2 },
   heroRow: { flexDirection: 'row', alignItems: 'center' },
+  heroBrand: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 2, paddingRight: 8, minWidth: 0 },
+  heroTitles: { flex: 1, minWidth: 0, marginLeft: -2 },
   heroSearchRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   heroSearchField: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: 'rgba(255,255,255,0.10)', borderRadius: 13, paddingHorizontal: 13, paddingVertical: 11, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)' },
   heroSearchInput: { flex: 1, color: '#fff', fontSize: 15, fontWeight: '600', letterSpacing: 0.4, padding: 0 },
   heroSearchGo: { color: '#dcc187', fontWeight: '800', fontSize: 13.5 },
   heroSearchClose: { color: '#e7dcc4', fontSize: 20, fontWeight: '700' },
-  heroLogo: { width: 92, height: 64 },
-  heroHi: { color: '#c2a25a', fontSize: 11, fontWeight: '800', letterSpacing: 2.5, marginBottom: 4, textTransform: 'uppercase' },
-  heroTitle: { color: '#fff', fontSize: 25, fontWeight: '800', letterSpacing: 0.3 },
+  heroLogo: { width: 94, height: 64, marginLeft: -6 },
+  heroHi: { color: '#c2a25a', fontSize: 12, fontWeight: '800', letterSpacing: 1.4, marginBottom: 2 },
+  heroTitle: { color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: 0.2 },
   heroTitleFont: { fontFamily: 'PlayfairDisplay_700Bold', fontWeight: '400' },
   headerLogo: { width: 96, height: 60 },
   titleBox: { marginLeft: 6, flexShrink: 1 },
@@ -1092,7 +1684,7 @@ const styles = StyleSheet.create({
   acenteFont: { fontFamily: 'PlayfairDisplay_700Bold', fontWeight: '400' },
   acenteSub: { color: '#9aa4b1', fontSize: 10.5, fontWeight: '700', letterSpacing: 1.8, marginTop: 1, textTransform: 'uppercase' },
   accent: { height: 3, backgroundColor: GOLD, zIndex: 2 },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 18 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   menuDots: { fontSize: 26, color: '#cbd2db', fontWeight: '900', marginTop: -4 },
   // Ayarlar alt sayfası
   menuBackdrop: { flex: 1, backgroundColor: 'rgba(8,12,20,0.5)', justifyContent: 'flex-end' },
@@ -1108,6 +1700,32 @@ const styles = StyleSheet.create({
   menuScroll: { flexGrow: 0 },
   menuScrollContent: { paddingBottom: 8 },
   menuSection: { fontSize: 11.5, fontWeight: '800', color: '#9a7b1f', letterSpacing: 1.4, textTransform: 'uppercase', marginBottom: 10, marginLeft: 2 },
+  idCard: {
+    backgroundColor: '#0f1826', borderRadius: 18, paddingVertical: 16, paddingHorizontal: 16,
+    borderWidth: 1, borderColor: 'rgba(194,162,90,0.35)',
+  },
+  idCode: { fontSize: 22, fontWeight: '900', color: GOLD, letterSpacing: 1.2 },
+  idName: { marginTop: 6, fontSize: 16, fontWeight: '800', color: '#f5ecda' },
+  idHint: { marginTop: 6, fontSize: 11.5, fontWeight: '600', color: 'rgba(231,220,196,0.55)' },
+  langDrop: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#e6dfd0', borderRadius: 14,
+    paddingHorizontal: 14, paddingVertical: 13,
+  },
+  langDropValue: { fontSize: 16, fontWeight: '800', color: INK, flex: 1, paddingRight: 8 },
+  langDropChev: { fontSize: 14, color: '#9a7b1f', fontWeight: '800' },
+  langDropList: {
+    maxHeight: 220, marginTop: 8, backgroundColor: '#fff', borderRadius: 14,
+    borderWidth: 1, borderColor: '#e6dfd0', overflow: 'hidden',
+  },
+  langDropRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 13, paddingHorizontal: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#f0eadc',
+  },
+  langDropRowOn: { backgroundColor: '#f3ecdc' },
+  langDropName: { fontSize: 15.5, fontWeight: '600', color: '#2a3342' },
+  langDropNameOn: { fontWeight: '800', color: '#8a6a1f' },
+  langDropCheck: { fontSize: 15, fontWeight: '900', color: GOLD },
   langGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   langChip: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
@@ -1124,6 +1742,22 @@ const styles = StyleSheet.create({
   prefTitle: { fontSize: 15, fontWeight: '800', color: INK },
   prefDesc: { fontSize: 12, fontWeight: '600', color: '#8a929c', marginTop: 3, lineHeight: 16 },
   prefDivider: { height: StyleSheet.hairlineWidth, backgroundColor: '#ece4d2', marginLeft: 14 },
+  taxCard: {
+    backgroundColor: '#fff', borderRadius: 16, borderWidth: 1, borderColor: '#ebe4d5',
+    paddingVertical: 14, paddingHorizontal: 14, gap: 12,
+  },
+  taxStatus: { fontSize: 14, fontWeight: '700', color: '#2a3342', lineHeight: 19 },
+  taxBtns: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  taxBtn: {
+    flexGrow: 1, minWidth: 120, backgroundColor: GOLD, borderRadius: 12,
+    paddingVertical: 12, alignItems: 'center', justifyContent: 'center',
+  },
+  taxBtnText: { color: '#1b2533', fontWeight: '800', fontSize: 14 },
+  taxBtnGhost: {
+    flexGrow: 1, minWidth: 100, backgroundColor: '#f3efe6', borderRadius: 12,
+    paddingVertical: 12, alignItems: 'center', borderWidth: 1, borderColor: '#e6dfd0',
+  },
+  taxBtnGhostText: { color: INK, fontWeight: '800', fontSize: 14 },
   swTrack: { width: 48, height: 28, borderRadius: 14, backgroundColor: '#cfd3d8', padding: 2, justifyContent: 'center' },
   swTrackOn: { backgroundColor: GOLD },
   swThumb: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#fff', alignSelf: 'flex-start' },
@@ -1145,13 +1779,22 @@ const styles = StyleSheet.create({
   profSaveText: { color: '#fff', fontSize: 16, fontWeight: '800' },
   profCancel: { paddingVertical: 12, alignItems: 'center', marginTop: 4 },
   profCancelText: { color: '#9aa1ac', fontSize: 14, fontWeight: '700' },
-  menu: { backgroundColor: 'transparent', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 6, zIndex: 5 },
-  segTrack: { flexDirection: 'row', backgroundColor: '#202c3d', borderRadius: 999, padding: 5, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-  menuItem: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 999 },
+  menu: { backgroundColor: 'transparent', paddingHorizontal: 12, paddingTop: 14, paddingBottom: 6, zIndex: 5 },
+  segTrack: { flexDirection: 'row', backgroundColor: '#1a2536', borderRadius: 14, padding: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', gap: 2 },
+  menuItem: { paddingVertical: 10, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center', borderRadius: 12, flexDirection: 'row', gap: 5 },
   menuItemOn: { backgroundColor: GOLD },
-  menuText: { fontSize: 13.5, fontWeight: '800', color: '#9aa6b6', letterSpacing: 0.3 },
+  menuText: { fontSize: 13, fontWeight: '800', color: '#9aa6b6', letterSpacing: 0.2 },
   menuTextOn: { color: '#16202e' },
+  navBadge: { minWidth: 16, height: 16, borderRadius: 8, backgroundColor: '#b42318', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  navBadgeText: { color: '#fff', fontSize: 9, fontWeight: '900' },
   subTabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingTop: 4, paddingBottom: 8, backgroundColor: 'transparent' },
+  pipeFilterBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    marginHorizontal: 16, marginBottom: 8, paddingHorizontal: 12, paddingVertical: 10,
+    borderRadius: 12, backgroundColor: '#f4ead2',
+  },
+  pipeFilterText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#1b2533' },
+  pipeFilterClear: { fontSize: 12, fontWeight: '800', color: '#8f7130' },
   subChip: { paddingHorizontal: 15, paddingVertical: 8, borderRadius: 999, backgroundColor: '#ebe4d5', maxWidth: '100%' },
   subChipOn: { backgroundColor: '#16202e' },
   subChipText: { fontSize: 12.5, fontWeight: '800', color: '#737373' },
@@ -1209,6 +1852,16 @@ const styles = StyleSheet.create({
 
   // --- Mülakat / Personel premium kart ---
   richContent: { paddingHorizontal: 14, paddingTop: 12 },
+  empSec: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+    marginHorizontal: -14, paddingHorizontal: 14, paddingVertical: 10,
+    backgroundColor: '#f3efe6', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#e4ddd0',
+  },
+  empSecTitle: { flex: 1, fontSize: 13, fontWeight: '800', color: '#142033' },
+  empSecN: {
+    minWidth: 22, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999, overflow: 'hidden',
+    backgroundColor: 'rgba(184,149,74,0.2)', fontSize: 11, fontWeight: '800', color: '#8f7130', textAlign: 'center',
+  },
   rich: { backgroundColor: '#fff', borderRadius: 20, padding: 15, marginBottom: 14, shadowColor: '#16202e', shadowOpacity: 0.10, shadowRadius: 18, shadowOffset: { width: 0, height: 9 }, elevation: 4 },
   richTop: { flexDirection: 'row', alignItems: 'center' },
   richPhotoBox: { width: 62, height: 62, borderRadius: 16, overflow: 'hidden', backgroundColor: '#eef0f2' },
@@ -1359,6 +2012,36 @@ const styles = StyleSheet.create({
     position: 'absolute', left: 0, right: 0, bottom: 0,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     backgroundColor: '#1b2533', paddingHorizontal: 20, paddingTop: 14,
+  },
+  footer: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    flexDirection: 'row', backgroundColor: '#111820',
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(194,162,90,0.35)',
+    shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 16, shadowOffset: { width: 0, height: -8 }, elevation: 16,
+    paddingTop: 10,
+  },
+  footerGold: { position: 'absolute', top: 0, left: 0, right: 0, height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(194,162,90,0.55)' },
+  footerTab: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 4 },
+  footerIconWrap: {
+    width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(194,162,90,0.16)', borderWidth: 1, borderColor: 'rgba(194,162,90,0.45)',
+  },
+  footerIconOn: { backgroundColor: 'rgba(194,162,90,0.32)', borderColor: 'rgba(194,162,90,0.75)' },
+  footerLogoWrap: {
+    width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.4, borderColor: 'rgba(194,162,90,0.7)', overflow: 'hidden', backgroundColor: '#0a1018',
+  },
+  footerLogo: { width: 36, height: 36, borderRadius: 18 },
+  footerLabel: { fontSize: 11, fontWeight: '800', color: '#e7dcc4', letterSpacing: 0.3 },
+  footerBadge: {
+    position: 'absolute', top: -2, right: -6, minWidth: 16, height: 16, borderRadius: 8,
+    backgroundColor: '#d24b40', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3,
+    borderWidth: 1.5, borderColor: '#111820',
+  },
+  footerBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
+  footerWarnDot: {
+    position: 'absolute', top: -3, right: -3, width: 12, height: 12, borderRadius: 6,
+    backgroundColor: '#e03b30', borderWidth: 1.5, borderColor: '#111820',
   },
   bulkText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   bulkBtn: { backgroundColor: GOLD, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 22 },

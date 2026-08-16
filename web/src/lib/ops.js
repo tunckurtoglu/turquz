@@ -1,0 +1,385 @@
+// Acente operasyon masası: kuyruk + özet metrikler (300 kişilik desk).
+import { supabase } from './supabase';
+import { PIPELINE, activeStep, stepActor } from '../../../lib/pipeline';
+import { listInterviewCandidates } from './api';
+import { attachEmployers } from './employerAttach';
+
+const STEP1 = ['passport', 'diploma', 'criminal', 'health_report'];
+
+function hasFromKinds(kindsSet) {
+  return (k) => kindsSet.has(k);
+}
+
+function enrichPipeline(kindsSet) {
+  const has = hasFromKinds(kindsSet);
+  const step = activeStep(has);
+  const def = PIPELINE.find((s) => s.step === step);
+  const actor = def ? stepActor(def, has) : null;
+  return { pipeStep: step, turn: actor, titleKey: def?.titleKey || null };
+}
+
+/** Süreçteki adaylara pipeline adımı + kimin sırası ekler. */
+export async function enrichProcessProgress(rows) {
+  const ids = (rows || []).map((r) => r.user_id).filter(Boolean);
+  if (!ids.length) return rows || [];
+  const { data: docs } = await supabase
+    .from('user_documents')
+    .select('user_id, kind, submitted_at')
+    .in('user_id', ids)
+    .not('submitted_at', 'is', null);
+  const byUser = {};
+  (docs || []).forEach((d) => {
+    if (!byUser[d.user_id]) byUser[d.user_id] = new Set();
+    byUser[d.user_id].add(d.kind);
+  });
+  return (rows || []).map((r) => {
+    const set = byUser[r.user_id] || new Set();
+    return { ...r, ...enrichPipeline(set) };
+  });
+}
+
+/** Okunmamış chat bildirimlerini aday bazında grupla. */
+export async function listUnreadChatThreads(agencyId, limit = 40) {
+  if (!agencyId) return [];
+  const { data: notifs } = await supabase
+    .from('notifications')
+    .select('id, ref_user, payload, created_at, read_at')
+    .eq('user_id', agencyId)
+    .eq('type', 'chat_message')
+    .is('read_at', null)
+    .order('created_at', { ascending: false })
+    .limit(120);
+  const byCand = new Map();
+  (notifs || []).forEach((n) => {
+    const cid = n.payload?.candidateId || n.ref_user;
+    if (!cid) return;
+    const cur = byCand.get(cid);
+    if (!cur) byCand.set(cid, { candidateId: cid, count: 1, lastAt: n.created_at });
+    else {
+      cur.count += 1;
+      if (n.created_at > cur.lastAt) cur.lastAt = n.created_at;
+    }
+  });
+  const threads = [...byCand.values()].sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1)).slice(0, limit);
+  if (!threads.length) return [];
+  const ids = threads.map((t) => t.candidateId);
+  const [{ data: pool }, { data: hired }] = await Promise.all([
+    supabase.from('candidate_pool').select('user_id, title, data, reg_no, nationality, last_seen_at').in('user_id', ids),
+    supabase.from('candidate_hired').select('user_id, title, data, reg_no, nationality, last_seen_at').in('user_id', ids),
+  ]);
+  const byId = {};
+  [...(pool || []), ...(hired || [])].forEach((p) => { byId[p.user_id] = p; });
+  return threads.map((t) => ({ ...t, profile: byId[t.candidateId] || null })).filter((t) => t.profile);
+}
+
+/** Süreç sohbeti thread’leri (okunmuş + okunmamış). */
+export async function listAgencyChatThreads(agencyId, limit = 120) {
+  if (!agencyId) return [];
+  const [{ data: chats }, { data: notifs }] = await Promise.all([
+    supabase
+      .from('process_chats')
+      .select('candidate_id, last_message_at, closed_at')
+      .eq('agency_id', agencyId)
+      .is('closed_at', null)
+      .order('last_message_at', { ascending: false, nullsFirst: false })
+      .limit(limit),
+    supabase
+      .from('notifications')
+      .select('id, ref_user, payload, created_at, read_at')
+      .eq('user_id', agencyId)
+      .eq('type', 'chat_message')
+      .is('read_at', null)
+      .order('created_at', { ascending: false })
+      .limit(400),
+  ]);
+
+  const unreadByCand = new Map();
+  (notifs || []).forEach((n) => {
+    const cid = n.payload?.candidateId || n.ref_user;
+    if (!cid) return;
+    unreadByCand.set(cid, (unreadByCand.get(cid) || 0) + 1);
+  });
+
+  let threads = (chats || []).map((c) => ({
+    candidateId: c.candidate_id,
+    count: unreadByCand.get(c.candidate_id) || 0,
+    lastAt: c.last_message_at || null,
+  }));
+
+  unreadByCand.forEach((count, cid) => {
+    if (!threads.some((t) => t.candidateId === cid)) {
+      threads.push({ candidateId: cid, count, lastAt: null });
+    }
+  });
+
+  threads = threads.sort((a, b) => {
+    if ((b.count > 0) !== (a.count > 0)) return b.count > 0 ? 1 : -1;
+    const la = a.lastAt || '';
+    const lb = b.lastAt || '';
+    return la < lb ? 1 : la > lb ? -1 : 0;
+  }).slice(0, limit);
+
+  if (!threads.length) return [];
+  const ids = threads.map((t) => t.candidateId);
+  const [{ data: pool }, { data: hired }] = await Promise.all([
+    supabase.from('candidate_pool').select('user_id, title, data, reg_no, nationality, last_seen_at').in('user_id', ids),
+    supabase.from('candidate_hired').select('user_id, title, data, reg_no, nationality, last_seen_at').in('user_id', ids),
+  ]);
+  const byId = {};
+  [...(pool || []), ...(hired || [])].forEach((p) => { byId[p.user_id] = p; });
+  const withProfile = threads.map((t) => ({ ...t, profile: byId[t.candidateId] || null })).filter((t) => t.profile);
+  return attachEmployers(agencyId, withProfile, 'candidateId');
+}
+
+export async function unreadChatCount(userId) {
+  if (!userId) return 0;
+  const { count, error } = await supabase
+    .from('notifications')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('type', 'chat_message')
+    .is('read_at', null);
+  if (error) return 0;
+  return count || 0;
+}
+
+/**
+ * Operasyon masası özeti + aksiyon kuyruğu.
+ * Queue kinds: agency_turn | docs_overdue | interview_today | offered_wait | boarding | chat
+ */
+export async function loadAgencyOps(agencyId) {
+  const empty = {
+    metrics: {
+      pool: 0, offered: 0, process: 0, hired: 0,
+      interviewsToday: 0, agencyTurn: 0, docsOverdue: 0,
+      boardingRisk: 0, chatUnread: 0,
+    },
+    queue: [],
+  };
+  if (!agencyId) return empty;
+
+  const today = new Date();
+  const ymd = (d) => {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  };
+  const todayStr = ymd(today);
+
+  const [
+    { data: allSt },
+    { data: myProcess },
+    { data: myHired },
+    { data: myTransit },
+    ivList,
+    chatUnread,
+    chatThreads,
+    { data: boardingRows },
+  ] = await Promise.all([
+    supabase.from('candidate_status').select('user_id, status, docs_unlocked, accepted_by, docs_deadline_at, accepted_at, boarding_status, flight_depart_on, work_start_at'),
+    supabase.from('candidate_status').select('user_id, docs_deadline_at, accepted_at, status').eq('accepted_by', agencyId).eq('status', 'accepted'),
+    supabase.from('candidate_status').select('user_id').eq('accepted_by', agencyId).eq('status', 'hired'),
+    supabase
+      .from('candidate_status')
+      .select('user_id, work_start_at, flight_depart_on, work_start_asked_at, boarding_status')
+      .eq('accepted_by', agencyId)
+      .eq('status', 'in_transit'),
+    listInterviewCandidates(agencyId),
+    unreadChatCount(agencyId),
+    listUnreadChatThreads(agencyId, 12),
+    supabase
+      .from('candidate_status')
+      .select('user_id, boarding_status, flight_depart_on')
+      .eq('accepted_by', agencyId)
+      .in('status', ['hired', 'in_transit'])
+      .in('boarding_status', ['pending', 'missed', 'no_response']),
+  ]);
+
+  const metrics = {
+    pool: 0, offered: 0, process: 0, hired: 0, transit: 0,
+    interviewsToday: 0, agencyTurn: 0, docsOverdue: 0,
+    boardingRisk: 0, chatUnread: chatUnread || 0, startConfirm: 0,
+  };
+
+  const { count: poolCount } = await supabase
+    .from('candidate_pool')
+    .select('user_id', { count: 'exact', head: true });
+  metrics.pool = poolCount || 0;
+  metrics.process = (myProcess || []).length;
+  metrics.hired = (myHired || []).length;
+  metrics.transit = (myTransit || []).length;
+  metrics.offered = (allSt || []).filter((s) => s.status === 'offered' && s.accepted_by === agencyId).length;
+
+  const now = Date.now();
+  const processIds = (myProcess || []).map((r) => r.user_id);
+  let docsByUser = {};
+  if (processIds.length) {
+    const { data: docs } = await supabase
+      .from('user_documents')
+      .select('user_id, kind, submitted_at')
+      .in('user_id', processIds)
+      .not('submitted_at', 'is', null);
+    (docs || []).forEach((d) => {
+      if (!docsByUser[d.user_id]) docsByUser[d.user_id] = new Set();
+      docsByUser[d.user_id].add(d.kind);
+    });
+  }
+
+  const queue = [];
+  const pushQ = (item) => { queue.push(item); };
+
+  // Acente sırası + belge süresi
+  const overdueIds = [];
+  const agencyTurnIds = [];
+  (myProcess || []).forEach((st) => {
+    const set = docsByUser[st.user_id] || new Set();
+    const info = enrichPipeline(set);
+    if (info.turn === 'agency') agencyTurnIds.push({ id: st.user_id, ...info });
+    const dl = st.docs_deadline_at || null;
+    const step1Done = STEP1.every((k) => set.has(k));
+    if (!step1Done && dl && new Date(dl).getTime() < now) overdueIds.push(st.user_id);
+  });
+  metrics.agencyTurn = agencyTurnIds.length;
+  metrics.docsOverdue = overdueIds.length;
+
+  // Funnel: süreç adımı envanteri (aksiyon kuyruğundan ayrı)
+  metrics.funnelOffered = metrics.offered;
+  metrics.funnelInterview = (ivList || []).filter((iv) => iv.ivStatus === 'scheduled').length;
+  metrics.funnelDocs = 0;
+  metrics.funnelContract = 0;
+  metrics.funnelRef = 0;
+  metrics.funnelPermit = 0;
+  metrics.funnelFlight = 0;
+  metrics.funnelTransfer = 0;
+  metrics.funnelTransit = metrics.transit;
+  (myProcess || []).forEach((st) => {
+    const set = docsByUser[st.user_id] || new Set();
+    const step = activeStep(hasFromKinds(set));
+    if (step === 1) metrics.funnelDocs += 1;
+    else if (step === 2) metrics.funnelContract += 1;
+    else if (step === 3) metrics.funnelRef += 1;
+    else if (step === 4) metrics.funnelPermit += 1;
+    else if (step === 5) metrics.funnelFlight += 1;
+    else if (step >= 6) metrics.funnelTransfer += 1;
+  });
+
+  // Bugünkü mülakatlar
+  const interviewsToday = (ivList || []).filter((iv) => {
+    if (iv.ivStatus !== 'scheduled' || !iv.ivSlot) return false;
+    return String(iv.ivSlot).slice(0, 10) === todayStr;
+  });
+  metrics.interviewsToday = interviewsToday.length;
+  interviewsToday.forEach((iv) => {
+    pushQ({
+      kind: 'interview_today',
+      priority: 10,
+      candidateId: iv.user_id,
+      profile: iv,
+      label: 'Bugün mülakat',
+      detail: iv.ivSlot ? new Date(iv.ivSlot).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : '',
+    });
+  });
+
+  overdueIds.forEach((id) => {
+    pushQ({ kind: 'docs_overdue', priority: 20, candidateId: id, label: 'Süresi geçmiş belgeler', detail: 'İlk belge paketi gecikti' });
+  });
+  agencyTurnIds.forEach((row) => {
+    pushQ({
+      kind: 'agency_turn',
+      priority: 30,
+      candidateId: row.id,
+      label: 'Sıra sizde',
+      detail: row.titleKey || `Adım ${row.pipeStep}`,
+      titleKey: row.titleKey,
+      pipeStep: row.pipeStep,
+    });
+  });
+
+  // Boarding risk
+  const board = boardingRows || [];
+  metrics.boardingRisk = board.length;
+  board.forEach((b) => {
+    pushQ({
+      kind: 'boarding',
+      priority: b.boarding_status === 'missed' ? 15 : 40,
+      candidateId: b.user_id,
+      label: b.boarding_status === 'missed' ? 'Uçak kaçırıldı' : b.boarding_status === 'no_response' ? 'Uçuş cevabı yok' : 'Uçuş teyidi bekleniyor',
+      detail: b.flight_depart_on || '',
+      boarding: b.boarding_status,
+    });
+  });
+
+  // Chat
+  chatThreads.forEach((th) => {
+    pushQ({
+      kind: 'chat',
+      priority: 25,
+      candidateId: th.candidateId,
+      profile: th.profile,
+      label: 'Okunmamış mesaj',
+      detail: `${th.count} mesaj`,
+      openChat: true,
+      lastAt: th.lastAt,
+    });
+  });
+
+  // Teklif bekleyen (bu acentenin)
+  const { data: offeredMine } = await supabase
+    .from('candidate_status')
+    .select('user_id, offered_at')
+    .eq('status', 'offered')
+    .eq('accepted_by', agencyId)
+    .order('offered_at', { ascending: false })
+    .limit(15);
+  (offeredMine || []).forEach((o) => {
+    pushQ({
+      kind: 'offered_wait',
+      priority: 50,
+      candidateId: o.user_id,
+      label: 'Teklif yanıtı bekleniyor',
+      detail: o.offered_at ? new Date(o.offered_at).toLocaleDateString('tr-TR') : '',
+    });
+  });
+
+  // Profilleri doldur
+  const needIds = [...new Set(queue.filter((q) => !q.profile).map((q) => q.candidateId))];
+  if (needIds.length) {
+    const [{ data: pool }, { data: hired }] = await Promise.all([
+      supabase.from('candidate_pool').select('user_id, title, data, reg_no, nationality, last_seen_at').in('user_id', needIds),
+      supabase.from('candidate_hired').select('user_id, title, data, reg_no, nationality, last_seen_at').in('user_id', needIds),
+    ]);
+    const byId = {};
+    [...(pool || []), ...(hired || [])].forEach((p) => { byId[p.user_id] = p; });
+    queue.forEach((q) => {
+      if (!q.profile) q.profile = byId[q.candidateId] || null;
+    });
+  }
+
+  queue.sort((a, b) => a.priority - b.priority || String(b.lastAt || '').localeCompare(String(a.lastAt || '')));
+
+  const full = queue.filter((q) => q.profile);
+  const byKind = {};
+  full.forEach((q) => {
+    if (!byKind[q.kind]) byKind[q.kind] = [];
+    byKind[q.kind].push(q);
+  });
+
+  const countsByKind = {
+    start_confirm: metrics.startConfirm || 0,
+    docs_overdue: metrics.docsOverdue || 0,
+    agency_turn: metrics.agencyTurn || 0,
+    boarding: metrics.boardingRisk || 0,
+    interview_today: metrics.interviewsToday || 0,
+    chat: (byKind.chat || []).length,
+    transit: metrics.transit || 0,
+    offered_wait: metrics.offered || 0,
+  };
+
+  const PER = 50;
+  const capped = [];
+  Object.keys(byKind).forEach((k) => {
+    capped.push(...byKind[k].slice(0, PER));
+  });
+  capped.sort((a, b) => a.priority - b.priority || String(b.lastAt || '').localeCompare(String(a.lastAt || '')));
+
+  return { metrics, queue: capped, countsByKind };
+}

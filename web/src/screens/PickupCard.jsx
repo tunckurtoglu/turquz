@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { getPickup, savePickup, sendPickup, notifyDocument } from '../lib/api';
 
 // Acente: havaalanı karşılama kişisi (ad + WhatsApp) — kaydet / adaya gönder. Hep açık.
-export default function PickupCard({ userId, agencyId }) {
+export default function PickupCard({ userId, agencyId, embedded }) {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [sent, setSent] = useState(false);
@@ -33,14 +33,18 @@ export default function PickupCard({ userId, agencyId }) {
     } catch (e) { alert(e?.message || 'Hata'); } finally { setBusy(false); }
   };
 
-  if (loading) return <div className="pickupCard"><div className="spinner" /></div>;
+  if (loading) return <div className={embedded ? '' : 'pickupCard'}><div className="spinner" /></div>;
 
   return (
-    <div className="pickupCard">
-      <div className="pickupHead">
-        <h3>🤝 Havaalanı Karşılama</h3>
-        {sent ? <span className="signedTag">✓ İletildi</span> : null}
-      </div>
+    <div className={embedded ? 'pickupEmbed' : 'pickupCard'}>
+      {embedded ? (
+        sent ? <div className="pickupHead"><span className="signedTag">✓ İletildi</span></div> : null
+      ) : (
+        <div className="pickupHead">
+          <h3>🤝 Havaalanı Karşılama</h3>
+          {sent ? <span className="signedTag">✓ İletildi</span> : null}
+        </div>
+      )}
       <p className="pickupHint">Adayı havaalanında karşılayacak kişinin bilgileri. Hazır olduğunuzda "Adaya Gönder" deyin (sonradan da güncelleyebilirsiniz).</p>
       <div className="pickupGrid">
         <div className="cField"><label className="fieldLbl">Karşılayacak kişi (ad soyad)</label>

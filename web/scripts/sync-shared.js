@@ -17,6 +17,7 @@ const libFiles = [
   'cvDates.js',
   'cvTranslate.js',
   'lastSeenFormat.js',
+  'opsUi.js',
 ];
 
 const hasParent = existsSync(parents.i18n) && existsSync(parents.cv) && existsSync(parents.lib);

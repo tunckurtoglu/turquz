@@ -2,13 +2,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, Modal, TouchableOpacity, FlatList, TextInput, StyleSheet,
-  ActivityIndicator, KeyboardAvoidingView, Platform, Alert,
+  ActivityIndicator, Platform, Alert, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
 import {
   listProcessMessages, sendProcessMessage, subscribeProcessMessages, syncChatLang,
 } from '../lib/processChat';
+import { getSession } from '../lib/auth';
+import { markChatMessagesReadForCandidate } from '../lib/notifications';
 
 const INK = '#1b2533';
 const GOLD = '#c2a25a';
@@ -28,16 +30,24 @@ export default function ProcessChatSheet({ visible, onClose, candidateId, peerLa
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [keyboardH, setKeyboardH] = useState(0);
   const listRef = useRef(null);
 
-  const load = useCallback(async () => {
+  const scrollToEnd = useCallback((animated = true) => {
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd?.({ animated });
+    });
+  }, []);
+
+  const load = useCallback(async ({ spinner } = { spinner: true }) => {
     if (!candidateId) return;
-    setLoading(true);
+    if (spinner) setLoading(true);
     try {
-      await syncChatLang(lang);
+      syncChatLang(lang);
       const data = await listProcessMessages(candidateId, lang);
       setChatId(data.chatId || null);
       setMessages(data.messages || []);
+      scrollToEnd(false);
     } catch (e) {
       const code = e?.code || e?.message;
       if (code === 'chat_locked') Alert.alert(t('chat_title'), t('chat_locked'));
@@ -45,28 +55,83 @@ export default function ProcessChatSheet({ visible, onClose, candidateId, peerLa
     } finally {
       setLoading(false);
     }
-  }, [candidateId, lang, t]);
+  }, [candidateId, lang, t, scrollToEnd]);
 
   useEffect(() => {
-    if (visible) load();
-    else { setMessages([]); setChatId(null); setText(''); }
+    if (visible) load({ spinner: true });
+    else {
+      setMessages([]);
+      setChatId(null);
+      setText('');
+      setKeyboardH(0);
+      Keyboard.dismiss();
+    }
   }, [visible, load]);
 
   useEffect(() => {
+    if (!visible || !candidateId) return undefined;
+    let alive = true;
+    getSession().then((s) => {
+      const uid = s?.user?.id;
+      if (!alive || !uid) return;
+      markChatMessagesReadForCandidate(uid, candidateId).catch(() => {});
+    });
+    return () => { alive = false; };
+  }, [visible, candidateId]);
+
+  useEffect(() => {
     if (!visible || !chatId) return undefined;
-    return subscribeProcessMessages(chatId, () => { load(); });
+    return subscribeProcessMessages(chatId, () => { load({ spinner: false }); });
   }, [visible, chatId, load]);
+
+  // Modal içinde KeyboardAvoidingView güvenilir değil — klavye yüksekliğini elle uygula.
+  useEffect(() => {
+    if (!visible) return undefined;
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = (e) => {
+      const h = Math.max(0, e?.endCoordinates?.height || 0);
+      setKeyboardH(h);
+      setTimeout(() => scrollToEnd(true), Platform.OS === 'ios' ? 40 : 80);
+    };
+    const onHide = () => setKeyboardH(0);
+    const s1 = Keyboard.addListener(showEvt, onShow);
+    const s2 = Keyboard.addListener(hideEvt, onHide);
+    return () => { s1.remove(); s2.remove(); };
+  }, [visible, scrollToEnd]);
 
   const send = async () => {
     const body = text.trim();
     if (!body || sending) return;
+    const tempId = `local-${Date.now()}`;
+    const optimistic = {
+      id: tempId,
+      senderId: null,
+      body,
+      original: body,
+      sourceLang: lang,
+      createdAt: new Date().toISOString(),
+      mine: true,
+    };
+    setText('');
+    setMessages((m) => [...m, optimistic]);
+    scrollToEnd(true);
     setSending(true);
     try {
       const data = await sendProcessMessage(candidateId, body, lang);
-      if (data?.message) setMessages((m) => [...m, data.message]);
-      setText('');
-      setTimeout(() => listRef.current?.scrollToEnd?.({ animated: true }), 80);
+      if (data?.message) {
+        setMessages((m) => {
+          const withoutTemp = m.filter((x) => x.id !== tempId);
+          if (withoutTemp.some((x) => x.id === data.message.id)) return withoutTemp;
+          return [...withoutTemp, data.message];
+        });
+      } else {
+        setMessages((m) => m.filter((x) => x.id !== tempId));
+      }
+      scrollToEnd(true);
     } catch (e) {
+      setMessages((m) => m.filter((x) => x.id !== tempId));
+      setText(body);
       Alert.alert(t('chat_title'), e?.message || t('chat_send_error'));
     } finally {
       setSending(false);
@@ -80,13 +145,11 @@ export default function ProcessChatSheet({ visible, onClose, candidateId, peerLa
     </View>
   );
 
+  const composerPad = keyboardH > 0 ? 8 : Math.max(insets.bottom, 10);
+
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.wrap}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
-      >
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="fullScreen">
+      <View style={[styles.wrap, { paddingBottom: keyboardH }]}>
         <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
             <Text style={styles.close}>‹</Text>
@@ -97,23 +160,30 @@ export default function ProcessChatSheet({ visible, onClose, candidateId, peerLa
           </View>
           <View style={{ width: 28 }} />
         </View>
-        <Text style={styles.hint}>{t('chat_hint')}</Text>
+        <View style={styles.hintBox}>
+          <Text style={styles.hintIcon}>✨</Text>
+          <Text style={styles.hint}>{t('chat_hint')}</Text>
+        </View>
 
         {loading && !messages.length ? (
           <View style={styles.center}><ActivityIndicator color={GOLD} /></View>
         ) : (
           <FlatList
             ref={listRef}
+            style={styles.listFlex}
             data={messages}
             keyExtractor={(m) => m.id}
             renderItem={renderItem}
             contentContainerStyle={styles.list}
-            onContentSizeChange={() => listRef.current?.scrollToEnd?.({ animated: false })}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+            onContentSizeChange={() => scrollToEnd(false)}
+            onLayout={() => scrollToEnd(false)}
             ListEmptyComponent={<Text style={styles.empty}>{t('chat_empty')}</Text>}
           />
         )}
 
-        <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+        <View style={[styles.composer, { paddingBottom: composerPad }]}>
           <TextInput
             style={styles.input}
             value={text}
@@ -122,6 +192,7 @@ export default function ProcessChatSheet({ visible, onClose, candidateId, peerLa
             placeholderTextColor="#9aa1ac"
             multiline
             maxLength={2000}
+            onFocus={() => setTimeout(() => scrollToEnd(true), 100)}
           />
           <TouchableOpacity
             style={[styles.sendBtn, (!text.trim() || sending) && { opacity: 0.45 }]}
@@ -132,7 +203,7 @@ export default function ProcessChatSheet({ visible, onClose, candidateId, peerLa
             {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendTxt}>{t('chat_send')}</Text>}
           </TouchableOpacity>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
@@ -147,9 +218,16 @@ const styles = StyleSheet.create({
   close: { fontSize: 32, color: INK, fontWeight: '700', marginTop: -4, width: 28 },
   title: { fontSize: 17, fontWeight: '800', color: INK },
   sub: { fontSize: 12, color: '#737373', marginTop: 1 },
-  hint: { fontSize: 12, color: '#8a929c', paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#eef0f3' },
+  hintBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    paddingHorizontal: 14, paddingVertical: 12,
+    backgroundColor: '#f7efd8', borderBottomWidth: 2, borderBottomColor: GOLD,
+  },
+  hintIcon: { fontSize: 15, marginTop: 1 },
+  hint: { flex: 1, fontSize: 13.5, fontWeight: '700', color: INK, lineHeight: 19 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  list: { padding: 14, paddingBottom: 8, flexGrow: 1 },
+  listFlex: { flex: 1 },
+  list: { padding: 14, paddingBottom: 8, flexGrow: 1, justifyContent: 'flex-end' },
   empty: { textAlign: 'center', color: '#9aa1ac', marginTop: 40, fontSize: 14 },
   bubble: {
     maxWidth: '82%', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 8,

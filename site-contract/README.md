@@ -23,7 +23,7 @@ npm run dev            # http://localhost:5183
    - `CONTRACT_PORTAL_URL` = `https://contract.turquz.app` (bu sitenin adresi)
    - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
    - isteğe bağlı: `CONTRACT_FEE_AMOUNT` (kuruş, varsayılan 9900), `CONTRACT_FEE_CURRENCY` (try), `STRIPE_PRICE_ID`
-   - geliştirme: `CONTRACT_PAYMENT_DEV_BYPASS=true` (Stripe olmadan paid işaretler)
+   - test (Stripe yokken): `CONTRACT_PAYMENT_DEV_BYPASS=true` → portalda «Ödeme yap» DB’de paid yapar
 3. Deploy functions:
    ```bash
    supabase functions deploy contract-portal

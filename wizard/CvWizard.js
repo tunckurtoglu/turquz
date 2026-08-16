@@ -1,9 +1,10 @@
 // wizard/CvWizard.js
 // Adımları sırayla gezdiren kapsayıcı. Veri App'ten gelir (data/onChange).
 // startStep: hangi adımdan açılacağı (0-6 form, 7 = önizleme).
-import React, { useState, useEffect, useRef } from 'react';
+// Önizlemeden "Düzenle": tüm bölümler tek kaydırmalı sayfada.
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Modal, Dimensions,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, Modal, ActivityIndicator,
 } from 'react-native';
 import { useLanguage } from '../i18n/LanguageContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,7 +30,6 @@ const STEPS = [
 ];
 
 const TOTAL = STEPS.length + 1; // +1 = Önizleme
-const PREVIEW_MIN_H = Math.round(Dimensions.get('window').height * 0.52);
 
 function NavBtn({ style, textStyle, label, onPress, disabled, primary }) {
   return (
@@ -47,16 +47,14 @@ export default function CvWizard({ onExit, onFinish, onEdit, data: extData, onCh
   const [localData, setLocalData] = useState({});
   const data = extData || localData;
   const [step, setStep] = useState(startStep);
-  const [confirmOpen, setConfirmOpen] = useState(false); // onay modalı açık mı
-  const [accepted, setAccepted] = useState(false);       // onay kutusu işaretli mi
-  const [editingFromPreview, setEditingFromPreview] = useState(false); // önizlemeden düzenlemeye geçildi mi
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [accepted, setAccepted] = useState(false);
+  const [editingFromPreview, setEditingFromPreview] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const previewRef = useRef(null);
 
-  // startStep dışarıdan değişirse (örn. Home'dan Önizle/Düzenle) adımı senkronla
   useEffect(() => { setStep(startStep); }, [startStep]);
 
-  // Scroll konumunu koru: bir alan doldurulunca/Select kapanınca RN ScrollView'ı bazen
-  // istem dışı "en üste" atıyor. Kullanıcının konumunu hatırlayıp veri değişiminden sonra
-  // geri getiriyoruz; adım değişince ise bilerek tepeye alıyoruz.
   const scrollRef = useRef(null);
   const yRef = useRef(0);
   const onScroll = (e) => { yRef.current = e.nativeEvent.contentOffset.y; };
@@ -65,95 +63,166 @@ export default function CvWizard({ onExit, onFinish, onEdit, data: extData, onCh
     const id = requestAnimationFrame(() => scrollRef.current?.scrollTo({ y: yRef.current, animated: false }));
     return () => cancelAnimationFrame(id);
   }, [data]);
-  useEffect(() => { yRef.current = 0; scrollRef.current?.scrollTo({ y: 0, animated: false }); }, [step]);
+  useEffect(() => {
+    yRef.current = 0;
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [step, editingFromPreview]);
 
   const update = (patch) => {
     if (onChange) onChange(patch);
     else setLocalData((d) => ({ ...d, ...patch }));
   };
 
-  const effPreviewOnly = previewOnly && !editingFromPreview; // saf önizleme (Home'dan açılınca)
-  const isPreview = step === STEPS.length;
-  const Current = !isPreview ? STEPS[step].Component : null;
+  const effPreviewOnly = previewOnly && !editingFromPreview;
+  const isPreview = !editingFromPreview && step === STEPS.length;
+  const Current = !isPreview && !editingFromPreview ? STEPS[step]?.Component : null;
 
-  // Step1 yaş kontrolü: aralık dışındaysa ileri gitme engellenir.
-  // (Pasaport CV'den kaldırıldı — teklif sonrası "Belgeler"de yüklenir.)
   const age = ageFromBirth(data.birthDay, data.birthMonth, data.birthYear);
   const ageBlocked = age != null && (age < MIN_AGE || age > MAX_AGE);
-  const nextBlocked = step === 0 && ageBlocked;
+  const nextBlocked = !editingFromPreview && step === 0 && ageBlocked;
+  const editBlocked = editingFromPreview && ageBlocked;
+
+  const leaveEditToPreview = () => {
+    setEditingFromPreview(false);
+    setStep(STEPS.length);
+  };
 
   const goNext = () => {
     if (nextBlocked) return;
-    if (isPreview) { setAccepted(false); setConfirmOpen(true); return; } // önce onay al
+    if (isPreview) { setAccepted(false); setConfirmOpen(true); return; }
     setStep((s) => Math.min(s + 1, TOTAL - 1));
   };
   const goPrev = () => {
-    // Önizlemeden düzenlemeye geçilip ilk adımda Geri'ye basılırsa: vazgeç, önizlemeye dön
-    if (editingFromPreview && step === 0) { setEditingFromPreview(false); setStep(STEPS.length); return; }
-    if (effPreviewOnly) { onExit && onExit(); return; }   // saf önizleme: Geri = çıkış (Home)
+    if (editingFromPreview) { leaveEditToPreview(); return; }
+    if (effPreviewOnly) { onExit && onExit(); return; }
     if (step === 0) { onExit && onExit(); return; }
     setStep((s) => s - 1);
   };
 
+  const onDownloadPdf = useCallback(async () => {
+    if (pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      await previewRef.current?.downloadPdf?.();
+    } finally {
+      setPdfBusy(false);
+    }
+  }, [pdfBusy]);
+
   const rowDir = dir === 'rtl' ? 'row-reverse' : 'row';
   const align = dir === 'rtl' ? 'right' : 'left';
 
-  const renderNavFooter = () => (
-    <View style={[styles.footerInline, { flexDirection: rowDir }]}>
-      {effPreviewOnly ? (
-        <>
-          <NavBtn label={t('back')} onPress={goPrev} />
-          <NavBtn primary label={t('home_edit_short')} onPress={() => { setEditingFromPreview(true); setStep(0); }} />
-        </>
-      ) : (
-        <>
-          <NavBtn label={t('back')} onPress={goPrev} />
-          <NavBtn
-            primary
-            label={isPreview ? t('save') : (step === STEPS.length - 1 ? t('preview') : t('next'))}
-            onPress={goNext}
-            disabled={nextBlocked}
-          />
-        </>
-      )}
-    </View>
-  );
+  const renderNavFooter = (mode) => {
+    // mode: 'preview' | 'editAll' | 'inline'
+    const sticky = mode === 'preview' || mode === 'editAll';
+    return (
+      <View style={[
+        sticky ? styles.footerSticky : styles.footerInline,
+        sticky && { paddingBottom: Math.max(insets.bottom, 12) },
+      ]}>
+        {mode === 'preview' ? (
+          <TouchableOpacity
+            style={[styles.pdfBtn, pdfBusy && styles.pdfBtnBusy]}
+            onPress={onDownloadPdf}
+            disabled={pdfBusy}
+            activeOpacity={0.85}
+          >
+            {pdfBusy
+              ? <ActivityIndicator color="#fff" />
+              : <Text style={styles.pdfBtnText}>{t('pdf_download')}</Text>}
+          </TouchableOpacity>
+        ) : null}
+        <View style={{ flexDirection: rowDir, gap: 12 }}>
+          {mode === 'preview' ? (
+            <>
+              <NavBtn label={t('back')} onPress={goPrev} />
+              <NavBtn primary label={t('home_edit_short')} onPress={() => { setEditingFromPreview(true); setStep(0); }} />
+            </>
+          ) : mode === 'editAll' ? (
+            <>
+              <NavBtn label={t('back')} onPress={leaveEditToPreview} />
+              <NavBtn primary label={t('save')} onPress={leaveEditToPreview} disabled={editBlocked} />
+            </>
+          ) : (
+            <>
+              <NavBtn label={t('back')} onPress={goPrev} />
+              <NavBtn
+                primary
+                label={isPreview ? t('save') : (step === STEPS.length - 1 ? t('preview') : t('next'))}
+                onPress={goNext}
+                disabled={nextBlocked}
+              />
+            </>
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  const headerTitle = editingFromPreview
+    ? t('cv_edit_title')
+    : (isPreview ? t('preview') : t(STEPS[step].key));
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.flex}>
         <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-          <Text style={[styles.stepCount, { textAlign: align }]}>
-            {t('step')} {step + 1} / {TOTAL}
+          {!isPreview && !editingFromPreview ? (
+            <Text style={[styles.stepCount, { textAlign: align }]}>
+              {t('step')} {step + 1} / {TOTAL}
+            </Text>
+          ) : null}
+          <Text style={[styles.stepTitle, { textAlign: align, marginTop: (isPreview || editingFromPreview) ? 0 : 2 }]}>
+            {headerTitle}
           </Text>
-          <Text style={[styles.stepTitle, { textAlign: align }]}>
-            {isPreview ? t('preview') : t(STEPS[step].key)}
-          </Text>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${((step + 1) / TOTAL) * 100}%` }]} />
-          </View>
+          {!isPreview && !editingFromPreview ? (
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${((step + 1) / TOTAL) * 100}%` }]} />
+            </View>
+          ) : null}
         </View>
 
-        <ScrollView
-          ref={scrollRef}
-          style={styles.flex}
-          contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
-          keyboardShouldPersistTaps="handled"
-          onScroll={onScroll}
-          scrollEventThrottle={16}
-        >
-          {isPreview ? (
-            <View style={[styles.previewBox, { height: PREVIEW_MIN_H }]}>
-              <CVPreview data={data} />
+        {editingFromPreview ? (
+          <>
+            <ScrollView
+              ref={scrollRef}
+              style={styles.flex}
+              contentContainerStyle={[styles.content, { paddingBottom: 16 }]}
+              keyboardShouldPersistTaps="handled"
+              onScroll={onScroll}
+              scrollEventThrottle={16}
+            >
+              {STEPS.map(({ key, Component }, idx) => (
+                <View key={key} style={[styles.editBlock, idx > 0 && styles.editBlockGap]}>
+                  <Text style={[styles.editBlockTitle, { textAlign: align }]}>{t(key)}</Text>
+                  <Component data={data} update={update} />
+                </View>
+              ))}
+            </ScrollView>
+            {renderNavFooter('editAll')}
+          </>
+        ) : isPreview ? (
+          <>
+            <View style={styles.previewFill}>
+              <CVPreview ref={previewRef} data={data} hidePdfBtn />
             </View>
-          ) : (
-            <Current data={data} update={update} />
-          )}
-          {renderNavFooter()}
-        </ScrollView>
+            {renderNavFooter('preview')}
+          </>
+        ) : (
+          <ScrollView
+            ref={scrollRef}
+            style={styles.flex}
+            contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+            keyboardShouldPersistTaps="handled"
+            onScroll={onScroll}
+            scrollEventThrottle={16}
+          >
+            {Current ? <Current data={data} update={update} /> : null}
+            {renderNavFooter('inline')}
+          </ScrollView>
+        )}
       </View>
 
-      {/* Onay (disclaimer) modalı — Bitti'ye basınca */}
       <Modal visible={confirmOpen} transparent animationType="slide" onRequestClose={() => setConfirmOpen(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalCard, { paddingBottom: insets.bottom + 16 }]}>
@@ -194,8 +263,33 @@ const styles = StyleSheet.create({
   progressTrack: { height: 4, backgroundColor: '#e6e8ec', borderRadius: 2, marginTop: 10, overflow: 'hidden' },
   progressFill: { height: 4, backgroundColor: '#c2a25a', borderRadius: 2 },
   content: { padding: 20, flexGrow: 1 },
-  previewBox: { width: '100%' },
+  editBlock: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#e6e8ec',
+  },
+  editBlockGap: { marginTop: 14 },
+  editBlockTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#c2a25a',
+    letterSpacing: 0.3,
+    marginBottom: 12,
+  },
+  previewFill: { flex: 1, width: '100%', backgroundColor: '#eef0f2', paddingHorizontal: 12, paddingTop: 10, paddingBottom: 8 },
   footerInline: { gap: 12, marginTop: 28, paddingTop: 20, borderTopWidth: 1, borderTopColor: '#e6e8ec' },
+  footerSticky: {
+    gap: 10, paddingHorizontal: 16, paddingTop: 12,
+    backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#e6e8ec',
+  },
+  pdfBtn: {
+    backgroundColor: '#c2a25a', borderRadius: 12, paddingVertical: 14,
+    alignItems: 'center', justifyContent: 'center', minHeight: 48,
+  },
+  pdfBtnBusy: { opacity: 0.6 },
+  pdfBtnText: { color: '#fff', fontSize: 15.5, fontWeight: '800' },
   btn: { flex: 1, minHeight: 50, paddingVertical: 12, paddingHorizontal: 10, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   btnPrimary: { backgroundColor: '#1b2533' },
   btnDisabled: { backgroundColor: '#b9bec6' },
@@ -206,7 +300,6 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 22 },
   modalTitle: { fontSize: 19, fontWeight: '800', color: '#1b2533', marginBottom: 12 },
-  modalText: { fontSize: 14, lineHeight: 21, color: '#3a4452', marginBottom: 18 },
   checkRow: { alignItems: 'flex-start', gap: 12, marginBottom: 20 },
   checkbox: {
     width: 26, height: 26, borderRadius: 7, borderWidth: 2, borderColor: '#c2a25a',

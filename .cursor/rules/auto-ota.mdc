@@ -1,0 +1,23 @@
+---
+description: After shipping app JS features, auto-publish EAS OTA without asking
+alwaysApply: true
+---
+
+# Auto OTA after mobile features
+
+**User standing instruction:** After finishing any Expo mobile JS/asset feature or bugfix, publish EAS Update to production **automatically** without asking. The user explicitly authorized ongoing auto-OTA for every added feature.
+
+## Command
+
+```bash
+CI=1 npx eas-cli update --channel production --message "<short what/why>" --non-interactive
+```
+
+From repo root.
+
+## Scope
+
+- Do OTA for mobile app JS/UI changes.
+- If agency web changed in the same work, deploy web the usual project way as well.
+- Briefly note if SQL migration or edge function deploy is still required (those are not OTA).
+- Skip OTA only for: pure SQL, pure web-admin/marketing sites, docs-only, or native binary-only changes.

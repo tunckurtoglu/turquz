@@ -16,3 +16,4 @@ android/
 .DS_Store
 supabase/.temp/
 assets/flags_yedek/
+.apple-client-secret.txt

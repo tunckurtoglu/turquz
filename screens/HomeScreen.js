@@ -1,33 +1,48 @@
 // screens/HomeScreen.js
-// Ana sayfa: "Aday kartı" — otelin gördüğü görünümün birebir önizlemesi.
-// Üstte kimlik (vesikalık + isim/ünvan + foto sayısı), altında 3'lü foto şeridi
-// (vesikalık / boydan / yakın; dolu olana dokununca tam ekran açılır, boş olan
-// "Ekle" / "⋯ Değiştir" ile fotoğraflar profilde güncellenir), en altta "CV'yi Gör" butonu.
-// Kartın altında ileriki modüller (duyuru, asistan, mülakat) "Yakında" olarak listelenir.
+// Aday ana sayfa — koyu zemin, kariyer 1–7 şeridi, beyaz profil kartı (3 foto + CV),
+// altında tanıtım videosu. Fotoğrafa dokununca tam ekran galeri.
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, Image, ScrollView, TouchableOpacity, StyleSheet, Modal, Animated, Switch, Alert, ActivityIndicator, Pressable } from 'react-native';
-import Svg, { Path, Polyline, Line } from 'react-native-svg';
-import { LANGUAGES_SUPPORTED } from '../i18n/languages';
+import { View, Text, Image, ScrollView, TouchableOpacity, StyleSheet, Modal, Animated, Alert, ActivityIndicator, Pressable, Share, Platform, useWindowDimensions, StatusBar } from 'react-native';
+import Svg, { Path, Polyline, Line, Circle, Rect } from 'react-native-svg';
+import { LANGUAGES_ALPHA, nameOf, localeUpper } from '../i18n/languages';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { WebView } from 'react-native-webview';
 import { uploadIntroVideo, getIntroVideoUrl, removeIntroVideo, INTRO_VIDEO_MAX_SEC } from '../lib/introVideo';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
-import { nameOf } from '../i18n/languages';
 import { listDocuments } from '../lib/documents';
 import InterviewModal from '../components/InterviewModal';
-import { getInterview } from '../lib/interviews';
+import FaqSheet from '../components/FaqSheet';
+import ContactSheet from '../components/ContactSheet';
+import AnnouncementsListSheet from '../components/AnnouncementsListSheet';
+import RemindersSheet, { loadDocReminders } from '../components/RemindersSheet';
+import CareerJourneySheet from '../components/CareerJourneySheet';
+import CertificatePreview from '../components/CertificatePreview';
+import NotificationBell from '../components/NotificationBell';
+import { getInterview, formatCountdown } from '../lib/interviews';
 import { callWindow, getCallWindowOpts } from '../lib/livekitCall';
 import { supabase } from '../lib/supabase';
-import NotificationBell from '../components/NotificationBell';
 import PhotoWatermark from '../components/PhotoWatermark';
+import PhotoGalleryModal from '../components/PhotoGalleryModal';
 import { getCandidateStatus, docsUnlocked, reactivateCandidate, workInfo } from '../lib/candidate';
+import {
+  requestEmploymentEnd, undoEmploymentEnd, contestEmploymentEnd, acceptEmploymentEnd, getMyEmploymentEpisode,
+  listCandidateWorkHistory, scanEmploymentLifecycle, answerBoarding, isEmploymentNotif,
+} from '../lib/employment';
 import { acceptOffer, rejectOffer } from '../lib/roles';
 import { notifyOffer } from '../lib/push';
-import { candidatePendingCount } from '../lib/pipeline';
+import { candidatePendingCount, journeyStep, journeyTitleKey, JOURNEY_COUNT } from '../lib/pipeline';
+import { getFlight } from '../lib/flights';
+import { touchLastSeen } from '../lib/lastSeen';
+import { APP_SHARE_URL } from '../lib/config';
+import { unreadAnnouncementCount } from '../lib/notifications';
 
-// Modül satırı. onPress verilirse tıklanabilir (chevron), yoksa "Yakında" rozeti.
+const FOOTER_LOGO = require('../assets/icon-dark.png');
+
+const INK = '#1b2533';
+const GOLD = '#c2a25a';
+const NAVY = '#0e141c';
 function LogoutIcon({ color = '#b5413a', size = 18 }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
@@ -35,6 +50,120 @@ function LogoutIcon({ color = '#b5413a', size = 18 }) {
       <Polyline points="16 17 21 12 16 7" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       <Line x1="21" y1="12" x2="9" y2="12" stroke={color} strokeWidth="2" strokeLinecap="round" />
     </Svg>
+  );
+}
+
+function FooterMegaphoneIcon({ color = '#e7dcc4', size = 20 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M3.5 10.2v3.6c0 .7.5 1.3 1.2 1.4l3.3.5 2.2 3.8c.3.5 1.1.3 1.1-.3v-2.8l6.2 1.1c1.1.2 2-.7 2-1.8V9.1c0-1.1-.9-2-2-1.8l-6.2 1.1V5.8c0-.6-.8-.8-1.1-.3L7.9 9.3l-3.3.5c-.6.1-1.1.7-1.1 1.4Z"
+        stroke={color}
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      <Path d="M19.8 9.6c.8.7.8 2.1 0 2.8" stroke={color} strokeWidth="1.7" strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+function FooterStopwatchIcon({ color = '#e7dcc4', size = 20 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Circle cx="12" cy="13.2" r="7.2" stroke={color} strokeWidth="1.8" />
+      <Path d="M12 13.2V9.6" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Path d="M10 3.6h4" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Path d="M12 3.6v2.2" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Path d="M17.6 7.2l1.2-1.2" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+function FooterFaqIcon({ color = '#e7dcc4', size = 20 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Circle cx="12" cy="12" r="9" stroke={color} strokeWidth="1.8" />
+      <Path
+        d="M9.1 9.2a2.9 2.9 0 0 1 5.6.9c0 1.9-2.8 2.4-2.8 4"
+        stroke={color}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Circle cx="12" cy="17.2" r="1.05" fill={color} />
+    </Svg>
+  );
+}
+
+function MenuIcon({ color = '#e7dcc4', size = 22 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Line x1="4" y1="7" x2="20" y2="7" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Line x1="4" y1="12" x2="20" y2="12" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Line x1="4" y1="17" x2="20" y2="17" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+function LockMini({ color = 'rgba(231,220,196,0.38)', size = 10 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M8 11V8a4 4 0 0 1 8 0v3" stroke={color} strokeWidth="2.2" strokeLinecap="round" />
+      <Rect x="6" y="11" width="12" height="10" rx="2" stroke={color} strokeWidth="2.2" />
+    </Svg>
+  );
+}
+
+function ShareIcon({ color = '#e7dcc4', size = 22 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M12 4v11" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Polyline points="8 8 12 4 16 8" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+function VideoCamIcon({ color = '#c2a25a', size = 22 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Rect x="2.5" y="6.5" width="13.5" height="11" rx="2.2" stroke={color} strokeWidth="1.8" />
+      <Path d="M16 10.2 21 7.5v9l-5-2.7v-3.6Z" stroke={color} strokeWidth="1.8" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+function JourneyMeter({ current, pulse }) {
+  const n = current > 0 ? current : 1;
+  return (
+    <View style={styles.meter} pointerEvents="none">
+      {Array.from({ length: JOURNEY_COUNT }, (_, i) => i + 1).map((step) => {
+        const done = step < n;
+        const active = step === n;
+        const locked = step > n;
+        const dotStyle = [
+          styles.meterDot,
+          done && styles.meterDotDone,
+          active && styles.meterDotNow,
+          locked && styles.meterDotLock,
+        ];
+        const inner = locked
+          ? <LockMini />
+          : <Text style={[styles.meterNum, done && styles.meterNumDone, active && styles.meterNumNow]}>{step}</Text>;
+        return (
+          <React.Fragment key={step}>
+            {step > 1 ? <View style={[styles.meterLine, (done || active) && styles.meterLineOn]} /> : null}
+            {active && pulse ? (
+              <Animated.View style={[dotStyle, { opacity: pulse, transform: [{ scale: pulse.interpolate({ inputRange: [0.35, 1], outputRange: [0.94, 1.14] }) }] }]}>
+                {inner}
+              </Animated.View>
+            ) : (
+              <View style={dotStyle}>{inner}</View>
+            )}
+          </React.Fragment>
+        );
+      })}
+    </View>
   );
 }
 
@@ -96,44 +225,11 @@ async function optimizeHomePhoto(uri) {
   }
 }
 
-// Galeride fotoğrafların yanında duran tanıtım videosu hücresi: ilk kare + ▶ rozet.
-// Dokun -> tam ekran oynat; basılı tut -> değiştir/kaldır menüsü.
-function VideoCell({ url, caption, onPlay, onMenu }) {
-  return (
-    <View style={styles.cell}>
-      <View style={styles.cellBox}>
-        <TouchableOpacity activeOpacity={0.85} onPress={onPlay} onLongPress={onMenu} delayLongPress={280} style={StyleSheet.absoluteFill}>
-          {url ? (
-            <View pointerEvents="none" style={styles.videoCellMedia}>
-              <WebView
-                source={{ html: `<html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"></head><body style="margin:0;background:#000;overflow:hidden"><video src="${url}" muted playsinline preload="metadata" style="width:100%;height:100%;object-fit:cover;background:#000"></video></body></html>` }}
-                style={styles.videoCellMedia}
-                originWhitelist={['*']}
-                allowsInlineMediaPlayback
-                scrollEnabled={false}
-              />
-            </View>
-          ) : (
-            <View style={[styles.videoCellMedia, styles.videoCellLoading]}><ActivityIndicator color="#c2a25a" /></View>
-          )}
-          <View style={styles.videoCellOverlay} pointerEvents="none">
-            <View style={styles.videoCellBadge}><Text style={styles.videoCellPlay}>▶</Text></View>
-          </View>
-        </TouchableOpacity>
-        {/* Görünür yönetim düğmesi: değiştir / kaldır */}
-        <TouchableOpacity style={styles.videoCellMenu} onPress={onMenu} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} activeOpacity={0.8}>
-          <Text style={styles.videoCellMenuIcon}>⋯</Text>
-        </TouchableOpacity>
-      </View>
-      <Text style={styles.cellCap}>{caption}</Text>
-    </View>
-  );
-}
-
-export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSettings, onOpenDocs, onLogout, onSaveData, fontsReady }) {
+export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSettings, onOpenDocs, onLogout, onSaveData, fontsReady, openJourney = false, onJourneyOpened }) {
   const { t, lang, setLang } = useLanguage();
   const insets = useSafeAreaInsets();
-  const [viewer, setViewer] = useState(null); // tam ekranda gösterilecek uri
+  const { height: winH } = useWindowDimensions();
+  const [galleryIndex, setGalleryIndex] = useState(null); // tam ekran slayt indeksi
   const [videoBusy, setVideoBusy] = useState(false);
   const [videoProgress, setVideoProgress] = useState(0); // ilerleme 0..1
   const [videoPhase, setVideoPhase] = useState(''); // '' | 'compress' | 'upload'
@@ -142,31 +238,117 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
   const [pendingVideo, setPendingVideo] = useState(''); // yüklendi ama henüz KAYDEDİLMEDİ (yol)
   const [videoPreviewUrl, setVideoPreviewUrl] = useState(''); // önizleme için imzalı url
   const [missingDocs, setMissingDocs] = useState(0);
-  const [menuOpen, setMenuOpen] = useState(false); // ⋮ menü (dil + çıkış)
+  const [journeyN, setJourneyN] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false); // ⋮ ayarlar
+  const [langOpen, setLangOpen] = useState(false);
   const [offerPending, setOfferPending] = useState(false); // acente teklif gönderdi, aday cevabı bekleniyor
   const [inProcess, setInProcess] = useState(false); // teklifi kabul etti, belge sürecinde
   const [offerBusy, setOfferBusy] = useState(false);
   const [interviewOpen, setInterviewOpen] = useState(false);
+  const [faqOpen, setFaqOpen] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
+  const [announcementsOpen, setAnnouncementsOpen] = useState(false);
+  const [announceUnread, setAnnounceUnread] = useState(0);
+  const [remindersOpen, setRemindersOpen] = useState(false);
+  const [hasDocRemind, setHasDocRemind] = useState(false);
+  const [journeyOpen, setJourneyOpen] = useState(false);
+  const [interview, setInterview] = useState(null);
   const [ivPending, setIvPending] = useState(false); // adaya gönderilmiş, henüz seçilmemiş mülakat
   const [ivJoinable, setIvJoinable] = useState(false); // planlandı + katılım penceresi açık
+  const [ivOpts, setIvOpts] = useState({ minutes: 10, extraSecs: 0 });
+  const [nowTick, setNowTick] = useState(Date.now());
   const [work, setWork] = useState({ hired: false }); // çalışma/personel durumu
+  const [episode, setEpisode] = useState(null);
+  const [workHistory, setWorkHistory] = useState([]);
+  const [certified, setCertified] = useState(false);
+  const [certEpisode, setCertEpisode] = useState(null);
+  const [boardingStatus, setBoardingStatus] = useState(null);
+  const [boardingBusy, setBoardingBusy] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(null); // 'photo' | 'photoClose' | 'photoFull' | null
   const blink = useRef(new Animated.Value(1)).current;
+  const remindBlink = useRef(new Animated.Value(1)).current;
   const ivBlink = useRef(new Animated.Value(1)).current;
-  const pulse = useRef(new Animated.Value(0)).current; // spotlight radar nabzı
+  const cardBlink = useRef(new Animated.Value(1)).current;
+  const homeScroll = useRef(null);
+  const [careerFocus, setCareerFocus] = useState(false);
+  const [statusReady, setStatusReady] = useState(false);
+  const [ivReady, setIvReady] = useState(false);
+  const careerReady = statusReady && ivReady;
 
   // Durumu yükle: çalışma (personel) durumu + belge yükleme kapısı + eksik belge sayısı.
   const loadStatus = useCallback(async () => {
-    const status = await getCandidateStatus(userId);
-    setWork(workInfo(status));
-    setOfferPending(status?.status === 'offered'); // bekleyen teklif var mı
-    setInProcess(status?.status === 'accepted'); // kabul etti, belge sürecinde
-    if (!docsUnlocked(status)) { setMissingDocs(0); return; }
-    const rows = await listDocuments(userId);
-    const have = new Set(rows.map((r) => r.kind));
-    setMissingDocs(candidatePendingCount((k) => have.has(k)));
+    try {
+      const [status, ep, hist] = await Promise.all([
+        getCandidateStatus(userId),
+        getMyEmploymentEpisode(),
+        listCandidateWorkHistory(userId),
+      ]);
+      setEpisode(ep);
+      setBoardingStatus(status?.boarding_status || null);
+      setWorkHistory((hist || []).filter((h) => h.outcome === 'completed'));
+      setCertified((hist || []).some((h) => h.outcome === 'completed'));
+      setOfferPending(status?.status === 'offered');
+      scanEmploymentLifecycle();
+
+      const nextWork = workInfo(status);
+      const nextInProcess = status?.status === 'accepted';
+      const unlocked = docsUnlocked(status) || status?.status === 'hired';
+
+      // inProcess/hired’ı journey adımıyla aynı anda set et — yoksa journeyN=0 iken
+      // kısa süre “Çalışıyorum” (work_active) flaş yapıyordu.
+      if (!unlocked) {
+        setMissingDocs(0);
+        setJourneyN(0);
+        setHasDocRemind(false);
+        setWork(nextWork);
+        setInProcess(nextInProcess);
+        return;
+      }
+
+      const [rows, flight] = await Promise.all([listDocuments(userId), getFlight(userId)]);
+      const has = (k) => rows.some((r) => r.kind === k && r.submitted_at);
+      setMissingDocs(candidatePendingCount(has));
+      setJourneyN(journeyStep(has, !!flight?.pickupSent));
+      setWork(nextWork);
+      setInProcess(nextInProcess);
+      const reminds = await loadDocReminders(userId);
+      setHasDocRemind(reminds.length > 0);
+    } finally {
+      setStatusReady(true);
+    }
   }, [userId]);
   useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  // Aktif belge süresi varken footer kırmızı uyarıyı sürekli yakıp söndür.
+  useEffect(() => {
+    if (!hasDocRemind) {
+      remindBlink.setValue(1);
+      return undefined;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(remindBlink, { toValue: 0.12, duration: 520, useNativeDriver: true }),
+        Animated.timing(remindBlink, { toValue: 1, duration: 520, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [hasDocRemind, remindBlink]);
+
+  // Belgelerden geri: yol haritasını yeniden aç.
+  useEffect(() => {
+    if (!openJourney) return undefined;
+    setJourneyOpen(true);
+    onJourneyOpened?.();
+    return undefined;
+  }, [openJourney, onJourneyOpened]);
+
+  // Ana panele her gelişte çevrimiçi zamanını güncelle (havuz rozeti).
+  useEffect(() => {
+    if (!userId) return undefined;
+    touchLastSeen(true);
+    return undefined;
+  }, [userId]);
 
   // Durum anlık değişsin (teklif gelince/değişince kart güncellensin).
   useEffect(() => {
@@ -174,9 +356,33 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     const ch = supabase
       .channel(`home-status-${userId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'candidate_status', filter: `user_id=eq.${userId}` }, () => loadStatus())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_documents', filter: `user_id=eq.${userId}` }, () => loadStatus())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [userId, loadStatus]);
+
+  const refreshAnnounceUnread = useCallback(async () => {
+    if (!userId) return;
+    const n = await unreadAnnouncementCount(userId);
+    setAnnounceUnread(n);
+  }, [userId]);
+
+  useEffect(() => { refreshAnnounceUnread(); }, [refreshAnnounceUnread]);
+  useEffect(() => {
+    if (!userId) return undefined;
+    const ch = supabase
+      .channel(`home-announce-unread-${userId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, () => {
+        refreshAnnounceUnread();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [userId, refreshAnnounceUnread]);
+
+  const openAnnouncements = useCallback(() => {
+    setAnnouncementsOpen(true);
+    setAnnounceUnread(0);
+  }, []);
 
   // Teklifi KABUL et -> belgeler açılır, acenteye bildirim.
   const doAcceptOffer = () => {
@@ -209,12 +415,59 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     ]);
   };
 
-  // Tekrar çalışmaya hazır: süreci sıfırla, havuza dön (CV kalır).
+  // İşyerinden ayrıl (erken) → pending; süre dolduysa reaktive / tarama.
+  const doLeaveWorkplace = () => {
+    if (episode?.outcome === 'early_exit_pending' || episode?.outcome === 'disputed') {
+      Alert.alert(t('emp_leave'), episode.outcome === 'disputed' ? t('emp_disputed') : t('emp_pending_candidate'));
+      return;
+    }
+    Alert.alert(t('emp_leave'), t('emp_leave_confirm'), [
+      { text: t('consent_cancel'), style: 'cancel' },
+      { text: t('emp_leave'), style: 'destructive', onPress: async () => {
+          try { await requestEmploymentEnd(userId); await loadStatus(); }
+          catch (e) { Alert.alert(t('emp_leave'), e?.message || 'error'); }
+        } },
+    ]);
+  };
+
+  const doUndoLeave = () => {
+    if (!episode?.id) return;
+    Alert.alert(t('emp_undo'), t('emp_undo_confirm'), [
+      { text: t('consent_cancel'), style: 'cancel' },
+      { text: t('emp_undo'), onPress: async () => {
+          try { await undoEmploymentEnd(episode.id); await loadStatus(); }
+          catch (e) { Alert.alert(t('emp_undo'), e?.message || 'error'); }
+        } },
+    ]);
+  };
+
+  const doAcceptLeave = () => {
+    if (!episode?.id) return;
+    Alert.alert(t('emp_accept'), t('emp_accept_confirm'), [
+      { text: t('consent_cancel'), style: 'cancel' },
+      { text: t('emp_accept'), onPress: async () => {
+          try { await acceptEmploymentEnd(episode.id); await loadStatus(); }
+          catch (e) { Alert.alert(t('emp_accept'), e?.message || 'error'); }
+        } },
+    ]);
+  };
+
+  const doContestLeave = async () => {
+    if (!episode?.id) return;
+    try { await contestEmploymentEnd(episode.id); await loadStatus(); }
+    catch (e) { Alert.alert(t('emp_contest'), e?.message || 'error'); }
+  };
+
+  // Süre dolmuş eski yol: tarama + gerekirse reaktive
   const doReactivate = () => {
     Alert.alert(t('work_title'), t('work_reactivate_confirm'), [
       { text: t('consent_cancel'), style: 'cancel' },
       { text: t('work_reactivate'), onPress: async () => {
-          try { await reactivateCandidate(); await loadStatus(); }
+          try {
+            await scanEmploymentLifecycle();
+            await reactivateCandidate();
+            await loadStatus();
+          }
           catch (e) { Alert.alert(t('work_title'), e?.message || 'error'); }
         } },
     ]);
@@ -234,15 +487,35 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     return undefined;
   }, [missingDocs, blink]);
 
+  const careerPulse = offerPending || ((inProcess || work.hired) && journeyN > 0);
+  useEffect(() => {
+    if (careerPulse) {
+      const loop = Animated.loop(Animated.sequence([
+        Animated.timing(cardBlink, { toValue: 0.35, duration: 700, useNativeDriver: true }),
+        Animated.timing(cardBlink, { toValue: 1, duration: 700, useNativeDriver: true }),
+      ]));
+      loop.start();
+      return () => loop.stop();
+    }
+    cardBlink.setValue(1);
+    return undefined;
+  }, [careerPulse, cardBlink]);
+
   // Bekleyen mülakat daveti / katılım penceresi. Anlık dinle.
   const loadInterview = useCallback(async () => {
-    const iv = await getInterview(userId);
-    setIvPending(iv?.status === 'proposed');
-    if (iv?.status === 'scheduled' && iv.selectedSlot) {
-      const opts = await getCallWindowOpts(iv);
-      setIvJoinable(callWindow(iv.selectedSlot, opts).joinable);
-    } else {
-      setIvJoinable(false);
+    try {
+      const iv = await getInterview(userId);
+      setInterview(iv || null);
+      setIvPending(iv?.status === 'proposed');
+      if (iv?.status === 'scheduled' && iv.selectedSlot) {
+        const opts = await getCallWindowOpts(iv);
+        setIvOpts(opts);
+        setIvJoinable(callWindow(iv.selectedSlot, opts).joinable);
+      } else {
+        setIvJoinable(false);
+      }
+    } finally {
+      setIvReady(true);
     }
   }, [userId]);
   useEffect(() => { loadInterview(); }, [loadInterview]);
@@ -254,12 +527,17 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [userId, loadInterview]);
-  // Katılım penceresi saniyede bir yenilensin.
+  // Katılım penceresi / opts periyodik yenile.
   useEffect(() => {
     const id = setInterval(() => { loadInterview(); }, 15000);
     return () => clearInterval(id);
   }, [loadInterview]);
-
+  // Geri sayım saniyesi (planlı mülakat varken).
+  useEffect(() => {
+    if (interview?.status !== 'scheduled' || !interview?.selectedSlot) return undefined;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [interview?.status, interview?.selectedSlot]);
   // Mülakat daveti / katıl penceresi: kutuyu yanıp söndür.
   useEffect(() => {
     if (ivPending || ivJoinable) {
@@ -274,21 +552,17 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     return undefined;
   }, [ivPending, ivJoinable, ivBlink]);
 
-  // Spotlight radar nabzı — sürekli (havuzda canlı olduğunuz hissi).
-  useEffect(() => {
-    const loop = Animated.loop(Animated.timing(pulse, { toValue: 1, duration: 2200, useNativeDriver: true }));
-    pulse.setValue(0); loop.start();
-    return () => loop.stop();
-  }, [pulse]);
-
   const d = data || {};
   const fullName = [d.firstName, d.lastName].filter(Boolean).join(' ') || t('home_cv_card');
   const subtitle = [d.title, nameOf(lang)].filter(Boolean).join(' · ');
 
-  // Spotlight içeriği aşamaya göre: süreçte ise "süreç" mesajı, değilse "havuzda canlı".
-  const spotData = inProcess
-    ? { kicker: t('spotlight_proc_kicker'), title: t('spotlight_proc_title'), emoji: '🚀', coreIcon: '📋', sub: t('spotlight_proc_sub'), dot: '#5566d6' }
-    : { kicker: t('spotlight_kicker'), title: t('spotlight_title'), emoji: '✨', coreIcon: '👁', sub: t('spotlight_sub'), dot: '#5fd08a' };
+  const ivScheduled = interview?.status === 'scheduled' && !!interview?.selectedSlot;
+  const ivFocus = ivPending || ivScheduled;
+  const ivWin = ivScheduled ? callWindow(interview.selectedSlot, ivOpts) : null;
+  const ivCountdownLeft = ivWin?.base ? ivWin.base - nowTick : 0;
+  // Anlık joinable (saniyelik tick ile)
+  const ivCanJoin = !!(ivWin && (ivWin.joinable || (nowTick >= ivWin.start && nowTick <= ivWin.end + 120000)));
+
   const savedVideo = data?.introVideo || '';
   const showVideo = pendingVideo || savedVideo;   // önizlenecek yol (bekleyen öncelikli)
   const isPending = !!pendingVideo;               // yüklendi ama kaydedilmedi
@@ -370,14 +644,6 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       { text: t('intro_video_remove'), style: 'destructive', onPress: doRemoveVideo },
     ]);
   };
-  // Galerideki video hücresinin ⋯ düğmesi / basılı tut: değiştir / kaldır.
-  const videoMenu = () => {
-    Alert.alert(t('intro_video_label'), '', [
-      { text: t('intro_video_change'), onPress: pickVideo },
-      { text: t('intro_video_remove'), style: 'destructive', onPress: doRemoveVideo },
-      { text: t('consent_cancel'), style: 'cancel' },
-    ]);
-  };
 
   const pickHomePhoto = async (field, aspect) => {
     if (!onSaveData || photoBusy) return;
@@ -402,6 +668,25 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     }
   };
 
+  const shareApp = async () => {
+    const url = APP_SHARE_URL;
+    const text = t('home_share_msg');
+    try {
+      await Share.share(
+        Platform.OS === 'ios'
+          ? { message: text, url }
+          : { message: `${text} ${url}`, title: 'Turquz' },
+      );
+    } catch {
+      // Kullanıcı iptal etti.
+    }
+  };
+
+  const closeSettings = () => {
+    setMenuOpen(false);
+    setLangOpen(false);
+  };
+
   const photoMenu = (field, aspect, caption) => {
     Alert.alert(caption, '', [
       { text: t('photo_change'), onPress: () => pickHomePhoto(field, aspect) },
@@ -414,121 +699,374 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     { field: 'photoClose', aspect: [3, 4], uri: d.photoClose, caption: t('photo_cap_close') },
     { field: 'photoFull', aspect: [3, 4], uri: d.photoFull, caption: t('photo_cap_full') },
   ];
-  const photoCount = cells.filter((c) => c.uri).length;
+  const gallery = cells.filter((c) => c.uri).map((c) => ({ uri: c.uri, cap: c.caption }));
 
   return (
     <View style={styles.wrap}>
-      {/* Aurora hero — altın kicker + serif başlık */}
-      <View style={[styles.hero, { paddingTop: insets.top + 16 }]}>
+      <StatusBar barStyle="light-content" />
+      <View style={[styles.hero, { paddingTop: insets.top + 8 }]}>
         <View style={styles.heroRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.heroHi} numberOfLines={1}>{t('home_panel_sub')}</Text>
-            <Text style={[styles.heroTitle, fontsReady && styles.heroTitleFont]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{t('home_panel_title')}</Text>
+          <View style={styles.heroBrand}>
+            <Image source={require('../assets/turquz-logo.png')} style={styles.heroLogo} resizeMode="contain" />
+            <Text style={styles.heroHi} numberOfLines={2}>{localeUpper(t('home_panel_title'), lang)}</Text>
           </View>
           <View style={styles.headerActions}>
-          <NotificationBell userId={userId} color="#e7dcc4" onNavigate={(n) => {
-            if (['reupload', 'document', 'accepted'].includes(n.type)) onOpenDocs?.();
-            else if (n.type === 'interview_proposed' || n.type === 'interview_respond_remind' || String(n.type || '').startsWith('interview_reminder') || n.type === 'interview_scheduled') setInterviewOpen(true);
-            // 'offer' -> teklif kartı zaten ana sayfada
-          }} />
-          <TouchableOpacity onPress={() => setMenuOpen(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Text style={styles.menuDots}>⋮</Text>
-          </TouchableOpacity>
+            <NotificationBell
+              userId={userId}
+              color="#e7dcc4"
+              onNavigate={(n) => {
+                const type = String(n?.type || '');
+                if (type === 'chat_message') {
+                  onOpenDocs?.({ openChat: true });
+                  return;
+                }
+                if (
+                  type === 'reupload'
+                  || type === 'document'
+                  || type === 'accepted'
+                  || type === 'docs_extra'
+                  || type === 'flight_ticket_ready'
+                  || type === 'flight_ticket_sent'
+                  || type === 'pickup'
+                  || type.startsWith('boarding_')
+                ) {
+                  onOpenDocs?.();
+                  return;
+                }
+                if (
+                  type === 'interview_proposed'
+                  || type === 'interview_respond_remind'
+                  || type === 'interview_scheduled'
+                  || type.startsWith('interview_reminder')
+                  || type === 'interview'
+                ) {
+                  setInterviewOpen(true);
+                  return;
+                }
+                if (type === 'offer') {
+                  loadStatus();
+                  homeScroll.current?.scrollTo({ y: 0, animated: true });
+                  return;
+                }
+                if (isEmploymentNotif(type)) {
+                  loadStatus();
+                  homeScroll.current?.scrollTo({ y: 0, animated: true });
+                  setCareerFocus(true);
+                  setTimeout(() => setCareerFocus(false), 2200);
+                }
+              }}
+            />
+            <TouchableOpacity
+              onPress={shareApp}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={t('home_share')}
+            >
+              <ShareIcon />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setMenuOpen(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} accessibilityLabel={t('settings')}>
+              <MenuIcon />
+            </TouchableOpacity>
           </View>
         </View>
+        <View style={styles.heroRule} />
       </View>
-      <View style={styles.accent} />
 
-      {/* ⋮ menü: dil + çıkış (acente ile aynı premium) */}
-      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
-        <Pressable style={styles.menuBackdrop} onPress={() => setMenuOpen(false)}>
-          <Pressable style={[styles.menuSheet, { paddingBottom: insets.bottom + 14 }]} onPress={(e) => e.stopPropagation()}>
+      {/* Ayarlar: dil (açılır kaydırma) + bildirim + hesap */}
+      <Modal visible={menuOpen} transparent animationType="slide" onRequestClose={closeSettings}>
+        <View style={styles.menuBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeSettings} />
+          <View style={[styles.menuSheet, { maxHeight: winH * 0.86, paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
             <View style={styles.menuHandle} />
-            <View style={styles.menuBrand}>
-              <Image source={require('../assets/turquz-logo.png')} style={styles.menuBrandLogo} resizeMode="contain" />
-              <View style={styles.menuBrandRule} />
+            <View style={styles.menuHeadRow}>
+              <Text style={styles.menuHeadTitle}>{t('settings')}</Text>
+              <TouchableOpacity onPress={closeSettings} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={styles.menuCloseBtn}>
+                <Text style={styles.menuCloseX}>✕</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={styles.menuTitle}>{t('set_language')}</Text>
-            <ScrollView style={styles.menuLangList} keyboardShouldPersistTaps="handled">
-              {LANGUAGES_SUPPORTED.map((l) => (
-                <TouchableOpacity key={l.code} style={[styles.menuLangRow, l.code === lang && styles.menuLangRowOn]} onPress={() => { setLang(l.code); setMenuOpen(false); }} activeOpacity={0.7}>
-                  <Text style={[styles.menuLangName, l.code === lang && styles.menuLangNameOn]}>{l.name}</Text>
-                  {l.code === lang ? <Text style={styles.menuCheck}>✓</Text> : null}
-                </TouchableOpacity>
-              ))}
+
+            <ScrollView
+              style={{ maxHeight: winH * 0.86 - 72 }}
+              contentContainerStyle={styles.menuScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              nestedScrollEnabled
+            >
+              <Text style={styles.menuSection}>{t('set_language')}</Text>
+              <TouchableOpacity
+                style={styles.langDrop}
+                onPress={() => setLangOpen((v) => !v)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.langDropValue}>{nameOf(lang)}</Text>
+                <Text style={styles.langDropChev}>{langOpen ? '▴' : '▾'}</Text>
+              </TouchableOpacity>
+              {langOpen ? (
+                <ScrollView
+                  style={styles.langDropList}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator
+                >
+                  {LANGUAGES_ALPHA.map((l) => {
+                    const on = l.code === lang;
+                    return (
+                      <TouchableOpacity
+                        key={l.code}
+                        style={[styles.langDropRow, on && styles.langDropRowOn]}
+                        onPress={() => {
+                          if (!on) setLang(l.code);
+                          setLangOpen(false);
+                        }}
+                        activeOpacity={0.75}
+                      >
+                        <Text style={[styles.langDropName, on && styles.langDropNameOn]}>{l.name}</Text>
+                        {on ? <Text style={styles.langDropCheck}>✓</Text> : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              ) : null}
+
+              <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('set_account')}</Text>
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => { closeSettings(); onLogout?.(); }}
+                activeOpacity={0.85}
+              >
+                <View style={styles.menuLogoutIcon}><LogoutIcon color="#b5413a" size={18} /></View>
+                <Text style={[styles.menuLogoutText, { flex: 1 }]}>{t('set_logout')}</Text>
+                <Text style={styles.menuLogoutHint}>›</Text>
+              </TouchableOpacity>
             </ScrollView>
-            <View style={styles.menuSep} />
-            <TouchableOpacity style={styles.menuLogout} onPress={() => { setMenuOpen(false); onLogout?.(); }} activeOpacity={0.85}>
-              <View style={styles.menuLogoutIcon}><LogoutIcon color="#b5413a" size={18} /></View>
-              <Text style={styles.menuLogoutText}>{t('set_logout')}</Text>
-              <View style={{ flex: 1 }} />
-              <Text style={styles.menuLogoutHint}>→</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </Modal>
 
-      <ScrollView contentContainerStyle={[styles.content, { paddingTop: 18, paddingBottom: insets.bottom + 24 }]}>
-        {/* Bekleyen TEKLİF: aday kabul/ret verir. Kabul edene kadar belgeler açılmaz. */}
-        {offerPending ? (
-          <View style={styles.offerCard}>
-            <Text style={styles.offerKicker}>📩 {t('offer_card_kicker')}</Text>
-            <Text style={styles.offerCardTitle}>{t('offer_card_title')}</Text>
-            <Text style={styles.offerCardDesc}>{t('offer_card_desc')}</Text>
-            <View style={styles.offerBtns}>
-              <TouchableOpacity style={styles.offerDecline} onPress={doRejectOffer} disabled={offerBusy} activeOpacity={0.85}>
-                <Text style={styles.offerDeclineText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('offer_reject')}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.offerAccept} onPress={doAcceptOffer} disabled={offerBusy} activeOpacity={0.9}>
-                {offerBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.offerAcceptText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('offer_accept')}</Text>}
-              </TouchableOpacity>
-            </View>
-          </View>
-        ) : null}
+      <ScrollView
+        ref={homeScroll}
+        style={{ backgroundColor: NAVY }}
+        contentContainerStyle={[styles.content, { paddingTop: 18, paddingBottom: insets.bottom + 88 }]}
+      >
+        {/* Kariyer yolculuğu: teklif → mülakat → belge aşaması → personel */}
+        <View style={[styles.workCard, careerFocus && styles.workCardFocus]}>
+          <Text style={styles.workKicker}>{localeUpper(t('career_started'), lang)}</Text>
 
-        {/* Spotlight — havuzda canlı (pool) ya da süreçte; teklif/işe alım yokken */}
-        {!work.hired && !offerPending ? (
-          <View style={styles.spot}>
-            <View style={styles.spotRadar}>
-              <Animated.View style={[styles.spotRing, { opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] }), transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.7, 2.1] }) }] }]} />
-              <Animated.View style={[styles.spotRing, styles.spotRing2, { opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.35, 0] }), transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.7, 1.5] }) }] }]} />
-              <View style={styles.spotCore}><Text style={styles.spotEye}>{spotData.coreIcon}</Text></View>
-            </View>
-            <View style={styles.spotBody}>
-              <View style={styles.spotKickerRow}>
-                <View style={[styles.spotLiveDot, { backgroundColor: spotData.dot }]} />
-                <Text style={styles.spotKicker} numberOfLines={1}>{spotData.kicker}</Text>
+          {!careerReady ? (
+            <Text style={styles.workActive}>…</Text>
+          ) : !work.hired && offerPending ? (
+            <>
+              <Text style={styles.workActive}>{t('spotlight_offer_title')}</Text>
+              <View style={[styles.offerCard, styles.workEmbed]}>
+                <Text style={styles.offerCardDesc}>{t('offer_card_desc')}</Text>
+                <View style={styles.offerBtns}>
+                  <TouchableOpacity style={styles.offerDecline} onPress={doRejectOffer} disabled={offerBusy} activeOpacity={0.85}>
+                    <Text style={styles.offerDeclineText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('offer_reject')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.offerAccept} onPress={doAcceptOffer} disabled={offerBusy} activeOpacity={0.9}>
+                    {offerBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.offerAcceptText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('offer_accept')}</Text>}
+                  </TouchableOpacity>
+                </View>
               </View>
-              <Text style={styles.spotTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{spotData.title} {spotData.emoji}</Text>
-              <Text style={styles.spotSub} numberOfLines={1}>{spotData.sub}</Text>
-            </View>
-          </View>
-        ) : null}
-
-        {/* Çalışma / personel durumu */}
-        {work.hired ? (
-          <View style={styles.workCard}>
-            <View style={styles.workAccent} />
-            <Text style={styles.workKicker}>🚀 {t('career_started')}</Text>
-            <View style={styles.workRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.workActive}>{t('work_active')}</Text>
-                {work.end ? (
-                  <Text style={styles.workSub}>{t('work_until', { date: `${String(work.end.getDate()).padStart(2, '0')}.${String(work.end.getMonth() + 1).padStart(2, '0')}.${work.end.getFullYear()}` })}</Text>
-                ) : null}
-              </View>
-              <Switch value={!work.expired} onValueChange={doReactivate} trackColor={{ true: '#c2a25a', false: '#3a4a5e' }} thumbColor="#fff" />
-            </View>
-            {work.expired ? (
-              <View style={styles.workExpired}>
-                <Text style={styles.workExpiredText}>{t('work_expired')}</Text>
-                <TouchableOpacity style={styles.workReBtn} onPress={doReactivate} activeOpacity={0.9}>
-                  <Text style={styles.workReText}>{t('work_reactivate')}  →</Text>
+            </>
+          ) : (
+            <>
+              {inProcess || work.hired || work.inTransit ? (
+                <TouchableOpacity
+                  onPress={() => setJourneyOpen(true)}
+                  activeOpacity={0.88}
+                >
+                  {journeyN > 0 ? <JourneyMeter current={journeyN} pulse={cardBlink} /> : null}
+                  <View style={styles.workStageRow}>
+                    <Text style={[styles.workActive, { flex: 1 }]} numberOfLines={2}>
+                      {journeyN > 0 ? t(journeyTitleKey(journeyN)) : '…'}
+                    </Text>
+                    {missingDocs > 0 ? (
+                      <Animated.View style={[styles.workMissBadge, { opacity: blink }]}>
+                        <Text style={styles.workMissText}>{missingDocs}</Text>
+                      </Animated.View>
+                    ) : null}
+                    <Text style={styles.workStageChev}>›</Text>
+                  </View>
                 </TouchableOpacity>
-              </View>
+              ) : ivFocus ? (
+                <Text style={styles.workActive}>{ivPending ? t('spotlight_iv_title') : t('spotlight_iv_sched_title')}</Text>
+              ) : (
+                <>
+                  <Text style={styles.workActive}>{t('spotlight_title')}</Text>
+                  <Text style={styles.workSub}>{t('spotlight_sub')}</Text>
+                </>
+              )}
+
+              {!work.hired && ivFocus ? (
+                ivPending ? (
+                  <TouchableOpacity style={[styles.focusAction, styles.workEmbed]} onPress={() => setInterviewOpen(true)} activeOpacity={0.88}>
+                    <Text style={styles.focusActionIcon}>📅</Text>
+                    <View style={styles.focusActionBody}>
+                      <Text style={styles.focusActionTitle}>{t('home_iv_pick_focus')}</Text>
+                      <Text style={styles.focusActionSub}>{t('home_iv_pick_focus_sub')}</Text>
+                    </View>
+                    <Animated.View style={[styles.gridBadge, styles.gridBadgeGold, styles.workEmbedBadge, { opacity: ivBlink }]}>
+                      <Text style={styles.gridBadgeText}>!</Text>
+                    </Animated.View>
+                    <Text style={styles.focusActionChev}>›</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={[styles.focusAction, styles.workEmbed, ivCanJoin && styles.focusActionHot]}
+                    onPress={() => setInterviewOpen(true)}
+                    activeOpacity={0.88}
+                  >
+                    <Text style={styles.focusActionIcon}>{ivCanJoin ? '▶' : '⏱'}</Text>
+                    <View style={styles.focusActionBody}>
+                      <Text style={styles.focusActionTitle}>
+                        {ivCanJoin ? t('call_join') : formatCountdown(Math.max(0, ivCountdownLeft))}
+                      </Text>
+                      <Text style={styles.focusActionSub}>
+                        {ivCanJoin ? t('spotlight_iv_sched_sub') : t('home_iv_countdown_sub')}
+                      </Text>
+                    </View>
+                    {ivCanJoin ? (
+                      <Animated.View style={[styles.gridBadge, styles.gridBadgeGold, styles.workEmbedBadge, { opacity: ivBlink }]}>
+                        <Text style={styles.gridBadgeText}>▶</Text>
+                      </Animated.View>
+                    ) : null}
+                    <Text style={styles.focusActionChev}>›</Text>
+                  </TouchableOpacity>
+                )
+              ) : null}
+            </>
+          )}
+
+          {work.hired && work.end ? (
+            <Text style={styles.workSub}>{t('work_until', { date: `${String(work.end.getDate()).padStart(2, '0')}.${String(work.end.getMonth() + 1).padStart(2, '0')}.${work.end.getFullYear()}` })}</Text>
+          ) : null}
+          {work.hired && episode?.employer_title ? (
+            <Text style={styles.workSub}>{episode.employer_title}</Text>
+          ) : null}
+
+          {work.inTransit ? (
+            <Text style={styles.workSub}>Yolda — işe başlama onayı bekleniyor</Text>
+          ) : null}
+
+          {(work.hired || work.inTransit) ? (
+            <>
+              {(boardingStatus === 'pending' || boardingStatus === 'no_response') ? (
+                <View style={styles.workAlert}>
+                  <Text style={styles.workAlertText}>{t('boarding_check_prompt')}</Text>
+                  <TouchableOpacity
+                    style={[styles.workBtnPrimary, boardingBusy && styles.workBtnDim]}
+                    disabled={boardingBusy}
+                    onPress={async () => {
+                      setBoardingBusy(true);
+                      try { await answerBoarding('confirmed'); await loadStatus(); }
+                      catch (e) { Alert.alert(t('boarding_check_title'), e?.message || 'error'); }
+                      finally { setBoardingBusy(false); }
+                    }}
+                    activeOpacity={0.9}
+                  >
+                    <Text style={styles.workBtnPrimaryText}>{t('boarding_yes')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.workBtnDanger, boardingBusy && styles.workBtnDim]}
+                    disabled={boardingBusy}
+                    onPress={async () => {
+                      setBoardingBusy(true);
+                      try { await answerBoarding('missed'); await loadStatus(); }
+                      catch (e) { Alert.alert(t('boarding_check_title'), e?.message || 'error'); }
+                      finally { setBoardingBusy(false); }
+                    }}
+                    activeOpacity={0.9}
+                  >
+                    <Text style={styles.workBtnDangerText}>{t('boarding_missed')}</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : boardingStatus === 'confirmed' ? (
+                <View style={styles.workNote}>
+                  <Text style={styles.workNoteText}>✓ {t('boarding_confirmed_self')}</Text>
+                </View>
+              ) : boardingStatus === 'missed' ? (
+                <View style={styles.workNote}>
+                  <Text style={styles.workNoteText}>{t('boarding_missed_self')}</Text>
+                </View>
+              ) : null}
+
+              {work.hired && episode?.outcome === 'early_exit_pending' ? (
+                <View style={styles.workAlert}>
+                  <Text style={styles.workAlertText}>
+                    {episode.end_requested_by === userId ? t('emp_pending_mine') : t('emp_pending_theirs')}
+                  </Text>
+                  {episode.end_requested_by === userId ? (
+                    <TouchableOpacity style={styles.workBtnPrimary} onPress={doUndoLeave} activeOpacity={0.9}>
+                      <Text style={styles.workBtnPrimaryText}>{t('emp_undo')}</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <>
+                      <TouchableOpacity style={styles.workBtnPrimary} onPress={doAcceptLeave} activeOpacity={0.9}>
+                        <Text style={styles.workBtnPrimaryText} numberOfLines={1}>{t('emp_accept')}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.workBtnGhost, { marginTop: 8 }]} onPress={doContestLeave} activeOpacity={0.9}>
+                        <Text style={styles.workBtnGhostText} numberOfLines={1}>{t('emp_contest')}</Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                </View>
+              ) : work.hired && episode?.outcome === 'disputed' ? (
+                <View style={styles.workNote}>
+                  <Text style={styles.workAlertText}>{t('emp_disputed')}</Text>
+                </View>
+              ) : work.hired && work.expired ? (
+                <View style={styles.workAlert}>
+                  <Text style={styles.workAlertText}>{t('work_expired')}</Text>
+                  <TouchableOpacity style={styles.workBtnPrimary} onPress={doReactivate} activeOpacity={0.9}>
+                    <Text style={styles.workBtnPrimaryText}>{t('work_reactivate')}  →</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity style={styles.workBtnGhost} onPress={doLeaveWorkplace} activeOpacity={0.9}>
+                  <Text style={styles.workBtnGhostText}>{t('emp_leave')}</Text>
+                </TouchableOpacity>
+              )}
+            </>
+          ) : null}
+        </View>
+
+        {!work.hired && (certified || workHistory.length) ? (
+          <View style={styles.workCard}>
+            {certified ? <Text style={styles.workKicker}>🏅 {t('cert_badge')}</Text> : null}
+            {workHistory.length ? (
+              <>
+                <Text style={styles.workActive}>{t('work_history_title')}</Text>
+                {workHistory.slice(0, 5).map((h) => (
+                  <View key={h.episode_id} style={styles.certRow}>
+                    <Text style={[styles.workSub, { flex: 1 }]}>
+                      {h.employer_title || '—'}
+                      {h.ended_at ? ` · ${new Date(h.ended_at).toLocaleDateString()}` : ''}
+                    </Text>
+                    {h.outcome === 'completed' ? (
+                      <TouchableOpacity
+                        style={styles.certPdfBtn}
+                        onPress={() => setCertEpisode(h)}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={styles.certPdfText}>{t('pdf_download')}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                ))}
+              </>
             ) : null}
           </View>
         ) : null}
+
+        <CertificatePreview
+          visible={!!certEpisode}
+          data={d}
+          episode={certEpisode}
+          onClose={() => setCertEpisode(null)}
+        />
 
         {/* Aday kartı */}
         <View style={styles.card}>
@@ -552,24 +1090,14 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
               )}
             </TouchableOpacity>
             <View style={styles.cardId}>
-              <Text style={[styles.name, fontsReady && styles.nameFont]} numberOfLines={2}>{fullName}</Text>
+              <Text style={[styles.name, fontsReady && styles.nameFont]} numberOfLines={2}>{localeUpper(fullName, lang)}</Text>
               {subtitle ? <Text style={styles.subtitle} numberOfLines={2}>{subtitle}</Text> : null}
-              <Text style={styles.count}>📷 {photoCount} {t('photo_unit')}</Text>
             </View>
           </View>
 
           <View style={styles.divider} />
 
-          {/* Foto + video galerisi — tanıtım videosu en başta (en solda) */}
           <View style={styles.strip}>
-            {savedVideo && !isPending ? (
-              <VideoCell
-                url={videoPreviewUrl}
-                caption={t('intro_video_cap')}
-                onPlay={playVideo}
-                onMenu={videoMenu}
-              />
-            ) : null}
             {cells.map((c) => (
               <PhotoCell
                 key={c.field}
@@ -577,27 +1105,26 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                 caption={c.caption}
                 addLabel={t('photo_add')}
                 busy={photoBusy === c.field}
-                onView={() => setViewer(c.uri)}
+                onView={() => {
+                  const i = gallery.findIndex((g) => g.uri === c.uri);
+                  if (i >= 0) setGalleryIndex(i);
+                }}
                 onAdd={() => pickHomePhoto(c.field, c.aspect)}
                 onMenu={() => photoMenu(c.field, c.aspect, c.caption)}
               />
             ))}
           </View>
 
-          {/* CV'yi Gör — video bölümünün ÜSTÜNDE */}
           <TouchableOpacity style={styles.cvBtn} onPress={onPreview} activeOpacity={0.85}>
             <Text style={styles.cvBtnText}>{t('home_view_cv')}  →</Text>
           </TouchableOpacity>
+        </View>
 
-          {/* Tanıtım videosu — premium sinema paneli.
-              Kaydedilip boştayken kart gizlenir; video yukarıda galeride görünür. */}
-          {(videoBusy || videoError || isPending || !savedVideo) ? (
           <View style={styles.videoCard}>
             <View style={styles.videoHead}>
-              <View style={styles.videoIconCircle}><Text style={styles.videoIcon}>🎬</Text></View>
+              <View style={styles.videoIconCircle}><VideoCamIcon /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.videoKicker} numberOfLines={1}>{t('intro_video_label')}</Text>
-                <Text style={styles.videoSubtitle} numberOfLines={1}>{t('intro_video_subtitle', { n: INTRO_VIDEO_MAX_SEC })}</Text>
               </View>
             </View>
 
@@ -646,8 +1173,6 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                   </View>
                 ) : (
                   <View style={styles.videoSaved}>
-                    <Text style={styles.videoSavedLabel}>✓ {t('intro_video_saved_label')}</Text>
-                    <View style={{ flex: 1 }} />
                     <TouchableOpacity onPress={pickVideo} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} activeOpacity={0.7}>
                       <Text style={styles.videoLink}>{t('intro_video_change')}</Text>
                     </TouchableOpacity>
@@ -661,59 +1186,72 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
             ) : (
               <>
                 <Text style={styles.videoMotiv}>{t('intro_video_motiv')}</Text>
-                <View style={styles.videoFullbody}>
-                  <Text style={styles.videoFullbodyIcon}>🧍</Text>
-                  <Text style={styles.videoFullbodyText}>{t('intro_video_fullbody')}</Text>
-                </View>
                 <TouchableOpacity style={styles.videoCta} onPress={pickVideo} activeOpacity={0.9}>
                   <Text style={styles.videoCtaText}>{t('intro_video_add')}</Text>
                 </TouchableOpacity>
               </>
             )}
           </View>
-          ) : null}
-        </View>
-
-        {/* Hızlı erişim ikon ızgarası */}
-        <View style={styles.grid}>
-          <TouchableOpacity style={styles.gridTile} onPress={onOpenDocs} activeOpacity={0.85}>
-            <View style={styles.gridIconWrap}><Text style={styles.gridIcon}>🗂️</Text></View>
-            <Text style={styles.gridLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('home_documents')}</Text>
-            {missingDocs > 0 ? (
-              <Animated.View style={[styles.gridBadge, { opacity: blink }]}><Text style={styles.gridBadgeText}>{missingDocs}</Text></Animated.View>
-            ) : null}
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.gridTile} onPress={() => setInterviewOpen(true)} activeOpacity={0.85}>
-            <View style={styles.gridIconWrap}><Text style={styles.gridIcon}>🎥</Text></View>
-            <Text style={styles.gridLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('home_interviews')}</Text>
-            {(ivPending || ivJoinable) ? (
-              <Animated.View style={[styles.gridBadge, styles.gridBadgeGold, { opacity: ivBlink }]}><Text style={styles.gridBadgeText}>{ivJoinable ? '▶' : '!'}</Text></Animated.View>
-            ) : null}
-          </TouchableOpacity>
-
-          <View style={[styles.gridTile, styles.gridTileSoon]}>
-            <View style={styles.gridIconWrap}><Text style={styles.gridIcon}>📢</Text></View>
-            <Text style={styles.gridLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('home_announcements')}</Text>
-            <View style={styles.gridSoon}><Text style={styles.gridSoonText}>{t('soon')}</Text></View>
-          </View>
-
-          <View style={[styles.gridTile, styles.gridTileSoon]}>
-            <View style={styles.gridIconWrap}><Text style={styles.gridIcon}>💬</Text></View>
-            <Text style={styles.gridLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('home_assistant')}</Text>
-            <View style={styles.gridSoon}><Text style={styles.gridSoonText}>{t('soon')}</Text></View>
-          </View>
-        </View>
       </ScrollView>
 
-      {/* Tam ekran foto görüntüleyici */}
-      <Modal visible={!!viewer} transparent animationType="fade" onRequestClose={() => setViewer(null)}>
-        <TouchableOpacity style={styles.viewerOverlay} activeOpacity={1} onPress={() => setViewer(null)}>
-          {viewer ? <Image source={{ uri: viewer }} style={styles.viewerImg} resizeMode="contain" /> : null}
-          {viewer ? <PhotoWatermark size={46} margin={16} /> : null}
-          <View style={styles.viewerClose}><Text style={styles.viewerCloseText}>✕</Text></View>
+      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+        <View style={styles.footerGold} />
+        <TouchableOpacity
+          style={styles.footerTab}
+          onPress={openAnnouncements}
+          activeOpacity={0.85}
+        >
+          <View style={styles.footerIconWrap}>
+            <FooterMegaphoneIcon color="#e7dcc4" size={20} />
+            {announceUnread > 0 ? (
+              <View style={styles.footerBadge}>
+                <Text style={styles.footerBadgeText}>{announceUnread > 9 ? '9+' : announceUnread}</Text>
+              </View>
+            ) : null}
+          </View>
+          <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_announcements')}</Text>
         </TouchableOpacity>
-      </Modal>
+        <TouchableOpacity
+          style={styles.footerTab}
+          onPress={() => setRemindersOpen(true)}
+          activeOpacity={0.85}
+        >
+          <View style={styles.footerIconWrap}>
+            <FooterStopwatchIcon color="#e7dcc4" size={20} />
+            {hasDocRemind ? (
+              <Animated.View style={[styles.footerWarnDot, { opacity: remindBlink }]} />
+            ) : null}
+          </View>
+          <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_remind_short')}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.footerTab}
+          onPress={() => setFaqOpen(true)}
+          activeOpacity={0.85}
+        >
+          <View style={styles.footerIconWrap}>
+            <FooterFaqIcon color="#e7dcc4" size={20} />
+          </View>
+          <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_faq_short')}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.footerTab}
+          onPress={() => setContactOpen(true)}
+          activeOpacity={0.85}
+        >
+          <View style={styles.footerLogoWrap}>
+            <Image source={FOOTER_LOGO} style={styles.footerLogo} resizeMode="cover" />
+          </View>
+          <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_support_short')}</Text>
+        </TouchableOpacity>
+      </View>
+
+      <PhotoGalleryModal
+        visible={galleryIndex !== null}
+        photos={gallery}
+        index={galleryIndex ?? 0}
+        onClose={() => setGalleryIndex(null)}
+      />
 
       {/* Tanıtım videosu oynatıcı (WebView + HTML5 video) */}
       <Modal visible={!!videoPlayUrl} transparent animationType="fade" onRequestClose={() => setVideoPlayUrl(null)}>
@@ -735,6 +1273,53 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
         </View>
       </Modal>
 
+      <FaqSheet
+        visible={faqOpen}
+        onClose={() => setFaqOpen(false)}
+        chatPrefill={`${t('faq_chat_msg')}${fullName ? `\n${fullName}` : ''}`}
+        onOpenContact={() => {
+          setFaqOpen(false);
+          setContactOpen(true);
+        }}
+      />
+
+      <ContactSheet
+        visible={contactOpen}
+        onClose={() => setContactOpen(false)}
+        prefill={`${t('faq_chat_msg')}${fullName ? `\n${fullName}` : ''}`}
+        name={fullName}
+      />
+
+      <AnnouncementsListSheet
+        visible={announcementsOpen}
+        onClose={() => {
+          setAnnouncementsOpen(false);
+          refreshAnnounceUnread();
+        }}
+        userId={userId}
+      />
+
+      <RemindersSheet
+        visible={remindersOpen}
+        onClose={() => {
+          setRemindersOpen(false);
+          loadStatus();
+        }}
+        userId={userId}
+        onOpenDocs={onOpenDocs}
+      />
+
+      <CareerJourneySheet
+        visible={journeyOpen}
+        onClose={() => setJourneyOpen(false)}
+        current={journeyN}
+        certified={certified}
+        onOpenStep={(step) => {
+          setJourneyOpen(false);
+          onOpenDocs?.({ scrollToStep: step, returnToJourney: true });
+        }}
+      />
+
       <InterviewModal
         visible={interviewOpen}
         role="candidate"
@@ -747,46 +1332,97 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: '#f6f3ec' },
-  hero: { paddingLeft: 22, paddingRight: 16, paddingBottom: 22, backgroundColor: '#16202e', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 16, shadowOffset: { width: 0, height: 5 }, elevation: 8, zIndex: 2 },
+  wrap: { flex: 1, backgroundColor: NAVY },
+  hero: { paddingLeft: 16, paddingRight: 16, paddingBottom: 12, backgroundColor: NAVY, zIndex: 2 },
+  heroRule: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(194,162,90,0.38)',
+  },
   heroRow: { flexDirection: 'row', alignItems: 'center' },
-  heroHi: { color: '#c2a25a', fontSize: 11, fontWeight: '800', letterSpacing: 2.5, marginBottom: 4, textTransform: 'uppercase' },
+  heroBrand: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 2, paddingRight: 8 },
+  heroLogo: { width: 94, height: 64 },
+  heroHi: {
+    color: '#c2a25a', fontSize: 16, fontWeight: '800', letterSpacing: 1.2,
+    flexShrink: 1, flexGrow: 1, minWidth: 0, marginLeft: -4,
+    lineHeight: 20,
+  },
   heroTitle: { color: '#fff', fontSize: 25, fontWeight: '800', letterSpacing: 0.3 },
   heroTitleFont: { fontFamily: 'PlayfairDisplay_700Bold', fontWeight: '400' },
   menuDots: { fontSize: 26, color: '#e7dcc4', fontWeight: '900', marginTop: -4 },
 
-  // ⋮ menü (acente ile aynı)
-  menuBackdrop: { flex: 1, backgroundColor: 'rgba(8,12,20,0.45)', justifyContent: 'flex-end' },
-  menuSheet: { backgroundColor: '#fbf8f1', borderTopLeftRadius: 30, borderTopRightRadius: 30, paddingHorizontal: 18, paddingTop: 12 },
-  menuHandle: { alignSelf: 'center', width: 44, height: 4.5, borderRadius: 3, backgroundColor: '#e0d6bd', marginBottom: 6 },
-  menuBrand: { alignItems: 'center', paddingTop: 10, paddingBottom: 14 },
-  menuBrandLogo: { width: 128, height: 88 },
-  menuBrandRule: { width: 46, height: 2.5, borderRadius: 2, backgroundColor: '#c2a25a', marginTop: 12, opacity: 0.85 },
-  menuTitle: { fontSize: 12, fontWeight: '800', color: '#9a7b1f', letterSpacing: 1.6, textTransform: 'uppercase', marginBottom: 8, marginLeft: 6 },
-  menuLangList: { maxHeight: 300 },
-  menuLangRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 13, paddingHorizontal: 14, borderRadius: 13, marginBottom: 3 },
-  menuLangRowOn: { backgroundColor: '#f3ecdc' },
-  menuLangName: { fontSize: 16, fontWeight: '600', color: '#2a3342' },
-  menuLangNameOn: { fontWeight: '800', color: '#9a7b1f' },
-  menuCheck: { fontSize: 16, fontWeight: '900', color: '#c2a25a' },
-  menuSep: { height: 1, backgroundColor: '#ece4d2', marginTop: 10, marginBottom: 6, marginHorizontal: 4 },
-  menuLogout: { flexDirection: 'row', alignItems: 'center', gap: 13, marginTop: 6, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: '#fff', shadowColor: '#16202e', shadowOpacity: 0.07, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 2 },
+  // ⋮ ayarlar (acente ile aynı düzen; dil açılır kaydırma)
+  menuBackdrop: { flex: 1, backgroundColor: 'rgba(8,12,20,0.5)', justifyContent: 'flex-end' },
+  menuSheet: {
+    backgroundColor: '#f7f4ec', borderTopLeftRadius: 26, borderTopRightRadius: 26,
+    paddingHorizontal: 18, paddingTop: 10, overflow: 'hidden',
+  },
+  menuHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 3, backgroundColor: '#ddd2b8', marginBottom: 10 },
+  menuHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, paddingHorizontal: 2 },
+  menuHeadTitle: { fontSize: 20, fontWeight: '900', color: INK, letterSpacing: 0.2 },
+  menuCloseBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#ebe4d5', alignItems: 'center', justifyContent: 'center' },
+  menuCloseX: { fontSize: 15, fontWeight: '800', color: '#5c6570' },
+  menuScrollContent: { paddingBottom: 8 },
+  menuSection: { fontSize: 11.5, fontWeight: '800', color: '#9a7b1f', letterSpacing: 1.4, textTransform: 'uppercase', marginBottom: 10, marginLeft: 2 },
+  langDrop: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#e6dfd0', borderRadius: 14,
+    paddingHorizontal: 14, paddingVertical: 13,
+  },
+  langDropValue: { fontSize: 16, fontWeight: '800', color: INK, flex: 1, paddingRight: 8 },
+  langDropChev: { fontSize: 14, color: '#9a7b1f', fontWeight: '800' },
+  langDropList: {
+    maxHeight: 220, marginTop: 8, backgroundColor: '#fff', borderRadius: 14,
+    borderWidth: 1, borderColor: '#e6dfd0', overflow: 'hidden',
+  },
+  langDropRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 13, paddingHorizontal: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#f0eadc',
+  },
+  langDropRowOn: { backgroundColor: '#f3ecdc' },
+  langDropName: { fontSize: 15.5, fontWeight: '600', color: '#2a3342' },
+  langDropNameOn: { fontWeight: '800', color: '#8a6a1f' },
+  langDropCheck: { fontSize: 15, fontWeight: '900', color: GOLD },
+  actionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 12, paddingHorizontal: 14,
+    borderRadius: 16, backgroundColor: '#fff', borderWidth: 1, borderColor: '#ebe4d5',
+  },
   menuLogoutIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#fbeae8', alignItems: 'center', justifyContent: 'center' },
-  menuLogoutText: { color: '#1b2533', fontWeight: '800', fontSize: 15 },
-  menuLogoutHint: { color: '#c9a9a4', fontSize: 19, fontWeight: '800' },
+  menuLogoutText: { color: '#b5413a', fontWeight: '800', fontSize: 15 },
+  menuLogoutHint: { color: '#c9a9a4', fontSize: 22, fontWeight: '300' },
 
-  // Hızlı erişim ikon ızgarası
-  grid: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  gridTile: { flex: 1, backgroundColor: '#fff', borderRadius: 18, paddingVertical: 14, paddingHorizontal: 4, alignItems: 'center', gap: 8, shadowColor: '#16202e', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 3 },
-  gridTileSoon: { opacity: 0.6 },
-  gridIconWrap: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#f3ecdc', alignItems: 'center', justifyContent: 'center' },
-  gridIcon: { fontSize: 22 },
-  gridLabel: { fontSize: 11, fontWeight: '700', color: '#1b2533', textAlign: 'center' },
+  footer: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    flexDirection: 'row', backgroundColor: '#111820',
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(194,162,90,0.35)',
+    shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 16, shadowOffset: { width: 0, height: -8 }, elevation: 16,
+    paddingTop: 10,
+  },
+  footerGold: { position: 'absolute', top: 0, left: 0, right: 0, height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(194,162,90,0.55)' },
+  footerTab: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 4 },
+  footerIconWrap: {
+    width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(194,162,90,0.16)', borderWidth: 1, borderColor: 'rgba(194,162,90,0.45)',
+  },
+  footerLogoWrap: {
+    width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.4, borderColor: 'rgba(194,162,90,0.7)', overflow: 'hidden', backgroundColor: '#0a1018',
+  },
+  footerLogo: { width: 36, height: 36, borderRadius: 18 },
+  footerLabel: { fontSize: 11, fontWeight: '800', color: '#e7dcc4', letterSpacing: 0.3 },
+  footerBadge: {
+    position: 'absolute', top: -2, right: -6, minWidth: 16, height: 16, borderRadius: 8,
+    backgroundColor: '#d24b40', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3,
+    borderWidth: 1.5, borderColor: '#111820',
+  },
+  footerBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
+  footerWarnDot: {
+    position: 'absolute', top: -3, right: -3, width: 12, height: 12, borderRadius: 6,
+    backgroundColor: '#e03b30', borderWidth: 1.5, borderColor: '#111820',
+  },
+
   gridBadge: { position: 'absolute', top: 8, right: 8, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: '#b5413a', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderWidth: 1.5, borderColor: '#fff' },
   gridBadgeGold: { backgroundColor: '#c2a25a' },
   gridBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
-  gridSoon: { position: 'absolute', top: 8, right: 6, backgroundColor: '#ece4d2', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1 },
-  gridSoonText: { fontSize: 8.5, fontWeight: '800', color: '#9a7b1f' },
 
   // Spotlight — havuzda canlı
   spot: { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#16202e', borderRadius: 20, padding: 16, marginBottom: 14, shadowColor: '#c2a25a', shadowOpacity: 0.28, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 5 },
@@ -802,27 +1438,31 @@ const styles = StyleSheet.create({
   spotTitle: { color: '#fff', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
   spotSub: { color: '#9fb0c4', fontSize: 12.5, fontWeight: '500', lineHeight: 17, marginTop: 3 },
 
-  // Tanıtım videosu kartı
-  videoCard: { backgroundColor: '#16202e', borderRadius: 20, padding: 18, marginTop: 14, shadowColor: '#c2a25a', shadowOpacity: 0.22, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 5 },
+  // Tanıtım videosu kartı (CV kartıyla aynı beyaz dil)
+  videoCard: {
+    backgroundColor: '#fff', borderRadius: 24, padding: 18, marginTop: 4, marginBottom: 8,
+    shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 22, shadowOffset: { width: 0, height: 10 }, elevation: 8,
+  },
   videoHead: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
-  videoIconCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(194,162,90,0.16)', borderWidth: 1.5, borderColor: '#c2a25a', alignItems: 'center', justifyContent: 'center' },
-  videoIcon: { fontSize: 20 },
-  videoKicker: { fontSize: 15.5, fontWeight: '800', color: '#fff', letterSpacing: 0.2 },
-  videoSubtitle: { fontSize: 10.5, fontWeight: '800', color: '#dcc187', letterSpacing: 1.2, textTransform: 'uppercase', marginTop: 3 },
+  videoIconCircle: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: '#f6efdd',
+    borderWidth: 1, borderColor: '#eadfc2', alignItems: 'center', justifyContent: 'center',
+  },
+  videoKicker: { fontSize: 15.5, fontWeight: '800', color: '#1b2533', letterSpacing: 0.2 },
   videoOkBadge: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#e7f3ec', alignItems: 'center', justifyContent: 'center' },
   videoOkText: { color: '#1f8a4c', fontSize: 12, fontWeight: '900' },
-  videoMotiv: { fontSize: 12.5, color: '#a8b6c8', fontWeight: '500', lineHeight: 18, marginBottom: 12 },
+  videoMotiv: { fontSize: 12.5, color: '#6b6457', fontWeight: '500', lineHeight: 19, marginBottom: 12 },
   videoFullbody: {
     flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 16,
-    backgroundColor: 'rgba(194,162,90,0.13)', borderWidth: 1, borderColor: 'rgba(194,162,90,0.45)',
+    backgroundColor: '#f6efdd', borderWidth: 1, borderColor: '#eadfc2',
     borderRadius: 12, paddingVertical: 11, paddingHorizontal: 12,
   },
   videoFullbodyIcon: { fontSize: 18 },
-  videoFullbodyText: { flex: 1, color: '#e7cf93', fontWeight: '800', fontSize: 12.5, lineHeight: 17 },
+  videoFullbodyText: { flex: 1, color: '#8a6a1f', fontWeight: '800', fontSize: 12.5, lineHeight: 17 },
   videoCta: { backgroundColor: '#c2a25a', borderRadius: 14, paddingVertical: 14, alignItems: 'center', shadowColor: '#a8842f', shadowOpacity: 0.4, shadowRadius: 10, shadowOffset: { width: 0, height: 5 }, elevation: 4 },
   videoCtaText: { color: '#16202e', fontWeight: '800', fontSize: 15 },
   videoActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  videoPreview: { alignSelf: 'center', width: 174, height: 309, borderRadius: 16, overflow: 'hidden', backgroundColor: '#000', marginBottom: 14, borderWidth: 1, borderColor: 'rgba(194,162,90,0.45)' },
+  videoPreview: { alignSelf: 'center', width: 174, height: 309, borderRadius: 16, overflow: 'hidden', backgroundColor: '#000', marginBottom: 14, borderWidth: 1, borderColor: '#eadfc2' },
   videoPreviewLoading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   videoFsBtn: { position: 'absolute', top: 8, right: 8, width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
   videoFsIcon: { color: '#fff', fontSize: 16, fontWeight: '900' },
@@ -830,17 +1470,16 @@ const styles = StyleSheet.create({
   videoWarnIcon: { fontSize: 18 },
   videoWarnText: { flex: 1, color: '#fff', fontWeight: '800', fontSize: 13.5, lineHeight: 18 },
   videoUploading: { paddingVertical: 8 },
-  videoBarTrack: { height: 8, borderRadius: 4, backgroundColor: '#283648', overflow: 'hidden' },
+  videoBarTrack: { height: 8, borderRadius: 4, backgroundColor: '#eee8dc', overflow: 'hidden' },
   videoBarFill: { height: '100%', backgroundColor: '#c2a25a', borderRadius: 4 },
-  videoUploadingText: { fontSize: 12, color: '#dcc187', fontWeight: '800', marginTop: 8, textAlign: 'center' },
-  videoSaved: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  videoSavedLabel: { fontSize: 12.5, fontWeight: '800', color: '#5fd08a' },
-  videoLink: { fontSize: 13, fontWeight: '800', color: '#dcc187' },
-  videoLinkSep: { color: '#56657a', fontSize: 13 },
+  videoUploadingText: { fontSize: 12, color: '#8a6a1f', fontWeight: '800', marginTop: 8, textAlign: 'center' },
+  videoSaved: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
+  videoLink: { fontSize: 13, fontWeight: '800', color: '#9a7b1f' },
+  videoLinkSep: { color: '#c9ccd2', fontSize: 13 },
   videoPendingTag: { position: 'absolute', top: 8, left: 8, backgroundColor: 'rgba(194,162,90,0.95)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
   videoPendingText: { color: '#16202e', fontSize: 10.5, fontWeight: '800' },
-  videoCancelBtn: { flex: 1, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
-  videoCancelText: { color: '#cdd6e2', fontWeight: '800', fontSize: 13.5 },
+  videoCancelBtn: { flex: 1, backgroundColor: '#f4f5f7', borderWidth: 1, borderColor: '#e6e8ec', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  videoCancelText: { color: '#1b2533', fontWeight: '800', fontSize: 13.5 },
   videoSaveBtn: { flex: 2, backgroundColor: '#1f8a4c', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
   videoSaveText: { color: '#fff', fontWeight: '800', fontSize: 13.5 },
   videoPlayBtn: { flex: 1, backgroundColor: '#16202e', borderRadius: 12, paddingVertical: 11, alignItems: 'center' },
@@ -852,7 +1491,7 @@ const styles = StyleSheet.create({
   videoModalWrap: { flex: 1, backgroundColor: '#000' },
   videoModalHeader: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, paddingBottom: 8, backgroundColor: '#000' },
   videoModalX: { color: '#fff', fontSize: 24, fontWeight: '800' },
-  content: { paddingHorizontal: 22 },
+  content: { paddingHorizontal: 18 },
 
   // --- Üst başlık (acente paneliyle aynı) ---
   header: { flexDirection: 'row', alignItems: 'center', paddingLeft: 8, paddingRight: 18, paddingBottom: 14, backgroundColor: '#1b2533', shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 5, zIndex: 2 },
@@ -861,27 +1500,103 @@ const styles = StyleSheet.create({
   acente: { color: '#c2a25a', fontSize: 27, fontWeight: '800' },
   acenteFont: { fontFamily: 'PlayfairDisplay_700Bold', fontWeight: '400' },
   acenteSub: { color: '#9aa4b1', fontSize: 10.5, fontWeight: '700', letterSpacing: 1.8, marginTop: 1, textTransform: 'uppercase' },
-  accent: { height: 3, backgroundColor: '#c2a25a', zIndex: 2 },
+  accent: { height: 2, backgroundColor: '#c2a25a', zIndex: 2 },
   settingsIcon: { fontSize: 22, color: '#e7dcc4' },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 18 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
 
   // --- Çalışma / personel kartı ---
-  workCard: { backgroundColor: '#1b2533', borderRadius: 18, padding: 18, marginBottom: 14, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 14, shadowOffset: { width: 0, height: 8 }, elevation: 5 },
-  workAccent: { position: 'absolute', top: 0, left: 0, right: 0, height: 4, backgroundColor: '#c2a25a' },
-  workKicker: { color: '#c2a25a', fontSize: 12, fontWeight: '800', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 12 },
+  workCard: {
+    backgroundColor: '#1b2533', borderRadius: 20, paddingHorizontal: 18, paddingTop: 18, paddingBottom: 16,
+    marginBottom: 14,
+  },
+  workCardFocus: { opacity: 1 },
+  workPulse: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 0,
+    borderWidth: 0,
+  },
+  workKicker: { color: '#c2a25a', fontSize: 11, fontWeight: '800', letterSpacing: 1.8, marginBottom: 12 },
   workRow: { flexDirection: 'row', alignItems: 'center' },
-  workActive: { color: '#fff', fontSize: 18, fontWeight: '800' },
-  workSub: { color: '#9aa4b1', fontSize: 13, fontWeight: '600', marginTop: 3 },
+  workActive: { color: '#fff', fontSize: 20, fontWeight: '800' },
+  workStageRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
+  workStageChev: { color: '#c2a25a', fontSize: 26, fontWeight: '600', marginTop: -2 },
+  workMissBadge: {
+    minWidth: 18, height: 18, borderRadius: 9, backgroundColor: '#b5413a',
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5,
+  },
+  workMissText: { color: '#fff', fontSize: 11, fontWeight: '800' },
+  workEmbed: { marginBottom: 0, marginTop: 14 },
+  workEmbedBadge: { position: 'relative', top: 0, right: 0 },
+  meter: { flexDirection: 'row', alignItems: 'center', marginTop: 4, marginBottom: 14 },
+  meterLine: { flex: 1, height: 2, backgroundColor: 'rgba(255,255,255,0.10)', marginHorizontal: 2 },
+  meterLineOn: { backgroundColor: '#c2a25a' },
+  meterDot: {
+    width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1.5, borderColor: 'rgba(231,220,196,0.22)',
+  },
+  meterDotDone: { backgroundColor: '#c2a25a', borderColor: '#c2a25a' },
+  meterDotNow: {
+    width: 30, height: 30, borderRadius: 15, backgroundColor: '#1b2533',
+    borderWidth: 2, borderColor: '#c2a25a',
+  },
+  meterDotLock: { backgroundColor: 'transparent', borderColor: 'rgba(231,220,196,0.18)' },
+  meterNum: { color: '#9aa4b1', fontSize: 11, fontWeight: '800' },
+  meterNumDone: { color: '#1b2533' },
+  meterNumNow: { color: '#c2a25a', fontSize: 13 },
+  meterLock: { fontSize: 9, opacity: 0.55 },
+  workSub: { color: '#9aa4b1', fontSize: 13, fontWeight: '600', marginTop: 4, lineHeight: 18 },
+  certRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
+  certPdfBtn: { backgroundColor: '#c2a25a', borderRadius: 8, paddingVertical: 7, paddingHorizontal: 10 },
+  certPdfText: { color: '#1b2533', fontWeight: '800', fontSize: 11 },
+  workAlert: {
+    marginTop: 16, backgroundColor: 'rgba(232,181,176,0.12)', borderRadius: 14,
+    padding: 14, gap: 10,
+  },
+  workAlertText: { color: '#e8b5b0', fontSize: 14, fontWeight: '700', lineHeight: 20 },
+  workNote: {
+    marginTop: 16, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 14, padding: 14,
+  },
+  workNoteText: { color: '#c5ccd6', fontSize: 13.5, fontWeight: '600', lineHeight: 20 },
+  workBtnPrimary: {
+    backgroundColor: '#c2a25a', borderRadius: 12, minHeight: 48,
+    paddingVertical: 13, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center',
+  },
+  workBtnPrimaryText: { color: '#1b2533', fontWeight: '800', fontSize: 14.5, textAlign: 'center', lineHeight: 19 },
+  workBtnDanger: {
+    backgroundColor: '#fbeae8', borderRadius: 12, minHeight: 48,
+    paddingVertical: 13, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center',
+  },
+  workBtnDangerText: { color: '#a32d2d', fontWeight: '800', fontSize: 14.5, textAlign: 'center', lineHeight: 19 },
+  workBtnGhost: {
+    marginTop: 14, borderRadius: 12, minHeight: 46, borderWidth: 1.5, borderColor: 'rgba(194,162,90,0.5)',
+    paddingVertical: 12, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center',
+  },
+  workBtnGhostText: { color: '#e7dcc4', fontWeight: '800', fontSize: 14.5, textAlign: 'center' },
+  workBtnDim: { opacity: 0.55 },
   workExpired: { marginTop: 14, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 14 },
   workExpiredText: { color: '#e8b5b0', fontSize: 13, fontWeight: '700', marginBottom: 10 },
   workReBtn: { backgroundColor: '#c2a25a', borderRadius: 11, paddingVertical: 13, alignItems: 'center' },
   workReText: { color: '#1b2533', fontWeight: '800', fontSize: 15 },
 
+  // --- Odak aksiyonu (belgeler / mülakat geri sayım) ---
+  focusAction: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: '#fff', borderRadius: 18, paddingVertical: 16, paddingHorizontal: 16,
+    marginBottom: 14, borderWidth: 1.5, borderColor: '#eadfc2',
+    shadowColor: '#1b2533', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 3,
+  },
+  focusActionHot: { backgroundColor: '#f3faf5', borderColor: '#5fd08a' },
+  focusActionIcon: { fontSize: 28 },
+  focusActionBody: { flex: 1, minWidth: 0 },
+  focusActionTitle: { color: '#1b2533', fontSize: 16.5, fontWeight: '800' },
+  focusActionSub: { color: '#6b6457', fontSize: 13, fontWeight: '600', marginTop: 3, lineHeight: 18 },
+  focusActionChev: { color: '#c2a25a', fontSize: 26, fontWeight: '600', marginTop: -2 },
+
   // --- Teklif kartı (kabul/ret) ---
   offerCard: { backgroundColor: '#fff', borderRadius: 18, padding: 18, marginBottom: 14, borderWidth: 1, borderColor: '#d6e0ec', shadowColor: '#1b2533', shadowOpacity: 0.08, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 3 },
   offerKicker: { color: '#1f3a63', fontSize: 11.5, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 },
   offerCardTitle: { color: '#1b2533', fontSize: 18, fontWeight: '800' },
-  offerCardDesc: { color: '#5a5a6b', fontSize: 13.5, fontWeight: '500', lineHeight: 20, marginTop: 6 },
+  offerCardDesc: { color: '#5a5a6b', fontSize: 13.5, fontWeight: '500', lineHeight: 20 },
   offerBtns: { flexDirection: 'row', gap: 10, marginTop: 16 },
   offerDecline: { flex: 1, backgroundColor: '#f3f4f6', borderRadius: 12, paddingVertical: 13, alignItems: 'center' },
   offerDeclineText: { color: '#a32d2d', fontWeight: '800', fontSize: 14 },
@@ -904,18 +1619,18 @@ const styles = StyleSheet.create({
 
   // --- Aday kartı ---
   card: {
-    backgroundColor: '#fff', borderRadius: 22, padding: 18, marginTop: 8,
-    shadowColor: '#1b2533', shadowOpacity: 0.1, shadowRadius: 18, shadowOffset: { width: 0, height: 9 }, elevation: 4,
+    backgroundColor: '#fff', borderRadius: 24, padding: 18, marginTop: 2, marginBottom: 14,
+    shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 22, shadowOffset: { width: 0, height: 10 }, elevation: 8,
   },
   cardHead: { flexDirection: 'row', alignItems: 'center' },
-  avatar: { width: 64, height: 64, borderRadius: 16, backgroundColor: '#e9ebee' },
+  avatar: { width: 68, height: 68, borderRadius: 18, backgroundColor: '#e9ebee' },
   avatarPlaceholder: {
-    width: 64, height: 64, borderRadius: 16,
+    width: 68, height: 68, borderRadius: 18,
     backgroundColor: '#1b2533', alignItems: 'center', justifyContent: 'center',
   },
   avatarIcon: { fontSize: 30 },
   cardId: { flex: 1, marginLeft: 14 },
-  name: { fontSize: 21, fontWeight: '800', color: '#1b2533' },
+  name: { fontSize: 20, fontWeight: '800', color: '#1b2533', letterSpacing: 0.4 },
   nameFont: { fontFamily: 'PlayfairDisplay_700Bold', fontWeight: '400' },
   subtitle: { fontSize: 13, color: '#737373', marginTop: 3 },
   count: { fontSize: 12.5, color: '#c2a25a', fontWeight: '700', marginTop: 6 },
@@ -932,7 +1647,7 @@ const styles = StyleSheet.create({
   },
   cellPlus: { fontSize: 24, color: '#c2a25a', fontWeight: '700' },
   cellAdd: { fontSize: 11.5, color: '#c2a25a', fontWeight: '700', marginTop: 2 },
-  cellCap: { fontSize: 11.5, color: '#9aa1ac', fontWeight: '600', textAlign: 'center', marginTop: 6 },
+  cellCap: { fontSize: 11.5, color: '#6b6457', fontWeight: '700', textAlign: 'center', marginTop: 7 },
   // Galerideki tanıtım videosu hücresi (foto hücreleriyle aynı boy: cell + cellBox)
   videoCellMedia: { width: '100%', height: '100%', backgroundColor: '#000' },
   videoCellLoading: { alignItems: 'center', justifyContent: 'center' },
@@ -949,8 +1664,8 @@ const styles = StyleSheet.create({
   },
   videoCellMenuIcon: { color: '#fff', fontSize: 16, fontWeight: '900', marginTop: -4 },
 
-  cvBtn: { marginTop: 16, backgroundColor: '#c2a25a', borderRadius: 12, paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
-  cvBtnText: { color: '#1b2533', fontSize: 15, fontWeight: '800' },
+  cvBtn: { marginTop: 16, backgroundColor: '#c2a25a', borderRadius: 14, paddingVertical: 15, alignItems: 'center', justifyContent: 'center' },
+  cvBtnText: { color: '#1b2533', fontSize: 15.5, fontWeight: '800', letterSpacing: 0.2 },
 
   docsRow: {
     flexDirection: 'row', alignItems: 'center', marginTop: 14,
@@ -974,9 +1689,4 @@ const styles = StyleSheet.create({
   ivBadge: { backgroundColor: '#d24b40', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 3, marginRight: 8 },
   ivBadgeText: { fontSize: 11, fontWeight: '800', color: '#fff' },
 
-  // --- Tam ekran görüntüleyici ---
-  viewerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
-  viewerImg: { width: '100%', height: '100%' },
-  viewerClose: { position: 'absolute', top: 50, right: 24, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
-  viewerCloseText: { color: '#fff', fontSize: 18, fontWeight: '700' },
 });

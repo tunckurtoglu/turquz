@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { offerCandidate, withdrawCandidate, endEmployment, categoryOf, buildCvPdfServer, translateCvFields, applyCvTranslation, notifyOffer, extractCvFields, hasCvFreeText, getContract } from '../lib/api';
+import { offerCandidate, withdrawCandidate, endEmployment, categoryOf, buildCvPdfServer, translateCvFields, applyCvTranslation, notifyOffer, extractCvFields, hasCvFreeText, getContract, getCandidateEmploymentEpisode, undoEmploymentEnd, contestEmploymentEnd, acceptEmploymentEnd, getCandidateStatus, listCandidateWorkHistory, confirmHire, deferWorkStart } from '../lib/api';
 import { useLang } from '../i18n.jsx';
 import { candidateCode, maskCandidate } from '../../../lib/candidateCode';
 import { buildCvHtml } from '../../../cv/buildCvHtml';
@@ -13,22 +13,31 @@ import RateCandidateModal from '../components/RateCandidateModal.jsx';
 import FavoriteEmployerModal from '../components/FavoriteEmployerModal.jsx';
 import { canRateCandidate, getMyRating, listRatingStats } from '../lib/ratings';
 import { listFavoriteMap } from '../lib/favorites';
+import { formatDeadlineRemain } from '../lib/deadline';
 
-const BADGE = { offered: 'navy', process: 'green', hired: 'teal' };
-const BADGE_TXT = { offered: 'Teklifli', process: 'Süreçte', hired: 'Personel' };
+const BADGE = { offered: 'navy', process: 'green', hired: 'teal', transit: 'navy' };
+const BADGE_TXT = { offered: 'Teklifli', process: 'Süreçte', hired: 'Personel', transit: 'Yolda' };
 
 export default function Candidate({ sel, onBack, agencyUserId }) {
   const { lang, t } = useLang();
   const c = sel.c;
   const baseData = normalizePoolCvData(c);
   const code = candidateCode(c.nationality, c.reg_no);
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(!!sel?.st?._openChat);
   const [contractPaid, setContractPaid] = useState(false);
+  const [contractPayStatus, setContractPayStatus] = useState(null);
+  const [episode, setEpisode] = useState(null);
+  const [workHistory, setWorkHistory] = useState([]);
   const [st, setSt] = useState(sel.st);
+  const [nowTick, setNowTick] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [tab, setTab] = useState('cv');
-  const [zoom, setZoom] = useState(null); // büyütülen fotoğraf
+  const [zoomIdx, setZoomIdx] = useState(null); // büyütülen fotoğraf indeksi
+  const [zoomScale, setZoomScale] = useState(1);
+  const zoomScaleRef = useRef(1);
+  const swipeX = useRef(null);
+  zoomScaleRef.current = zoomScale;
   const [cvZoom, setCvZoom] = useState(0.58); // CV önizleme yakınlaştırma
   const [pdfBusy, setPdfBusy] = useState(false); // İndir: sunucuda PDF üretiliyor
   const [overrides, setOverrides] = useState({});
@@ -39,6 +48,7 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
   const [ratingSummary, setRatingSummary] = useState(null);
   const [favOpen, setFavOpen] = useState(false);
   const [favEmployerIds, setFavEmployerIds] = useState([]);
+  const [hireBusy, setHireBusy] = useState(false);
   const saveTimer = useRef(null);
 
   // Adayın serbest CV metinlerini acentenin diline çevir (Gemini, DB önbellekli).
@@ -53,21 +63,36 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
     return () => { alive = false; };
   }, [c.user_id, lang, baseData]);
 
+  useEffect(() => {
+    if (!st?.docs_deadline_at || st?.status !== 'accepted') return undefined;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [st?.docs_deadline_at, st?.status]);
+
   // Override'ları yükle (her yeni aday açılınca)
   useEffect(() => {
     setOverrides({});
     setEditorOpen(false);
-    setChatOpen(false);
+    setChatOpen(!!sel?.st?._openChat);
     setRateOpen(false);
     setFavOpen(false);
     setContractPaid(false);
+    setContractPayStatus(null);
     setCanRate(false);
     setHasMyRating(false);
     setRatingSummary(null);
     setFavEmployerIds([]);
     if (!agencyUserId || !c.user_id) return;
     loadOverride(agencyUserId, c.user_id).then(setOverrides);
-    getContract(c.user_id).then((con) => setContractPaid(!!con?.isPaid));
+    getContract(c.user_id).then((con) => {
+      setContractPaid(!!con?.isPaid);
+      setContractPayStatus(con?.paymentStatus || null);
+    });
+    getCandidateStatus(c.user_id).then((fresh) => {
+      if (fresh) setSt((prev) => ({ ...(prev || {}), ...fresh }));
+    });
+    getCandidateEmploymentEpisode(c.user_id).then(setEpisode);
+    listCandidateWorkHistory(c.user_id).then((h) => setWorkHistory((h || []).filter((x) => x.outcome === 'completed')));
     listFavoriteMap(agencyUserId).then((m) => setFavEmployerIds(m[c.user_id] || []));
     Promise.all([
       listRatingStats([c.user_id]),
@@ -78,7 +103,7 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
       setCanRate(!!can);
       setHasMyRating(!!mine);
     });
-  }, [c.user_id, agencyUserId]);
+  }, [c.user_id, agencyUserId, sel?.st?._openChat]);
 
   // Debounced kaydet (her override değişikliğinde 800ms bekle)
   const handleOverrideChange = (next) => {
@@ -167,6 +192,24 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
     [lang, data?.title, overrides],
   );
   const photos = [data.photoClose, data.photoFull, data.photo].filter(Boolean);
+  const slidePhoto = (dir) => {
+    if (zoomScaleRef.current > 1.08) return;
+    setZoomIdx((i) => {
+      if (i == null || !photos.length) return i;
+      return (i + dir + photos.length) % photos.length;
+    });
+    setZoomScale(1);
+  };
+  useEffect(() => {
+    if (zoomIdx === null) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') { setZoomIdx(null); setZoomScale(1); return; }
+      if (e.key === 'ArrowRight') slidePhoto(1);
+      if (e.key === 'ArrowLeft') slidePhoto(-1);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoomIdx, photos.length]);
 
   const doOffer = async () => {
     setBusy(true); setMsg('');
@@ -180,14 +223,82 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
     catch (e) { setMsg(e?.message || 'Hata'); } finally { setBusy(false); }
   };
   const doEndEmployment = async () => {
-    if (!confirm('Emin misiniz? Bu işlem geri alınamaz. Aday personelden çıkarılıp havuza döner; belgeler ve sözleşme sıfırlanır.')) return;
+    if (episode?.outcome === 'early_exit_pending' || episode?.outcome === 'disputed') {
+      setMsg(episode.outcome === 'disputed'
+        ? 'Ayrılış itirazı Turquz incelemesinde.'
+        : 'Ayrılış talebi zaten açık.');
+      return;
+    }
+    if (!confirm('Personelden çıkarma talebi gönderilir. Karşı taraf onaylarsa hemen biter; itiraz da edebilir. 7 gün sessizlik = kabul. Bu sürede talebi iptal edebilirsiniz. Sertifika verilmez.')) return;
     setBusy(true); setMsg('');
     try {
       await endEmployment(c.user_id);
-      setSt({ status: 'new', docs_unlocked: false });
-      setCanRate(true);
-      setMsg('Süreç sonlandırıldı; aday havuza döndü.');
-      setRateOpen(true);
+      const ep = await getCandidateEmploymentEpisode(c.user_id);
+      setEpisode(ep);
+      setMsg('Ayrılış talebi gönderildi. Aday hâlâ personelde (geri alınabilir).');
+    } catch (e) { setMsg(e?.message || 'Hata'); } finally { setBusy(false); }
+  };
+
+  const doUndoEnd = async () => {
+    if (!episode?.id) return;
+    if (!confirm('Ayrılış talebi iptal edilir, çalışma devam eder.')) return;
+    setBusy(true);
+    try {
+      await undoEmploymentEnd(episode.id);
+      setEpisode(await getCandidateEmploymentEpisode(c.user_id));
+      setMsg('Ayrılış talebi iptal edildi.');
+    } catch (e) { setMsg(e?.message || 'Hata'); } finally { setBusy(false); }
+  };
+
+  const doAcceptEnd = async () => {
+    if (!episode?.id) return;
+    if (!confirm('Onaylarsanız süreç hemen sonlanır. Aday havuza döner; başarı sertifikası verilmez. Emin misiniz?')) return;
+    setBusy(true);
+    try {
+      await acceptEmploymentEnd(episode.id);
+      const [ep, next] = await Promise.all([
+        getCandidateEmploymentEpisode(c.user_id),
+        getCandidateStatus(c.user_id),
+      ]);
+      setEpisode(ep);
+      if (next) setSt(next);
+      setMsg('Ayrılış onaylandı — aday havuza döndü.');
+    } catch (e) { setMsg(e?.message || 'Hata'); } finally { setBusy(false); }
+  };
+
+  const doConfirmHire = async () => {
+    if (!window.confirm('Aday işe başladı olarak işaretlensin ve Personel listesine eklensin mi?')) return;
+    setHireBusy(true);
+    try {
+      await confirmHire(c.user_id);
+      const next = await getCandidateStatus(c.user_id);
+      if (next) setSt(next);
+      setMsg('Personel olarak kaydedildi.');
+    } catch (e) { setMsg(e?.message || 'Hata'); }
+    finally { setHireBusy(false); }
+  };
+
+  const doDeferHire = async () => {
+    const v = window.prompt('Yeni işe başlama tarihi (YYYY-MM-DD)', st?.work_start_at ? String(st.work_start_at).slice(0, 10) : '');
+    if (!v) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { window.alert('Tarih formatı YYYY-MM-DD olmalı'); return; }
+    setHireBusy(true);
+    try {
+      await deferWorkStart(c.user_id, v);
+      const next = await getCandidateStatus(c.user_id);
+      if (next) setSt(next);
+      setMsg(`Başlangıç tarihi ${v} olarak ertelendi.`);
+    } catch (e) { setMsg(e?.message || 'Hata'); }
+    finally { setHireBusy(false); }
+  };
+
+  const doContestEnd = async () => {
+    if (!episode?.id) return;
+    setBusy(true);
+    try {
+      await contestEmploymentEnd(episode.id);
+      setEpisode(await getCandidateEmploymentEpisode(c.user_id));
+      setMsg('İtiraz iletildi — Turquz inceliyor.');
     } catch (e) { setMsg(e?.message || 'Hata'); } finally { setBusy(false); }
   };
 
@@ -203,6 +314,62 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
               <span className={`badge ${BADGE[cat]}`}>{BADGE_TXT[cat]}</span>
             ) : null}
           </div>
+          {(cat === 'process' || cat === 'hired' || cat === 'transit') ? (
+            <div className="detailSignals">
+              {cat === 'transit' ? (
+                <div className="detailSignal warn">
+                  Yolda / başlangıç bekliyor
+                  {st?.work_start_at ? ` · başlangıç ${String(st.work_start_at).slice(0, 10)}` : ''}
+                </div>
+              ) : null}
+              {contractPayStatus != null ? (
+                <div className={`detailSignal ${contractPaid ? 'ok' : 'warn'}`}>
+                  {contractPaid ? 'Sözleşme adımı açık' : 'Aday sözleşme adımında (Turquz) — sohbet henüz kapalı'}
+                </div>
+              ) : null}
+              {st?.boarding_status ? (
+                <div className={`detailSignal ${st.boarding_status === 'confirmed' ? 'ok' : st.boarding_status === 'missed' ? 'hot' : 'warn'}`}>
+                  Uçuş: {
+                    ({ pending: 'teyit bekleniyor', confirmed: 'onaylandı', missed: 'kaçırıldı', no_response: 'cevap yok' })[st.boarding_status]
+                    || st.boarding_status
+                  }
+                  {st.flight_depart_on ? ` · ${String(st.flight_depart_on).slice(0, 10)}` : ''}
+                </div>
+              ) : null}
+              {st?.docs_deadline_at && cat === 'process' ? (() => {
+                const end = new Date(st.docs_deadline_at);
+                const left = end.getTime() - nowTick;
+                const when = end.toLocaleString(lang === 'tr' ? 'tr-TR' : 'en-GB', {
+                  day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+                });
+                return (
+                  <div className={`detailSignal ${left < 0 ? 'hot' : 'muted'} detailSignalStack`}>
+                    <strong>{t('docs_deadline_signal') || 'İlk belge paketi süresi'}</strong>
+                    <span className={`detailSignalClock ${left < 0 ? 'hot' : ''}`}>
+                      {left < 0
+                        ? (t('deadline_overdue_short') || 'Süre doldu')
+                        : formatDeadlineRemain(left, t)}
+                    </span>
+                    <small>{t('docs_deadline_until', { when }) || `Son tarih: ${when}`}</small>
+                  </div>
+                );
+              })() : null}
+            </div>
+          ) : null}
+          {cat === 'transit' ? (
+            <div className="hireConfirmBox">
+              <div className="hireConfirmTitle">İşe başladı mı?</div>
+              <p className="hireConfirmLead">Evet derseniz Personel listesine eklenir. Hayır derseniz yeni başlangıç tarihi girersiniz.</p>
+              <div className="hireConfirmActs">
+                <button type="button" className="hireConfirmYes" disabled={hireBusy} onClick={doConfirmHire}>
+                  {hireBusy ? '…' : 'Evet — Personel kaydet'}
+                </button>
+                <button type="button" className="hireConfirmNo" disabled={hireBusy} onClick={doDeferHire}>
+                  Hayır — tarihi ertele
+                </button>
+              </div>
+            </div>
+          ) : null}
           {ratingSummary ? (
             <div className="detailRateCard">
               <div className="detailRateHead">
@@ -235,7 +402,7 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
 
           <div className="gallery">
             {photos.length ? photos.map((p, i) => (
-              <img key={i} src={p} className="galImg" alt="" onClick={() => setZoom(p)} title="Büyütmek için tıkla" />
+              <img key={i} src={p} className="galImg" alt="" onClick={() => { setZoomIdx(i); setZoomScale(1); }} title="Büyütmek için tıkla" />
             )) : <div className="muted">Fotoğraf yok</div>}
           </div>
 
@@ -252,15 +419,40 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
             ) : (
               <>
                 <div className="buyState teal">Personel</div>
-                <button className="buyGhost" onClick={doEndEmployment} disabled={busy}>{busy ? '…' : 'Süreci Sonlandır'}</button>
+                {episode?.outcome === 'early_exit_pending' ? (
+                  <div className="buyNote">
+                    {episode.end_requested_by === agencyUserId
+                      ? 'Ayrılış talebiniz açık. Karşı taraf onaylarsa hemen biter; 7 gün cevap yoksa da kabul sayılır. Bu sürede talebi iptal edebilirsiniz.'
+                      : 'Karşı taraf ayrılış istedi. Onaylarsanız süreç hemen biter; itiraz da edebilirsiniz. 7 gün sessizlik de kabul sayılır.'}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                      {episode.end_requested_by === agencyUserId ? (
+                        <button className="buyGhost" type="button" onClick={doUndoEnd} disabled={busy}>Talebi iptal et</button>
+                      ) : (
+                        <>
+                          <button className="buyBtn" type="button" onClick={doAcceptEnd} disabled={busy}>Onayla</button>
+                          <button className="buyGhost" type="button" onClick={doContestEnd} disabled={busy}>İtiraz et</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ) : episode?.outcome === 'disputed' ? (
+                  <div className="buyNote">Ayrılış itirazı — Turquz incelemesinde.</div>
+                ) : (
+                  <button className="buyGhost" onClick={doEndEmployment} disabled={busy}>{busy ? '…' : 'Personelden çıkar'}</button>
+                )}
+                {workHistory.length ? (
+                  <div className="buyNote" style={{ marginTop: 10 }}>
+                    <strong>Çalıştığı oteller</strong>
+                    <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                      {workHistory.slice(0, 5).map((h) => (
+                        <li key={h.episode_id}>{h.employer_title || '—'}{h.ended_at ? ` · ${new Date(h.ended_at).toLocaleDateString('tr-TR')}` : ''}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
               </>
             )}
             {msg ? <div className="buyMsg">{msg}</div> : null}
-            {contractPaid && (cat === 'process' || cat === 'hired') ? (
-              <button type="button" className="buyBtn" onClick={() => setChatOpen(true)}>
-                💬 {t('chat_open') || 'Mesajlar'}
-              </button>
-            ) : null}
           </div>
         </aside>
 
@@ -335,10 +527,39 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
         </section>
       </div>
 
-      {zoom ? (
-        <div className="photoZoom" onClick={() => setZoom(null)}>
-          <img src={zoom} alt="" onClick={(e) => e.stopPropagation()} />
-          <button className="photoZoomX" onClick={() => setZoom(null)}>✕</button>
+      {zoomIdx !== null && photos[zoomIdx] ? (
+        <div
+          className="photoZoom"
+          onClick={() => { setZoomIdx(null); setZoomScale(1); }}
+          onWheel={(e) => {
+            e.preventDefault();
+            const next = Math.min(4, Math.max(1, zoomScale + (e.deltaY < 0 ? 0.18 : -0.18)));
+            setZoomScale(next);
+          }}
+          onTouchStart={(e) => { swipeX.current = e.changedTouches[0].clientX; }}
+          onTouchEnd={(e) => {
+            const start = swipeX.current;
+            swipeX.current = null;
+            if (start == null) return;
+            const dx = e.changedTouches[0].clientX - start;
+            if (Math.abs(dx) > 56) slidePhoto(dx < 0 ? 1 : -1);
+          }}
+        >
+          <img
+            src={photos[zoomIdx]}
+            alt=""
+            style={{ transform: `scale(${zoomScale})` }}
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => { e.stopPropagation(); setZoomScale((s) => (s > 1.2 ? 1 : 2.2)); }}
+          />
+          {photos.length > 1 ? (
+            <>
+              <button type="button" className="photoZoomNav prev" onClick={(e) => { e.stopPropagation(); slidePhoto(-1); }} aria-label="Önceki">‹</button>
+              <button type="button" className="photoZoomNav next" onClick={(e) => { e.stopPropagation(); slidePhoto(1); }} aria-label="Sonraki">›</button>
+              <div className="photoZoomMeta">{zoomIdx + 1} / {photos.length}</div>
+            </>
+          ) : null}
+          <button className="photoZoomX" onClick={() => { setZoomIdx(null); setZoomScale(1); }}>✕</button>
         </div>
       ) : null}
 
@@ -357,11 +578,26 @@ export default function Candidate({ sel, onBack, agencyUserId }) {
         </>
       ) : null}
 
+      {contractPaid && (cat === 'process' || cat === 'hired' || cat === 'transit') && !chatOpen ? (
+        <button
+          type="button"
+          className="processChatFab"
+          onClick={() => setChatOpen(true)}
+          title={t('chat_open') || 'Mesajlar'}
+          aria-label={t('chat_open') || 'Mesajlar'}
+        >
+          💬
+        </button>
+      ) : null}
+
       {chatOpen ? (
         <ProcessChat
           candidateId={c.user_id}
           peerLabel={code}
-          onClose={() => setChatOpen(false)}
+          onClose={() => {
+            setChatOpen(false);
+            if (sel?.st?._openChat) onBack?.();
+          }}
         />
       ) : null}
 

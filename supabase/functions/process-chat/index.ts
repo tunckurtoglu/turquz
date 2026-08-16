@@ -20,6 +20,7 @@ const LANG_NAMES: Record<string, string> = {
 
 const MAX_BODY = 2000;
 
+/** Tek dil çeviri (eski mesajları iyileştirmek için). */
 async function translateText(text: string, target: Lang, geminiKey: string, model: string): Promise<string> {
   const targetName = LANG_NAMES[target] || 'English';
   const prompt =
@@ -30,18 +31,105 @@ async function translateText(text: string, target: Lang, geminiKey: string, mode
 
   const payload = JSON.stringify({
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } },
+    generationConfig: { temperature: 0 },
   });
   const MODELS = [...new Set([model, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest'])];
   for (const m of MODELS) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${geminiKey}`;
-    const gres = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
-    if (!gres.ok) continue;
-    const gjson = await gres.json();
-    const out = (gjson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-    if (out) return out.slice(0, MAX_BODY);
+    try {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${geminiKey}`;
+      const gres = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
+      if (!gres.ok) continue;
+      const gjson = await gres.json();
+      const out = (gjson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+      if (out) return out.slice(0, MAX_BODY);
+    } catch {
+      /* next model */
+    }
   }
   return text;
+}
+
+/**
+ * Metnin gerçek dilini algılayıp 10 dile çevir.
+ * Kural: her alıcı kendi app dilinde görür; yazılan dil ve gönderenin UI dili önemsiz.
+ */
+async function translateChatAll(
+  text: string,
+  claimedSource: Lang,
+  geminiKey: string,
+  model: string,
+): Promise<{ translations: Record<string, string>; ok: boolean; source: Lang }> {
+  if (!geminiKey) {
+    return { translations: { [claimedSource]: text }, ok: false, source: claimedSource };
+  }
+
+  const MODELS = [...new Set([model, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.0-flash'])];
+  let detected: Lang = claimedSource;
+  const out: Record<string, string> = {};
+
+  const langList = LANGS.map((l) => `${l} (${LANG_NAMES[l]})`).join(', ');
+  const prompt =
+    `You translate short chat messages for a hospitality recruitment app (Turquz).\n` +
+    `Detect the ACTUAL written language of the message (ignore UI language), then translate into ALL of: ${langList}.\n` +
+    `Every target language MUST differ from the source when the languages differ ` +
+    `(e.g. English message must become real Turkish for "tr", not stay English).\n` +
+    `Keep meaning natural and concise. Do NOT translate person names, brand names (Turquz), dates, codes, emails, phones, or URLs.\n` +
+    `Return ONLY valid JSON (no markdown):\n` +
+    `{"source_lang":"en","i18n":{"tr":"...","en":"...","ru":"..."}}\n` +
+    `Include every key: ${LANGS.join(', ')}.\n\n` +
+    `MESSAGE:\n${text}`;
+
+  const payload = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0.1, responseMimeType: 'application/json' },
+  });
+
+  let bulkOk = false;
+  for (const m of MODELS) {
+    try {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${geminiKey}`;
+      const gres = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
+      if (!gres.ok) {
+        const errTxt = await gres.text().catch(() => '');
+        console.warn('chat translateAll fail', m, gres.status, errTxt.slice(0, 200));
+        continue;
+      }
+      const gjson = await gres.json();
+      const raw = (gjson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+      if (!raw) continue;
+      const parsed = JSON.parse(raw.replace(/^```json\s*|\s*```$/g, ''));
+      detected = resolveLang(parsed?.source_lang || claimedSource);
+      for (const l of LANGS) {
+        const v = String(parsed?.i18n?.[l] || '').trim();
+        if (v) out[l] = v.slice(0, MAX_BODY);
+      }
+      bulkOk = true;
+      break;
+    } catch (e) {
+      console.warn('chat translateAll parse', m, String(e));
+    }
+  }
+
+  // Kaynak dilde her zaman orijinal.
+  out[detected] = text;
+
+  // Eksik veya "çeviri = orijinal" kalan dilleri tek tek doldur (en→tr gibi Latin çiftleri).
+  const missing = LANGS.filter((l) => l !== detected && (!out[l] || out[l] === text));
+  if (missing.length) {
+    await Promise.all(missing.map(async (l) => {
+      try {
+        const v = await translateText(text, l, geminiKey, model);
+        if (v) out[l] = v.slice(0, MAX_BODY);
+      } catch { /* skip */ }
+    }));
+  }
+
+  const translatedCount = LANGS.filter((l) => l !== detected && out[l] && out[l] !== text).length;
+  return {
+    translations: out,
+    ok: bulkOk || translatedCount > 0,
+    source: detected,
+  };
 }
 
 async function peerLang(
@@ -53,10 +141,14 @@ async function peerLang(
   if (pref?.preferred_lang && (LANGS as readonly string[]).includes(pref.preferred_lang)) {
     return pref.preferred_lang as Lang;
   }
+  const { data: prof } = await admin.from('profiles').select('source_lang').eq('user_id', peerId).maybeSingle();
+  if (prof?.source_lang && (LANGS as readonly string[]).includes(prof.source_lang)) {
+    return prof.source_lang as Lang;
+  }
   const { data: toks } = await admin.from('push_tokens').select('locale').eq('user_id', peerId).limit(5);
   for (const t of toks || []) {
-    const l = resolveLang(t.locale);
-    if (l) return l;
+    if (!t?.locale) continue;
+    return resolveLang(t.locale);
   }
   return fallback;
 }
@@ -66,6 +158,50 @@ function displayBody(row: { body: string; source_lang?: string | null; translati
   if (tr[viewLang]) return tr[viewLang];
   if (row.source_lang === viewLang) return row.body;
   return row.body;
+}
+
+/** Metin, hedef dilde değil gibi mi? (Latin→Latin dahil) */
+function likelyForeignFor(body: string, viewLang: Lang) {
+  const hasCyr = /[\u0400-\u04FF]/.test(body);
+  const hasArabic = /[\u0600-\u06FF]/.test(body);
+  const hasThai = /[\u0E00-\u0E7F]/.test(body);
+  const hasTr = /[çğıöşüÇĞİÖŞÜ]/.test(body);
+  if (['ru', 'kk', 'ky'].includes(viewLang)) return !hasCyr;
+  if (viewLang === 'fa') return !hasArabic;
+  if (viewLang === 'th') return !hasThai;
+  if (viewLang === 'tr') {
+    if (hasCyr || hasArabic || hasThai) return true;
+    // İngilizce kalıplar, Türkçe karakter yok
+    if (/\b(the|and|you|are|is|this|that|hello|hi|how|what|please|thanks|thank|okay|ok|yes|no|good|morning|evening|help|need|want|can|will|with|from|have|has|was|were|my|your|me|we|they)\b/i.test(body) && !hasTr) {
+      return true;
+    }
+    return false;
+  }
+  if (viewLang === 'en') {
+    if (hasCyr || hasArabic || hasThai || hasTr) return true;
+    return false;
+  }
+  // de/uz/tk vb.: farklı yazı sistemi varsa çevir
+  return hasCyr || hasArabic || hasThai;
+}
+
+/** Çeviri eksik / yanlış (Rusça OK ama İngilizce kalmış) */
+function needsViewHeal(
+  body: string,
+  viewLang: Lang,
+  tr: Record<string, string>,
+  sourceLang?: string | null,
+) {
+  const cur = tr[viewLang];
+  if (!cur) return true;
+  if (cur !== body) return false;
+  // cur === body → belki çevrilmemiş
+  const src = sourceLang ? resolveLang(sourceLang) : null;
+  if (src && src !== viewLang) return true;
+  for (const [k, v] of Object.entries(tr)) {
+    if (k !== viewLang && typeof v === 'string' && v.length && v !== body) return true;
+  }
+  return likelyForeignFor(body, viewLang);
 }
 
 Deno.serve(async (req) => {
@@ -151,15 +287,48 @@ Deno.serve(async (req) => {
         .order('created_at', { ascending: true })
         .limit(200);
       if (mErr) return json({ error: mErr.message }, 500);
-      const messages = (rows || []).map((r) => ({
-        id: r.id,
-        senderId: r.sender_id,
-        body: displayBody(r, viewLang),
-        original: r.body,
-        sourceLang: r.source_lang,
-        createdAt: r.created_at,
-        mine: r.sender_id === user.id,
-      }));
+
+      const list = rows || [];
+      const messages = list.map((r) => {
+        const mine = r.sender_id === user.id;
+        return {
+          id: r.id,
+          senderId: r.sender_id,
+          // Kendi yazdığın orijinal kalsın; karşı tarafın mesajı senin app dilinde.
+          body: mine ? r.body : displayBody(r, viewLang),
+          original: r.body,
+          sourceLang: r.source_lang,
+          createdAt: r.created_at,
+          mine,
+        };
+      });
+
+      // Eski çevirileri ekranı BLOKE ETMEDEN tamamla (önceden 12 Gemini çağrısı ~1 dk bekletiyordu).
+      const toHeal = geminiKey
+        ? list.filter((r) => (
+          r.sender_id !== user.id
+          && needsViewHeal(r.body, viewLang, (r.translations || {}) as Record<string, string>, r.source_lang)
+        )).slice(0, 12)
+        : [];
+      if (toHeal.length) {
+        const healJob = async () => {
+          for (const r of toHeal) {
+            try {
+              const tr = { ...(r.translations || {}) } as Record<string, string>;
+              const translated = await translateText(r.body, viewLang, geminiKey, model);
+              if (translated && translated !== r.body) {
+                tr[viewLang] = translated;
+                await admin.from('process_chat_messages').update({ translations: tr }).eq('id', r.id);
+              }
+            } catch (e) {
+              console.warn('heal translate', String(e));
+            }
+          }
+        };
+        const rt = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+        if (rt?.waitUntil) rt.waitUntil(healJob());
+      }
+
       return json({ chatId, messages });
     }
 
@@ -180,68 +349,93 @@ Deno.serve(async (req) => {
       if (user.id !== chat.candidate_id && user.id !== chat.agency_id) return json({ error: 'forbidden' }, 403);
 
       const peerId = user.id === chat.candidate_id ? chat.agency_id : chat.candidate_id;
-      const targetLang = await peerLang(admin, peerId, sourceLang === 'tr' ? 'en' : 'tr');
+      const peerPreferred = await peerLang(admin, peerId, viewLang === 'tr' ? 'en' : 'tr');
 
-      const translations: Record<string, string> = {};
-      if (targetLang !== sourceLang && geminiKey) {
-        try {
-          translations[targetLang] = await translateText(text, targetLang, geminiKey, model);
-        } catch (e) {
-          console.warn('chat translate fail', String(e));
-        }
-      }
-      translations[sourceLang] = text;
-
+      // Hız: önce orijinali kaydet + cevap ver; çeviri/push arka planda.
       const { data: inserted, error: iErr } = await admin.from('process_chat_messages').insert({
         chat_id: chatId,
         sender_id: user.id,
         body: text,
         source_lang: sourceLang,
-        translations,
+        translations: { [sourceLang]: text },
       }).select('id, sender_id, body, source_lang, translations, created_at').single();
       if (iErr) return json({ error: iErr.message }, 500);
 
       await admin.from('process_chats').update({ last_message_at: new Date().toISOString() }).eq('id', chatId);
 
-      // In-app notification row
-      await admin.from('notifications').insert({
-        user_id: peerId,
-        type: 'chat_message',
-        ref_user: user.id,
-        payload: { candidateId, chatId },
-      });
+      const finishTranslateNotify = async () => {
+        try {
+          const { translations, ok: translatedOk, source: detectedSource } = await translateChatAll(
+            text,
+            sourceLang,
+            geminiKey,
+            model,
+          );
+          if (!translatedOk) console.warn('chat send translate weak/fail', { sourceLang, detectedSource });
 
-      // Push (acente tercihine saygı)
-      const allow = await recipientAllowsPush(admin, peerId, 'chat');
-      if (allow) {
-        const { data: toks } = await admin.from('push_tokens').select('token, locale').eq('user_id', peerId);
-        const tokens = (toks || []) as PushTokenRow[];
-        const preview = translations[resolveLang(tokens[0]?.locale)] || text;
-        const messages = tokens.filter((t) => t.token).map(({ token: to, locale }) => {
-          const txt = chatPushText(locale, translations[resolveLang(locale)] || text);
-          return {
-            to,
-            title: txt.title,
-            body: txt.body || preview,
-            priority: 'high',
-            sound: 'notify.wav',
-            channelId: 'default',
-            data: { kind: 'chat_message', candidateUserId: candidateId, chatId },
-          };
-        });
-        if (messages.length) await sendExpoPush(messages);
-      }
+          const finalTr = { ...translations, [detectedSource || sourceLang]: text };
+          await admin.from('process_chat_messages').update({
+            source_lang: detectedSource || sourceLang,
+            translations: finalTr,
+          }).eq('id', inserted.id);
+
+          await admin.from('notifications').insert({
+            user_id: peerId,
+            type: 'chat_message',
+            ref_user: user.id,
+            payload: { candidateId, chatId },
+          });
+
+          const allow = await recipientAllowsPush(admin, peerId, 'chat');
+          if (allow) {
+            const { data: toks } = await admin.from('push_tokens').select('token, locale').eq('user_id', peerId);
+            const tokens = (toks || []) as PushTokenRow[];
+            const messages = tokens.filter((t) => t.token).map(({ token: to, locale }) => {
+              const loc = locale ? resolveLang(locale) : peerPreferred;
+              const preview = finalTr[loc] || finalTr[peerPreferred] || text;
+              const txt = chatPushText(locale || peerPreferred, preview);
+              return {
+                to,
+                title: txt.title,
+                body: txt.body || preview,
+                priority: 'high',
+                sound: 'notify.wav',
+                channelId: 'default',
+                data: { kind: 'chat_message', candidateUserId: candidateId, chatId },
+              };
+            });
+            if (messages.length) await sendExpoPush(messages);
+          }
+        } catch (e) {
+          console.warn('chat send bg translate/push', String((e as Error)?.message ?? e));
+          // Çeviri başarısız olsa bile in-app bildirim gitsin.
+          try {
+            await admin.from('notifications').insert({
+              user_id: peerId,
+              type: 'chat_message',
+              ref_user: user.id,
+              payload: { candidateId, chatId },
+            });
+          } catch { /* yoksay */ }
+        }
+      };
+
+      const rt = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+      if (rt?.waitUntil) rt.waitUntil(finishTranslateNotify());
+      else void finishTranslateNotify();
 
       return json({
         message: {
           id: inserted.id,
           senderId: inserted.sender_id,
-          body: displayBody(inserted, viewLang),
+          body: text, // gönderen kendi yazdığı orijinali görür
           original: inserted.body,
           sourceLang: inserted.source_lang,
           createdAt: inserted.created_at,
           mine: true,
         },
+        translated: false,
+        translating: true,
       });
     }
 

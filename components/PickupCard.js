@@ -10,7 +10,7 @@ import { notifyDocument } from '../lib/push';
 const INK = '#1b2533';
 const GOLD = '#c2a25a';
 
-export default function PickupCard({ userId, role, agencyId, label, flight }) {
+export default function PickupCard({ userId, role, agencyId, label, flight, embedded }) {
   const { t } = useLanguage();
   const isAgency = role === 'agency';
 
@@ -20,16 +20,31 @@ export default function PickupCard({ userId, role, agencyId, label, flight }) {
   const [loading, setLoading] = useState(isAgency);
   const [busy, setBusy] = useState(false);
 
-  // Acente: kendi yükler. Aday: parent'tan gelen (realtime) flight'ı kullanır.
+  // Acente kendi yükler. Aday: parent flight varsa onu kullanır; yoksa / güncellenince kendisi çeker.
   useEffect(() => {
+    let alive = true;
     if (isAgency) {
       getFlight(userId).then((f) => {
+        if (!alive) return;
         if (f) { setName(f.pickupName || ''); setPhone(f.pickupPhone || ''); setSent(!!f.pickupSent); }
         setLoading(false);
-      }).catch(() => setLoading(false));
-    } else if (flight) {
-      setName(flight.pickupName || ''); setPhone(flight.pickupPhone || ''); setSent(!!flight.pickupSent);
+      }).catch(() => { if (alive) setLoading(false); });
+      return () => { alive = false; };
     }
+    if (flight) {
+      setName(flight.pickupName || '');
+      setPhone(flight.pickupPhone || '');
+      setSent(!!flight.pickupSent);
+      return undefined;
+    }
+    if (!userId) return undefined;
+    getFlight(userId).then((f) => {
+      if (!alive || !f) return;
+      setName(f.pickupName || '');
+      setPhone(f.pickupPhone || '');
+      setSent(!!f.pickupSent);
+    }).catch(() => {});
+    return () => { alive = false; };
   }, [isAgency, userId, flight]);
 
   const save = async () => {
@@ -65,10 +80,14 @@ export default function PickupCard({ userId, role, agencyId, label, flight }) {
 
   // ---- ACENTE GÖRÜNÜMÜ ----
   if (isAgency) {
-    if (loading) return <View style={styles.card}><ActivityIndicator color={GOLD} /></View>;
+    if (loading) return <View style={embedded ? styles.embed : styles.card}><ActivityIndicator color={GOLD} /></View>;
     return (
-      <View style={styles.card}>
-        <View style={styles.head}><Text style={styles.title}>🤝 {t('pickup_title')}</Text>{sent ? <View style={styles.sentTag}><Text style={styles.sentTagText}>✓ İletildi</Text></View> : null}</View>
+      <View style={embedded ? styles.embed : styles.card}>
+        {embedded ? (
+          sent ? <View style={[styles.sentTag, { alignSelf: 'flex-start', marginBottom: 8 }]}><Text style={styles.sentTagText}>✓ İletildi</Text></View> : null
+        ) : (
+          <View style={styles.head}><Text style={styles.title}>🤝 {t('pickup_title')}</Text>{sent ? <View style={styles.sentTag}><Text style={styles.sentTagText}>✓ İletildi</Text></View> : null}</View>
+        )}
         <Text style={styles.hint}>Adayı havaalanında karşılayacak kişinin bilgileri. Hazır olduğunuzda "Adaya Gönder" deyin (sonradan da güncelleyebilirsiniz).</Text>
 
         <Text style={styles.lbl}>Karşılayacak kişi (ad soyad)</Text>
@@ -89,15 +108,15 @@ export default function PickupCard({ userId, role, agencyId, label, flight }) {
   // ---- ADAY GÖRÜNÜMÜ ----
   if (!sent || !(name && phone)) {
     return (
-      <View style={styles.card}>
-        <Text style={styles.title}>🤝 {t('pickup_title')}</Text>
-        <Text style={styles.waitNote}>⏳ {t('pickup_wait')}</Text>
+      <View style={embedded ? styles.embed : styles.card}>
+        {embedded ? null : <Text style={styles.title}>🤝 {t('pickup_title')}</Text>}
+        <Text style={[styles.waitNote, embedded && { marginTop: 0 }]}>⏳ {t('pickup_wait')}</Text>
       </View>
     );
   }
   return (
-    <View style={styles.card}>
-      <Text style={styles.title}>🤝 {t('pickup_title')}</Text>
+    <View style={embedded ? styles.embed : styles.card}>
+      {embedded ? null : <Text style={styles.title}>🤝 {t('pickup_title')}</Text>}
       <Text style={styles.personLbl}>{t('pickup_person')}</Text>
       <Text style={styles.personName}>{name}</Text>
       <Text style={styles.personPhone}>{phone}</Text>
@@ -111,6 +130,7 @@ export default function PickupCard({ userId, role, agencyId, label, flight }) {
 
 const styles = StyleSheet.create({
   card: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#eadfc2', borderRadius: 16, padding: 16, marginTop: 14, shadowColor: INK, shadowOpacity: 0.05, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 1 },
+  embed: { marginTop: 8 },
   head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { fontSize: 16, fontWeight: '800', color: INK },
   hint: { fontSize: 12.5, color: '#6b6457', lineHeight: 18, marginTop: 8, marginBottom: 4 },

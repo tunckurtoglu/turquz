@@ -34,6 +34,21 @@ export function categoryOf(st) {
   return 'pool';
 }
 
+export async function adminListEmploymentDisputes() {
+  const { data, error } = await supabase.rpc('admin_list_employment_disputes');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function adminResolveEmployment(episodeId, decision, note = null) {
+  const { error } = await supabase.rpc('admin_resolve_employment', {
+    p_episode: episodeId,
+    p_decision: decision,
+    p_note: note,
+  });
+  if (error) throw error;
+}
+
 export async function adminStats() {
   const { data, error } = await supabase.rpc('admin_stats');
   if (error) throw error;
@@ -108,6 +123,66 @@ export async function signedUrl(bucket, path, expires = 3600) {
   return data?.signedUrl || null;
 }
 
+const CERT_KIND = 'success_certificate';
+const CERT_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' };
+
+/** Admin: sezon sonu başarı sertifikasını yükle (aday/acente 7. adımda görür). */
+export async function uploadSuccessCertificate(userId, file) {
+  if (!userId || !file) throw new Error('missing');
+  const mime = file.type || 'application/pdf';
+  const ext = CERT_EXT[mime] || (String(file.name || '').toLowerCase().endsWith('.pdf') ? 'pdf' : 'jpg');
+  const path = `${userId}/${CERT_KIND}_${Date.now()}.${ext}`;
+  const now = new Date().toISOString();
+
+  const { data: prev } = await supabase
+    .from('user_documents')
+    .select('storage_path')
+    .eq('user_id', userId)
+    .eq('kind', CERT_KIND)
+    .maybeSingle();
+
+  const { error: upErr } = await supabase.storage.from('documents').upload(path, file, {
+    contentType: mime,
+    upsert: true,
+  });
+  if (upErr) throw upErr;
+
+  const { error } = await supabase.from('user_documents').upsert(
+    {
+      user_id: userId,
+      kind: CERT_KIND,
+      storage_path: path,
+      mime_type: mime,
+      status: 'uploaded',
+      submitted_at: now,
+      updated_at: now,
+    },
+    { onConflict: 'user_id,kind' },
+  );
+  if (error) {
+    await supabase.storage.from('documents').remove([path]).catch(() => {});
+    throw error;
+  }
+  if (prev?.storage_path && prev.storage_path !== path) {
+    supabase.storage.from('documents').remove([prev.storage_path]).catch(() => {});
+  }
+}
+
+export async function removeSuccessCertificate(userId) {
+  if (!userId) throw new Error('missing');
+  const { data: row } = await supabase
+    .from('user_documents')
+    .select('storage_path')
+    .eq('user_id', userId)
+    .eq('kind', CERT_KIND)
+    .maybeSingle();
+  if (row?.storage_path) {
+    await supabase.storage.from('documents').remove([row.storage_path]).catch(() => {});
+  }
+  const { error } = await supabase.from('user_documents').delete().eq('user_id', userId).eq('kind', CERT_KIND);
+  if (error) throw error;
+}
+
 /** Admin: adayın tüm acente puanları */
 export async function listCandidateRatings(candidateId) {
   if (!candidateId) return [];
@@ -149,4 +224,21 @@ function clampScore(n) {
   const v = Math.round(Number(n));
   if (!(v >= 1 && v <= 5)) throw new Error('Puan 1–5 olmalı');
   return v;
+}
+
+/** Admin: duyuru yayınla (bildirim + push) */
+export async function sendAnnouncement({ title, body, audience = 'all', userIds = [] }) {
+  const { data, error } = await supabase.functions.invoke('admin-announce', {
+    body: { title, body, audience, userIds },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return data || {};
+}
+
+/** Admin: son duyurular */
+export async function listAnnouncements(limit = 30) {
+  const { data, error } = await supabase.rpc('admin_list_announcements', { p_limit: limit });
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
 }

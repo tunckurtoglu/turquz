@@ -17,6 +17,11 @@ export const LANGUAGES_SUPPORTED = [
   { code: 'fa', name: 'فارسی',     dir: 'rtl' },
 ];
 
+/** Ayarlar / dil menüsü: görünen ada göre A→Z. */
+export const LANGUAGES_ALPHA = [...LANGUAGES_SUPPORTED].sort((a, b) =>
+  a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }),
+);
+
 export const DEFAULT_LANG = 'tr';
 
 // Cihaz dili desteklenmiyorsa buna düşülür (en yaygın ortak dil).
@@ -39,3 +44,17 @@ export const dirOf = (code) =>
 
 export const nameOf = (code) =>
   (LANGUAGES_SUPPORTED.find((l) => l.code === code)?.name) || code;
+
+/** Dil-duyarlı büyük harf (TR: i→İ, ı→I). CSS textTransform bunu yapmaz. */
+const UPPER_LOCALE = {
+  tr: 'tr-TR', en: 'en-US', de: 'de-DE', ru: 'ru-RU',
+  kk: 'kk-KZ', ky: 'ky-KG', uz: 'uz-UZ', tk: 'tk-TM',
+  th: 'th-TH', fa: 'fa-IR',
+};
+export function localeUpper(str, lang = 'tr') {
+  const s = String(str ?? '');
+  if (!s) return s;
+  const loc = UPPER_LOCALE[lang] || lang || 'en-US';
+  try { return s.toLocaleUpperCase(loc); }
+  catch { return s.toUpperCase(); }
+}
