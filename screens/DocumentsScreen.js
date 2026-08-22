@@ -24,10 +24,11 @@ import { latinFirst, latinLast } from '../lib/translit';
 import { PIPELINE, kindState, activeStep, stepActor, kindOwner, DOCS_EXTRA_DAYS } from '../lib/pipeline';
 import { notifyDocumentSubmit, notifyDocsDeadline } from '../lib/push';
 import { getContract } from '../lib/contracts';
-import { getFlight } from '../lib/flights';
+import { getFlight, msUntilArrival, msUntilYmdGate } from '../lib/flights';
+import CountdownBanner from '../components/CountdownBanner';
 import { loadProfile, saveProfile } from '../lib/profile';
 import { birthPlaceFromOcr } from '../lib/passportFields';
-import { CONTRACT_WEB_PAYMENT_ENABLED, PROCESS_CHAT_ENABLED } from '../lib/features';
+import { CONTRACT_WEB_PAYMENT_ENABLED, PROCESS_CHAT_ENABLED, processChatUnlocked } from '../lib/features';
 import { openContractPortal } from '../lib/contractPortal';
 import ContractPreview from '../components/ContractPreview';
 import ProcessChatSheet from '../components/ProcessChatSheet';
@@ -148,6 +149,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
   const [plannedEndOn, setPlannedEndOn] = useState(null);
   const [flightDepartOn, setFlightDepartOn] = useState(null);
   const [contract, setContract] = useState(null);     // acentenin doldurduğu sözleşme verisi
+  const [processStatus, setProcessStatus] = useState(null);
   const [flight, setFlight] = useState(null);         // acentenin doldurduğu uçuş bilgisi
   const [nameSheet, setNameSheet] = useState(false);  // pasaport (Latin) isim düzeltme
   const [nFirst, setNFirst] = useState('');
@@ -212,11 +214,12 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
   }, [turnMine, turnBlink]);
 
   useEffect(() => {
-    if (!(docsReady && unlocked && turnAct === 1 && deadline?.end)) return undefined;
+    const needTick = (docsReady && unlocked && turnAct === 1 && deadline?.end) || !!flight?.arriveAt;
+    if (!needTick) return undefined;
     setNowTick(Date.now());
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [docsReady, unlocked, turnAct, deadline?.end]);
+  }, [docsReady, unlocked, turnAct, deadline?.end, flight?.arriveAt]);
 
   // Rıza penceresi tam kapandığında galeriyi aç (modal çakışmasını önler). Tek sefer çalışır.
   const runPendingPick = () => {
@@ -238,6 +241,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
   }, [initialScrollStep]);
 
   const applyStatus = useCallback((status) => {
+    setProcessStatus(status?.status || null);
     setUnlocked(docsUnlocked(status));
     setDeadline(passportDeadline(status));
     setWorkStartAt(status?.work_start_at || null);
@@ -722,7 +726,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
         ref={listRef}
         contentContainerStyle={[
           styles.content,
-          { paddingBottom: insets.bottom + (PROCESS_CHAT_ENABLED && contract?.isPaid ? 88 : 24) },
+          { paddingBottom: insets.bottom + (PROCESS_CHAT_ENABLED && processChatUnlocked(processStatus, contract) ? 88 : 24) },
         ]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#c2a25a" colors={['#c2a25a']} />}
       >
@@ -996,8 +1000,11 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                             <Text style={styles.startDateLabel}>📅 {t('start_date_label')}: {cvData.preferredStartDate}</Text>
                           </View>
                         ) : null}
-                        {kind === 'flight_ticket' && isSubmitted('flight_ticket') && (workStartAt || flightDepartOn) ? (
+                        {kind === 'flight_ticket' && isSubmitted('flight_ticket') && (workStartAt || flightDepartOn || flight?.arriveAt) ? (
                           <View style={styles.startDateBox}>
+                            {flight?.arriveAt ? (
+                              <Text style={styles.startDateLabel}>{t('flight_arrive_label')}: {flight.arriveAt}</Text>
+                            ) : null}
                             {flightDepartOn ? (
                               <Text style={styles.startDateLabel}>✈️ {t('flight_depart_label')}: {fmtDocDate(flightDepartOn)}</Text>
                             ) : null}
@@ -1095,13 +1102,23 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                     </View>
                   )}
                   {pickupOpen ? (
-                    <PickupCard
+                    <>
+                      {flight?.arriveAt && msUntilArrival(flight.arriveAt, nowTick) > 0 ? (
+                        <CountdownBanner
+                          variant="muted"
+                          titleKey="arrive_countdown_title"
+                          subKey="arrive_countdown_sub"
+                          leftMs={msUntilArrival(flight.arriveAt, nowTick)}
+                        />
+                      ) : null}
+                      <PickupCard
                       embedded
                       userId={userId}
                       role="candidate"
                       flight={flight}
                       label={[cvData?.firstName, cvData?.lastName].filter(Boolean).join(' ')}
                     />
+                    </>
                   ) : (
                     <Text style={styles.pickupLockText}>🔒 {t('pickup_lock')}</Text>
                   )}
@@ -1280,7 +1297,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
       />
 
       <ProcessChatFab
-        visible={PROCESS_CHAT_ENABLED && !!contract?.isPaid && !chatOpen}
+        visible={PROCESS_CHAT_ENABLED && processChatUnlocked(processStatus, contract) && !chatOpen}
         onPress={() => setChatOpen(true)}
       />
       <ProcessChatSheet

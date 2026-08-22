@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { getPickup, savePickup, sendPickup, notifyDocument } from '../lib/api';
+import { useLang } from '../i18n.jsx';
 
 // Acente: havaalanı karşılama kişisi (ad + WhatsApp) — kaydet / adaya gönder. Hep açık.
 export default function PickupCard({ userId, agencyId, embedded }) {
+  const { t } = useLang();
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [sent, setSent] = useState(false);
@@ -16,21 +18,21 @@ export default function PickupCard({ userId, agencyId, embedded }) {
   }, [userId]);
 
   const save = async () => {
-    if (!name.trim() || !phone.trim()) { alert('Ad ve telefon girin.'); return; }
+    if (!name.trim() || !phone.trim()) { alert(t('pickup_agency_need')); return; }
     setBusy(true);
-    try { await savePickup(userId, { pickupName: name.trim(), pickupPhone: phone.trim() }, agencyId); alert('Kaydedildi.'); }
-    catch (e) { alert(e?.message || 'Hata'); } finally { setBusy(false); }
+    try { await savePickup(userId, { pickupName: name.trim(), pickupPhone: phone.trim() }, agencyId); alert(t('hotels_saved')); }
+    catch (e) { alert(e?.message || t('err_title')); } finally { setBusy(false); }
   };
   const send = async () => {
-    if (!name.trim() || !phone.trim()) { alert('Ad ve telefon girin.'); return; }
-    if (!confirm('Karşılama bilgileri adaya gönderilsin mi?')) return;
+    if (!name.trim() || !phone.trim()) { alert(t('pickup_agency_need')); return; }
+    if (!confirm(t('pickup_agency_confirm'))) return;
     setBusy(true);
     try {
       await savePickup(userId, { pickupName: name.trim(), pickupPhone: phone.trim() }, agencyId);
       await sendPickup(userId);
       notifyDocument(userId, 'pickup');
-      setSent(true); alert('Adaya iletildi.');
-    } catch (e) { alert(e?.message || 'Hata'); } finally { setBusy(false); }
+      setSent(true); alert(t('arr_driver_sent'));
+    } catch (e) { alert(e?.message || t('err_title')); } finally { setBusy(false); }
   };
 
   if (loading) return <div className={embedded ? '' : 'pickupCard'}><div className="spinner" /></div>;
@@ -38,23 +40,23 @@ export default function PickupCard({ userId, agencyId, embedded }) {
   return (
     <div className={embedded ? 'pickupEmbed' : 'pickupCard'}>
       {embedded ? (
-        sent ? <div className="pickupHead"><span className="signedTag">✓ İletildi</span></div> : null
+        sent ? <div className="pickupHead"><span className="signedTag">✓ {t('pickup_agency_sent_tag')}</span></div> : null
       ) : (
         <div className="pickupHead">
-          <h3>🤝 Havaalanı Karşılama</h3>
-          {sent ? <span className="signedTag">✓ İletildi</span> : null}
+          <h3>🤝 {t('pickup_title')}</h3>
+          {sent ? <span className="signedTag">✓ {t('pickup_agency_sent_tag')}</span> : null}
         </div>
       )}
-      <p className="pickupHint">Adayı havaalanında karşılayacak kişinin bilgileri. Hazır olduğunuzda "Adaya Gönder" deyin (sonradan da güncelleyebilirsiniz).</p>
+      <p className="pickupHint">{t('pickup_agency_hint')}</p>
       <div className="pickupGrid">
-        <div className="cField"><label className="fieldLbl">Karşılayacak kişi (ad soyad)</label>
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Örn. Ahmet Yılmaz" /></div>
-        <div className="cField"><label className="fieldLbl">Telefon (WhatsApp)</label>
+        <div className="cField"><label className="fieldLbl">{t('pickup_agency_name')}</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={t('pickup_agency_name_ph')} /></div>
+        <div className="cField"><label className="fieldLbl">{t('pickup_agency_phone')}</label>
           <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+90 5xx xxx xx xx" /></div>
       </div>
       <div className="pickupFoot">
-        <button className="ghostBtn" onClick={save} disabled={busy}>Kaydet</button>
-        <button className="goldBtn sm" onClick={send} disabled={busy}>{busy ? '…' : sent ? 'Tekrar Gönder' : 'Adaya Gönder →'}</button>
+        <button className="ghostBtn" onClick={save} disabled={busy}>{t('save')}</button>
+        <button className="goldBtn sm" onClick={send} disabled={busy}>{busy ? '…' : sent ? t('pickup_agency_resend') : t('pickup_agency_send')}</button>
       </div>
     </div>
   );

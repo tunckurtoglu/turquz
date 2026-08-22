@@ -35,6 +35,11 @@ button, input, select { font: inherit; }
 .loginTitle { font-family: 'Playfair Display', serif; color: var(--navy); font-size: 26px; margin: 6px 0 20px; }
 .loginForm { display: flex; flex-direction: column; gap: 6px; text-align: left; }
 .fieldLbl { font-size: 12.5px; font-weight: 700; margin-top: 10px; }
+.rememberLbl {
+  display: flex; align-items: center; gap: 8px; margin: 12px 0 4px;
+  font-size: 13px; font-weight: 700; color: #3d4654; cursor: pointer; user-select: none;
+}
+.rememberLbl input { width: 15px; height: 15px; accent-color: #1b2533; }
 .input {
   border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 15px; outline: none; width: 100%;
 }
@@ -74,13 +79,18 @@ button, input, select { font: inherit; }
   border-radius: 10px; padding: 8px 14px; font-weight: 700; font-size: 13.5px; cursor: pointer;
 }
 .navBtn.on { background: rgba(194,162,90,0.18); border-color: var(--gold); color: #fff; }
+.navBadge {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px;
+  margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 10px; font-weight: 800; line-height: 1;
+}
 .navBtn.soon { opacity: .45; cursor: default; }
 .topRight { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .topWho { color: #fff; font-size: 13px; font-weight: 600; opacity: .9; }
 .accent { height: 3px; background: linear-gradient(90deg, #a8842f, var(--gold) 50%, #a8842f); }
 .main { flex: 1; padding: 24px 28px 48px; max-width: 1280px; width: 100%; margin: 0 auto; }
 
-.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 22px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; margin-bottom: 22px; }
 @media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } }
 .statCard {
   background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px;
@@ -138,6 +148,17 @@ table.adminTable { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   color: var(--navy); font-weight: 800; cursor: pointer; margin-bottom: 14px; padding: 0;
 }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.interventionFilters {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.interventionFilters .ghostBtn.on {
+  background: rgba(194,162,90,0.15); border-color: var(--gold-d); color: var(--navy);
+}
+.linkish {
+  background: none; border: none; padding: 0; color: var(--navy); font-weight: 800;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.linkish:hover { color: var(--gold-d); }
 .pre {
   background: #f7f8fa; border: 1px solid var(--line); border-radius: 10px;
   padding: 12px; font-size: 12.5px; max-height: 420px; overflow: auto; white-space: pre-wrap;

@@ -2,13 +2,14 @@
 // Acentenin aday CV'sini kendi kopyasında düzenleyebildiği yan panel.
 // Değişiklikler YALNIZCA bu acentenin görünümüne ve dışa aktarımına yansır.
 // Havuz, diğer acenteler ve adayın profilinden tamamen bağımsız.
-import { useState, useRef } from 'react';
+import { useState } from 'react';
+import { useLang } from '../i18n.jsx';
 
 const INK = '#1b2533';
 const GOLD = '#c2a25a';
 
 // Chip listesi: ekle/çıkar
-function ChipList({ items, onChange, placeholder }) {
+function ChipList({ items, onChange, placeholder, addLabel }) {
   const [input, setInput] = useState('');
   const add = () => {
     const v = input.trim();
@@ -33,14 +34,14 @@ function ChipList({ items, onChange, placeholder }) {
           placeholder={placeholder}
           style={inputStyle}
         />
-        <button onClick={add} style={addBtnStyle}>Ekle</button>
+        <button onClick={add} style={addBtnStyle}>{addLabel}</button>
       </div>
     </div>
   );
 }
 
 // İş deneyimi listesi
-function ExpList({ items, onChange }) {
+function ExpList({ items, onChange, t }) {
   const add = () => onChange([...items, { date: '', company: '', position: '' }]);
   const update = (i, patch) => onChange(items.map((x, idx) => idx === i ? { ...x, ...patch } : x));
   const remove = (i) => onChange(items.filter((_, idx) => idx !== i));
@@ -49,17 +50,18 @@ function ExpList({ items, onChange }) {
       {items.map((exp, i) => (
         <div key={i} style={{ background: '#f4f5f7', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 7, position: 'relative' }}>
           <button onClick={() => remove(i)} style={{ position: 'absolute', top: 8, right: 8, background: 'none', border: 'none', cursor: 'pointer', color: '#a32d2d', fontWeight: 700, fontSize: 14 }}>✕</button>
-          <input value={exp.date || ''} onChange={(e) => update(i, { date: e.target.value })} placeholder="Tarih (ör. 04.2024 – 10.2024)" style={inputStyle} />
-          <input value={exp.company || ''} onChange={(e) => update(i, { company: e.target.value })} placeholder="Şirket / Otel" style={inputStyle} />
-          <input value={exp.position || ''} onChange={(e) => update(i, { position: e.target.value })} placeholder="Pozisyon" style={inputStyle} />
+          <input value={exp.date || ''} onChange={(e) => update(i, { date: e.target.value })} placeholder={t('cv_edit_ph_date') || ''} style={inputStyle} />
+          <input value={exp.company || ''} onChange={(e) => update(i, { company: e.target.value })} placeholder={t('cv_edit_ph_company') || t('f_company') || ''} style={inputStyle} />
+          <input value={exp.position || ''} onChange={(e) => update(i, { position: e.target.value })} placeholder={t('f_position') || ''} style={inputStyle} />
         </div>
       ))}
-      <button onClick={add} style={{ ...addBtnStyle, alignSelf: 'flex-start' }}>+ Deneyim Ekle</button>
+      <button onClick={add} style={{ ...addBtnStyle, alignSelf: 'flex-start' }}>{t('add_exp') || ''}</button>
     </div>
   );
 }
 
 export default function CvOverrideEditor({ base, overrides, onChange, onClear, onClose, hasOverrides }) {
+  const { t } = useLang();
   // Tüm alanlar: override varsa override, yoksa base'den al
   const merged = { ...base, ...overrides };
 
@@ -79,12 +81,12 @@ export default function CvOverrideEditor({ base, overrides, onChange, onClear, o
       {/* Başlık */}
       <div style={headerStyle}>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 16, color: INK }}>CV Düzenle</div>
-          <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>Yalnızca sizin görünümünüzü etkiler</div>
+          <div style={{ fontWeight: 800, fontSize: 16, color: INK }}>{t('cv_edit_title') || ''}</div>
+          <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>{t('cv_edit_hint') || ''}</div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {hasOverrides && (
-            <button onClick={onClear} style={clearBtnStyle} title="Orijinale dön">Orijinale dön</button>
+            <button onClick={onClear} style={clearBtnStyle} title={t('cv_edit_reset') || ''}>{t('cv_edit_reset') || ''}</button>
           )}
           <button onClick={onClose} style={closeBtnStyle}>✕</button>
         </div>
@@ -95,58 +97,62 @@ export default function CvOverrideEditor({ base, overrides, onChange, onClear, o
       <div style={bodyStyle}>
 
         {/* Ünvan */}
-        <Section label="Ünvan / Alan" changed={fieldChanged('title')} onReset={() => resetField('title')}>
+        <Section label={t('f_title') || ''} changed={fieldChanged('title')} onReset={() => resetField('title')} editedLabel={t('cv_edit_field_tag') || ''} undoLabel={t('cv_edit_undo') || ''}>
           <input
             value={merged.title || ''}
             onChange={(e) => set({ title: e.target.value })}
-            placeholder="ör. Misafir İlişkileri · Resepsiyon"
+            placeholder={t('cv_edit_ph_title') || t('ph_title') || ''}
             style={inputStyle}
           />
         </Section>
 
         {/* Profil özeti */}
-        <Section label="Profil Özeti" changed={fieldChanged('profile')} onReset={() => resetField('profile')}>
+        <Section label={t('sec_profile') || ''} changed={fieldChanged('profile')} onReset={() => resetField('profile')} editedLabel={t('cv_edit_field_tag') || ''} undoLabel={t('cv_edit_undo') || ''}>
           <textarea
             value={merged.profile || ''}
             onChange={(e) => set({ profile: e.target.value })}
-            placeholder="Aday hakkında kısa bir özet..."
+            placeholder={t('cv_edit_ph_profile') || ''}
             rows={4}
             style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }}
           />
         </Section>
 
         {/* Pozisyonlar */}
-        <Section label="Pozisyonlar" changed={fieldChanged('positions')} onReset={() => resetField('positions')}>
+        <Section label={t('sec_positions') || ''} changed={fieldChanged('positions')} onReset={() => resetField('positions')} editedLabel={t('cv_edit_field_tag') || ''} undoLabel={t('cv_edit_undo') || ''}>
           <ChipList
             items={merged.positions || []}
             onChange={(v) => set({ positions: v })}
-            placeholder="Yeni pozisyon..."
+            placeholder={t('cv_edit_ph_position') || ''}
+            addLabel={t('cv_edit_add') || ''}
           />
         </Section>
 
         {/* Beceriler */}
-        <Section label="Beceriler" changed={fieldChanged('skills')} onReset={() => resetField('skills')}>
+        <Section label={t('sec_skills') || ''} changed={fieldChanged('skills')} onReset={() => resetField('skills')} editedLabel={t('cv_edit_field_tag') || ''} undoLabel={t('cv_edit_undo') || ''}>
           <ChipList
             items={merged.skills || []}
             onChange={(v) => set({ skills: v })}
-            placeholder="Yeni beceri..."
+            placeholder={t('cv_edit_ph_skill') || ''}
+            addLabel={t('cv_edit_add') || ''}
           />
         </Section>
 
         {/* Sertifikalar */}
-        <Section label="Sertifikalar" changed={fieldChanged('certificates')} onReset={() => resetField('certificates')}>
+        <Section label={t('sec_certs') || ''} changed={fieldChanged('certificates')} onReset={() => resetField('certificates')} editedLabel={t('cv_edit_field_tag') || ''} undoLabel={t('cv_edit_undo') || ''}>
           <ChipList
             items={merged.certificates || []}
             onChange={(v) => set({ certificates: v })}
-            placeholder="ör. ServSafe — 2024"
+            placeholder={t('cv_edit_ph_cert') || ''}
+            addLabel={t('cv_edit_add') || ''}
           />
         </Section>
 
         {/* İş Deneyimi */}
-        <Section label="İş Deneyimi" changed={fieldChanged('experience')} onReset={() => resetField('experience')}>
+        <Section label={t('step_experience') || ''} changed={fieldChanged('experience')} onReset={() => resetField('experience')} editedLabel={t('cv_edit_field_tag') || ''} undoLabel={t('cv_edit_undo') || ''}>
           <ExpList
             items={merged.experience || []}
             onChange={(v) => set({ experience: v })}
+            t={t}
           />
         </Section>
 
@@ -155,17 +161,17 @@ export default function CvOverrideEditor({ base, overrides, onChange, onClear, o
   );
 }
 
-function Section({ label, changed, onReset, children }) {
+function Section({ label, changed, onReset, children, editedLabel, undoLabel }) {
   return (
     <div style={{ marginBottom: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <label style={{ fontWeight: 700, fontSize: 13, color: INK, display: 'flex', alignItems: 'center', gap: 6 }}>
           {label}
-          {changed && <span style={{ fontSize: 11, background: GOLD, color: INK, borderRadius: 6, padding: '1px 7px', fontWeight: 700 }}>düzenlendi</span>}
+          {changed && <span style={{ fontSize: 11, background: GOLD, color: INK, borderRadius: 6, padding: '1px 7px', fontWeight: 700 }}>{editedLabel}</span>}
         </label>
         {changed && (
           <button onClick={onReset} style={{ fontSize: 11, color: '#a32d2d', fontWeight: 700, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-            geri al
+            {undoLabel}
           </button>
         )}
       </div>

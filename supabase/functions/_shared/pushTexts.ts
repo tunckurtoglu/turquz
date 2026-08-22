@@ -43,17 +43,41 @@ const DOC_NORMAL: Partial<Record<Lang, Txt>> = {
 };
 
 const DOC_FLIGHT: Partial<Record<Lang, Txt>> = {
-  tr: { title: '✈️ Uçuş biletiniz hazır', body: 'Biletiniz yüklendi. Karşılama bilgileri uçuş vaktine yakın iletilecektir.' },
-  en: { title: '✈️ Your flight ticket is ready', body: 'Your ticket has been uploaded. Pickup details will be shared closer to your flight.' },
-  ru: { title: '✈️ Ваш авиабилет готов', body: 'Билет загружен. Информация о встрече будет отправлена ближе к вылету.' },
-  kk: { title: '✈️ Ұшу билетіңіз дайын', body: 'Билет жүктелді. Кездесу ақпараты ұшу уақынына жақын жіберіледі.' },
-  ky: { title: '✈️ Учак билетиңиз даяр', body: 'Билет жүктөлдү. Карşılama маалыматы учуу убактысына жакын жиберилет.' },
-  uz: { title: '✈️ Parvoz chiptangiz tayyor', body: 'Chipta yuklandi. Kutib olish ma’lumotlari parvoz vaqtiga yaqin yuboriladi.' },
-  tk: { title: '✈️ Uçuş biletiniňiz taýýar', body: 'Bilet ýüklendi. Garşylaýjy maglumatlar uçuş wagtyna ýakyn iberiler.' },
-  de: { title: '✈️ Ihr Flugticket ist bereit', body: 'Ihr Ticket wurde hochgeladen. Abholinfos folgen kurz vor dem Flug.' },
-  th: { title: '✈️ ตั๋วเครื่องบินพร้อมแล้ว', body: 'อัปโหลดตั๋วแล้ว ข้อมูลรับที่สนามบินจะส่งใกล้เวลาบิน' },
-  fa: { title: '✈️ بلیط پرواز شما آماده است', body: 'بلیط بارگذاری شد. اطلاعات استقبال نزدیک زمان پرواز ارسال می‌شود.' },
+  tr: { title: '✈️ Uçuş biletiniz hazır', body: 'İnişiniz {when}. Bileti belgelerden açabilirsiniz.' },
+  en: { title: '✈️ Your flight ticket is ready', body: 'You land at {when}. Open the ticket in Documents.' },
+  ru: { title: '✈️ Ваш авиабилет готов', body: 'Прилёт {when}. Откройте билет в документах.' },
+  kk: { title: '✈️ Ұшу билетіңіз дайын', body: 'Қонуыңыз {when}. Билетті құжаттардан ашыңыз.' },
+  ky: { title: '✈️ Учак билетиңиз даяр', body: 'Конушуңуз {when}. Билетти документтерден ачыңыз.' },
+  uz: { title: '✈️ Parvoz chiptangiz tayyor', body: 'Qo‘nishingiz {when}. Chiptani hujjatlardan oching.' },
+  tk: { title: '✈️ Uçuş biletiniňiz taýýar', body: 'Inişiňiz {when}. Bileti resminamalardan açyp bilersiňiz.' },
+  de: { title: '✈️ Ihr Flugticket ist bereit', body: 'Ankunft {when}. Ticket unter Dokumente öffnen.' },
+  th: { title: '✈️ ตั๋วเครื่องบินพร้อมแล้ว', body: 'ลงจอด {when} เปิดตั๋วในเอกสาร' },
+  fa: { title: '✈️ بلیط پرواز شما آماده است', body: 'فرود شما {when}. بلیط را از مدارک باز کنید.' },
 };
+const DOC_FLIGHT_PLAIN: Partial<Record<Lang, Txt>> = {
+  tr: { title: '✈️ Uçuş biletiniz hazır', body: 'Biletiniz yüklendi. Belgelerden açabilirsiniz.' },
+  en: { title: '✈️ Your flight ticket is ready', body: 'Your ticket has been uploaded. Open it in Documents.' },
+  ru: { title: '✈️ Ваш авиабилет готов', body: 'Билет загружен. Откройте его в документах.' },
+  kk: { title: '✈️ Ұшу билетіңіз дайын', body: 'Билет жүктелді. Құжаттардан ашыңыз.' },
+  ky: { title: '✈️ Учак билетиңиз даяр', body: 'Билет жүктөлдү. Документтерден ачыңыз.' },
+  uz: { title: '✈️ Parvoz chiptangiz tayyor', body: 'Chipta yuklandi. Hujjatlardan oching.' },
+  tk: { title: '✈️ Uçuş biletiniňiz taýýar', body: 'Bilet ýüklendi. Resminamalardan açyp bilersiňiz.' },
+  de: { title: '✈️ Ihr Flugticket ist bereit', body: 'Ihr Ticket wurde hochgeladen. Unter Dokumente öffnen.' },
+  th: { title: '✈️ ตั๋วเครื่องบินพร้อมแล้ว', body: 'อัปโหลดตั๋วแล้ว เปิดในเอกสาร' },
+  fa: { title: '✈️ بلیط پرواز شما آماده است', body: 'بلیط بارگذاری شد. از مدارک باز کنید.' },
+};
+
+function applyVars(txt: Txt, vars?: Record<string, string> | null): Txt {
+  if (!vars) return txt;
+  let title = txt.title;
+  let body = txt.body;
+  for (const [k, v] of Object.entries(vars)) {
+    const val = v || '';
+    title = title.split(`{${k}}`).join(val);
+    body = body.split(`{${k}}`).join(val);
+  }
+  return { title, body };
+}
 
 const DOC_PICKUP: Partial<Record<Lang, Txt>> = {
   tr: { title: '🤝 Karşılama görevliniz belli oldu', body: 'Havaalanında sizi karşılayacak kişinin bilgileri eklendi. Uygulamadan görün.' },
@@ -81,11 +105,43 @@ const DOC_PACKAGE: Partial<Record<Lang, Txt>> = {
   fa: { title: '📄 نامزد بسته مدارک ارسال کرد', body: 'بسته مدارک جدید منتظر بررسی شماست.' },
 };
 
-export function docPushText(kind: string, byAgency: boolean, locale?: string | null): Txt {
+const DOC_AGENCY_RETRACTED: Partial<Record<Lang, Txt>> = {
+  tr: { title: '↩ Belge geri alındı', body: 'Acenten gönderdiği bir belgeyi geri aldı. Yeni belgeyi bekleyin.' },
+  en: { title: '↩ Document retracted', body: 'Your agency retracted a sent document. Please wait for the new one.' },
+  ru: { title: '↩ Документ отозван', body: 'Агентство отозвало отправленный документ. Дождитесь нового.' },
+  kk: { title: '↩ Құжат қайтарылды', body: 'Агенттік жіберілген құжатты қайтарды. Жаңасын күтіңіз.' },
+  ky: { title: '↩ Документ кайтарылды', body: 'Агенттик жөнөтүлгөн документти кайтарды. Жаңысын күтүңүз.' },
+  uz: { title: '↩ Hujjat qaytarildi', body: 'Agentlik yuborilgan hujjatni qaytarib oldi. Yangisini kuting.' },
+  tk: { title: '↩ Resminama yzyna alyndy', body: 'Agentlik iberilen resminamany yzyna aldy. Täzesini garaşyň.' },
+  de: { title: '↩ Dokument zurückgenommen', body: 'Ihre Agentur hat ein gesendetes Dokument zurückgenommen. Bitte warten Sie auf das neue.' },
+  th: { title: '↩ ถอนเอกสารแล้ว', body: 'เอเจนซี่ถอนเอกสารที่ส่งแล้ว โปรดรอเอกสารใหม่' },
+  fa: { title: '↩ مدرک پس گرفته شد', body: 'آژانس یک مدرک ارسال‌شده را پس گرفت. منتظر مدرک جدید بمانید.' },
+};
+
+const DOC_AGENCY_UPDATED: Partial<Record<Lang, Txt>> = {
+  tr: { title: '📄 Belge güncellendi', body: 'Acenten bir belgenizi güncelledi. Lütfen kontrol edin.' },
+  en: { title: '📄 Document updated', body: 'Your agency updated a document. Please check it.' },
+  ru: { title: '📄 Документ обновлён', body: 'Агентство обновило документ. Проверьте, пожалуйста.' },
+  kk: { title: '📄 Құжат жаңартылды', body: 'Агенттік құжатты жаңартты. Тексеріңіз.' },
+  ky: { title: '📄 Документ жаңыртылды', body: 'Агенттик документти жаңыртты. Текшериңиз.' },
+  uz: { title: '📄 Hujjat yangilandi', body: 'Agentlik hujjatni yangiladi. Tekshiring.' },
+  tk: { title: '📄 Resminama täzelendi', body: 'Agentlik resminamany täzeledi. Barlaň.' },
+  de: { title: '📄 Dokument aktualisiert', body: 'Ihre Agentur hat ein Dokument aktualisiert. Bitte prüfen.' },
+  th: { title: '📄 อัปเดตเอกสารแล้ว', body: 'เอเจนซี่อัปเดตเอกสารแล้ว โปรดตรวจสอบ' },
+  fa: { title: '📄 مدرک به‌روز شد', body: 'آژانس یک مدرک را به‌روز کرد. لطفاً بررسی کنید.' },
+};
+
+export function docPushText(kind: string, byAgency: boolean, locale?: string | null, opts?: { when?: string | null }): Txt {
   const lang = resolveLang(locale);
-  if (kind === 'flight_ticket') return pick(DOC_FLIGHT, lang);
+  if (kind === 'flight_ticket') {
+    const when = (opts?.when || '').trim();
+    if (when) return applyVars(pick(DOC_FLIGHT, lang), { when });
+    return pick(DOC_FLIGHT_PLAIN, lang);
+  }
   if (kind === 'pickup') return pick(DOC_PICKUP, lang);
   if (kind === 'document_package') return pick(DOC_PACKAGE, lang);
+  if (kind === 'agency_doc_retracted') return pick(DOC_AGENCY_RETRACTED, lang);
+  if (kind === 'agency_doc_updated' || kind === 'flight_ticket_updated') return pick(DOC_AGENCY_UPDATED, lang);
   if (byAgency) return pick(DOC_RING, lang);
   return pick(DOC_NORMAL, lang);
 }
@@ -380,6 +436,176 @@ const ACTIVITY_NUDGE: Partial<Record<Lang, Txt>> = {
 
 export function activityNudgePushText(locale?: string | null): Txt {
   return pick(ACTIVITY_NUDGE, resolveLang(locale));
+}
+
+const ARRIVAL_TODAY: Partial<Record<Lang, Txt>> = {
+  tr: { title: '🛬 Bugün varış', body: '{code} bugün {when} iniyor.' },
+  en: { title: '🛬 Arrival today', body: '{code} lands today at {when}.' },
+  ru: { title: '🛬 Прилёт сегодня', body: '{code} прилетает сегодня в {when}.' },
+  kk: { title: '🛬 Бүгін келеді', body: '{code} бүгін {when} келеді.' },
+  ky: { title: '🛬 Бүгүн келет', body: '{code} бүгүн {when} келет.' },
+  uz: { title: '🛬 Bugun keladi', body: '{code} bugun {when} keladi.' },
+  tk: { title: '🛬 Şu gün gelýär', body: '{code} şu gün {when} gelýär.' },
+  de: { title: '🛬 Ankunft heute', body: '{code} kommt heute um {when} an.' },
+  th: { title: '🛬 มาถึงวันนี้', body: '{code} ถึงวันนี้ {when}' },
+  fa: { title: '🛬 ورود امروز', body: '{code} امروز ساعت {when} می‌رسد.' },
+};
+const ARRIVAL_TOMORROW: Partial<Record<Lang, Txt>> = {
+  tr: { title: '🛬 Yarın varış', body: '{code} yarın {when} iniyor. Karşılamayı hazırlayın.' },
+  en: { title: '🛬 Arrival tomorrow', body: '{code} lands tomorrow at {when}. Prepare pickup.' },
+  ru: { title: '🛬 Прилёт завтра', body: '{code} прилетает завтра в {when}. Подготовьте встречу.' },
+  kk: { title: '🛬 Ертең келеді', body: '{code} ертең {when} келеді. Қарсы алуды дайындаңыз.' },
+  ky: { title: '🛬 Эртең келет', body: '{code} эртең {when} келет. Тосуп алууну даярдаңыз.' },
+  uz: { title: '🛬 Ertaga keladi', body: '{code} ertaga {when} keladi. Kutib olishni tayyorlang.' },
+  tk: { title: '🛬 Ertir gelýär', body: '{code} ertir {when} gelýär. Garşylamany taýýarlaň.' },
+  de: { title: '🛬 Ankunft morgen', body: '{code} kommt morgen um {when}. Abholung vorbereiten.' },
+  th: { title: '🛬 มาถึงพรุ่งนี้', body: '{code} ถึงพรุ่งนี้ {when} เตรียมรับ' },
+  fa: { title: '🛬 ورود فردا', body: '{code} فردا ساعت {when} می‌رسد. استقبال را آماده کنید.' },
+};
+const ARRIVAL_NODRIVER: Partial<Record<Lang, Txt>> = {
+  tr: { title: '⚠️ Şoför atanmadı', body: '{code} {when} iniyor — karşılayacak kişi yok.' },
+  en: { title: '⚠️ No driver assigned', body: '{code} lands at {when} — no pickup person yet.' },
+  ru: { title: '⚠️ Нет водителя', body: '{code} прилетает в {when} — встречающий не назначен.' },
+  kk: { title: '⚠️ Жүргізуші жоқ', body: '{code} {when} келеді — қарсы алушы жоқ.' },
+  ky: { title: '⚠️ Айдоочу жок', body: '{code} {when} келет — тосуп алуучу жок.' },
+  uz: { title: '⚠️ Haydovchi yo‘q', body: '{code} {when} keladi — kutib oluvchi yo‘q.' },
+  tk: { title: '⚠️ Sürüji ýok', body: '{code} {when} gelýär — garşylaýjy ýok.' },
+  de: { title: '⚠️ Kein Fahrer', body: '{code} kommt um {when} — niemand zur Abholung.' },
+  th: { title: '⚠️ ยังไม่มีคนขับ', body: '{code} ถึง {when} — ยังไม่มีผู้รับ' },
+  fa: { title: '⚠️ راننده تعیین نشده', body: '{code} ساعت {when} می‌رسد — کسی برای استقبال نیست.' },
+};
+
+export function arrivalPushText(
+  kind: 'today' | 'tomorrow',
+  opts: { code?: string; when?: string; missingDriver?: boolean },
+  locale?: string | null,
+): Txt {
+  const lang = resolveLang(locale);
+  const map = opts.missingDriver ? ARRIVAL_NODRIVER : (kind === 'today' ? ARRIVAL_TODAY : ARRIVAL_TOMORROW);
+  const t = pick(map, lang);
+  return {
+    title: t.title,
+    body: t.body.replace('{code}', opts.code || '—').replace('{when}', opts.when || '—'),
+  };
+}
+
+const LIFECYCLE_PUSH: Record<string, Partial<Record<Lang, Txt>>> = {
+  boarding_check: {
+    tr: { title: '🛫 Uçağa bindiniz mi?', body: 'Uçuş günündesiniz. Ana sayfadan evet / hayır cevaplayın.' },
+    en: { title: '🛫 Did you board?', body: 'It is flight day. Answer yes / no on the home screen.' },
+    ru: { title: '🛫 Вы вылетели?', body: 'День вылета. Ответьте да / нет на главном экране.' },
+    kk: { title: '🛫 Ұшаққа отырдыңыз ба?', body: 'Ұшу күні. Басты беттен иә / жоқ деп жауап беріңіз.' },
+    ky: { title: '🛫 Учакка отурдуңузбу?', body: 'Учуу күнү. Баш экрандан ооба / жок деп жооп бериңиз.' },
+    uz: { title: '🛫 Samolyotga chiqdingizmi?', body: 'Parvoz kuni. Bosh ekranda ha / yo‘q deb javob bering.' },
+    tk: { title: '🛫 Uçara mündüňizmi?', body: 'Uçuş güni. Baş sahypada hawa / ýok diýip jogap beriň.' },
+    de: { title: '🛫 Eingestiegen?', body: 'Flugtag. Bitte ja / nein auf dem Startbildschirm.' },
+    th: { title: '🛫 ขึ้นเครื่องแล้วหรือยัง?', body: 'วันบิน ตอบใช่ / ไม่ใช่ที่หน้าแรก' },
+    fa: { title: '🛫 سوار شدید؟', body: 'روز پرواز است. در صفحه اصلی بله / خیر بگویید.' },
+  },
+  boarding_no_response: {
+    tr: { title: '⏰ Uçuş cevabı yok', body: 'Aday uçuş teyidine cevap vermedi. Başlangıç tarihini kontrol edin.' },
+    en: { title: '⏰ No boarding reply', body: 'Candidate did not confirm boarding. Check the start date.' },
+  },
+  boarding_confirmed: {
+    tr: { title: '✓ Uçuş teyit edildi', body: 'Aday uçağa bindi / yola çıktı.' },
+    en: { title: '✓ Boarding confirmed', body: 'The candidate boarded / is on the way.' },
+  },
+  boarding_missed: {
+    tr: { title: '⚠️ Uçak kaçırıldı — iniş saatini güncelleyin', body: 'Aday yeni bileti kendisi alır. Yeni iniş günü/saatini girin; yoksa Varışlar listesinde görünmez, karşılama planlanamaz.' },
+    en: { title: '⚠️ Flight missed — update landing time', body: 'Candidate buys the new ticket. Enter the new landing date/time or they vanish from Arrivals and pickup cannot be planned.' },
+  },
+  work_start_confirm: {
+    tr: { title: 'İşe başladı mı?', body: 'Adayın işe başlama günü geldi. Personel olarak kaydedin veya tarihi erteleyin.' },
+    en: { title: 'Did they start work?', body: 'Start date is today. Mark as staff or postpone the date.' },
+    ru: { title: 'Вышел на работу?', body: 'День начала. Оформите в штат или перенесите дату.' },
+    de: { title: 'Arbeitsbeginn?', body: 'Startdatum ist heute. Als Personal speichern oder Datum verschieben.' },
+  },
+  work_start_remind: {
+    tr: { title: 'İşe başlama hatırlatması', body: 'Aday hâlâ Yolda. İşe başladı mı, kontrol edin.' },
+    en: { title: 'Work-start reminder', body: 'Candidate is still in transit. Confirm whether they started.' },
+  },
+  employment_started: {
+    tr: { title: 'İşe başlama onaylandı', body: 'Acenten sizi personel olarak kaydetti.' },
+    en: { title: 'Employment started', body: 'Your agency recorded you as staff.' },
+  },
+  employment_end_remind: {
+    tr: { title: 'Ayrılış yakında kesinleşecek', body: 'İtiraz veya geri alma için son şans.' },
+    en: { title: 'Exit finalizes soon', body: 'Last chance to contest or undo.' },
+  },
+  employment_term_due: {
+    tr: { title: 'Çalışma süresi doldu', body: 'Dönemi onaylayın veya sorunu bildirin. Otomatik sertifika yok.' },
+    en: { title: 'Work term ended', body: 'Confirm completion or report a problem. No automatic certificate.' },
+  },
+  employment_term_remind: {
+    tr: { title: 'Dönem onayı bekleniyor', body: '7 gün cevap yoksa Turquz bakar. Sertifika otomatik verilmez.' },
+    en: { title: 'Term confirmation pending', body: 'After 7 days Turquz reviews. No automatic certificate.' },
+  },
+  employment_term_stalled: {
+    tr: { title: 'Dönem onayı takıldı', body: '7 gündür cevap yok. Admin panelinden karar verin.' },
+    en: { title: 'Term confirmation stalled', body: 'No reply for 7 days. Decide in the admin panel.' },
+  },
+  employment_term_voted: {
+    tr: { title: 'Karşı taraf onayladı', body: 'Dönem onayı için sizin cevabınız da gerekir.' },
+    en: { title: 'Other party confirmed', body: 'Your confirmation is still needed.' },
+  },
+  employment_restored: {
+    tr: { title: 'İstihdam geri alındı', body: 'Personel kaydı yeniden açıldı. Belgeler yeniden yüklenmeli.' },
+    en: { title: 'Employment restored', body: 'Staff record reopened. Documents must be re-uploaded.' },
+  },
+  rating_required: {
+    tr: { title: 'Personeli puanlayın', body: 'Sezon başarıyla tamamlandı. Değerlendirme zorunludur — puan verene kadar hatırlatılır.' },
+    en: { title: 'Rate your staff', body: 'The season completed successfully. Rating is required — we will remind you until you rate.' },
+    ru: { title: 'Оцените сотрудника', body: 'Сезон успешно завершён. Оценка обязательна.' },
+    de: { title: 'Personal bewerten', body: 'Saison erfolgreich abgeschlossen. Bewertung ist Pflicht.' },
+  },
+  rating_remind: {
+    tr: { title: 'Puanlama bekleniyor', body: 'Tamamlanan personelinizi henüz puanlamadınız. Lütfen değerlendirin.' },
+    en: { title: 'Rating still needed', body: 'You have not rated your completed staff yet. Please rate them.' },
+    ru: { title: 'Нужна оценка', body: 'Вы ещё не оценили завершившего сезон сотрудника.' },
+    de: { title: 'Bewertung ausstehend', body: 'Sie haben das abgeschlossene Personal noch nicht bewertet.' },
+  },
+  flight_ticket_ready: {
+    tr: { title: '✈️ Uçak biletiniz hazır', body: 'İnişiniz {when}. Bileti belgelerden açabilirsiniz.' },
+    en: { title: '✈️ Your flight ticket is ready', body: 'You land at {when}. Open the ticket in Documents.' },
+    ru: { title: '✈️ Авиабилет готов', body: 'Прилёт {when}. Откройте билет в документах.' },
+    kk: { title: '✈️ Ұшақ билетіңіз дайын', body: 'Қонуыңыз {when}. Билетті құжаттардан ашыңыз.' },
+    ky: { title: '✈️ Учак билетиңиз даяр', body: 'Конушуңуз {when}. Билетти документтерден ачыңыз.' },
+    uz: { title: '✈️ Chiptangiz tayyor', body: 'Qo‘nishingiz {when}. Chiptani hujjatlardan oching.' },
+    tk: { title: '✈️ Biletiňiz taýýar', body: 'Inişiňiz {when}. Bileti resminamalardan açyp bilersiňiz.' },
+    de: { title: '✈️ Flugticket bereit', body: 'Ankunft {when}. Ticket unter Dokumente öffnen.' },
+    th: { title: '✈️ ตั๋วพร้อมแล้ว', body: 'ลงจอด {when} เปิดตั๋วในเอกสาร' },
+    fa: { title: '✈️ بلیط آماده است', body: 'فرود شما {when}. بلیط را از مدارک باز کنید.' },
+  },
+  flight_ticket_sent: {
+    tr: { title: 'Uçak bileti gönderildi', body: 'Adaya bilet iletildi — Yolda aşamasına geçti.' },
+    en: { title: 'Flight ticket sent', body: 'Ticket sent to the candidate — now in transit.' },
+  },
+  transit_stalled: {
+    tr: { title: 'Yolda takıldı', body: 'Aday ve acente cevap vermedi. Personeli arayıp geldi / gelmedi işaretleyin. Otomatik kayıt yok.' },
+    en: { title: 'Stuck in transit', body: 'Neither candidate nor agency replied. Call them and mark arrived or not. No automatic hire.' },
+  },
+};
+
+const LIFECYCLE_PUSH_TYPES = new Set(Object.keys(LIFECYCLE_PUSH));
+
+export function isLifecyclePushType(type?: string | null): boolean {
+  return !!type && LIFECYCLE_PUSH_TYPES.has(type);
+}
+
+export function lifecyclePushText(type: string, locale?: string | null, vars?: Record<string, string> | null): Txt {
+  const map = LIFECYCLE_PUSH[type];
+  if (!map) return { title: 'Turquz', body: '' };
+  const txt = pick(map, resolveLang(locale));
+  if (type === 'flight_ticket_ready' && !(vars?.when || '').trim()) {
+    return pick(DOC_FLIGHT_PLAIN, resolveLang(locale));
+  }
+  return applyVars(txt, vars);
+}
+
+/** Acenteye giden istihdam/boarding türleri (tercih kapısı). */
+export function lifecyclePushIsAgency(type: string): boolean {
+  return type !== 'boarding_check' && type !== 'employment_started' && type !== 'flight_ticket_ready';
+  // rating_required / rating_remind acenteye gider (agency tercihi geçerli).
 }
 
 export type PushTokenRow = { token: string; locale?: string | null };

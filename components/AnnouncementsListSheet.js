@@ -7,6 +7,8 @@ import Svg, { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
 import { listAnnouncementNotifications, markAnnouncementsRead } from '../lib/notifications';
+import { markAgencyNoticeRead, listAgencyNotices, listNoticeAudienceBuckets, agencyNoticeFromLabel } from '../lib/agencyNotices';
+import NoticeAudienceBuckets from './NoticeAudienceBuckets';
 import { supabase } from '../lib/supabase';
 import { announcementText } from '../lib/announcementI18n';
 
@@ -29,31 +31,47 @@ const fmt = (iso) => {
   return `${p(dt.getDate())}.${p(dt.getMonth() + 1)}.${dt.getFullYear()} ${p(dt.getHours())}:${p(dt.getMinutes())}`;
 };
 
-export default function AnnouncementsListSheet({ visible, onClose, userId }) {
+export default function AnnouncementsListSheet({ visible, onClose, userId, agencyId, onCompose, onOpenSent, onComposeGroup, reloadAt }) {
   const { t, lang } = useLanguage();
   const insets = useSafeAreaInsets();
+  const isHub = !!agencyId;
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [tab, setTab] = useState('brief'); // brief | turquz
+  const [sent, setSent] = useState([]);
+  const [buckets, setBuckets] = useState([]);
 
   const refresh = useCallback(async () => {
     if (!userId) return;
     setLoading(true);
     try {
       const list = await listAnnouncementNotifications(userId);
-      setItems(list);
+      setItems(isHub ? list.filter((n) => n.type === 'announcement') : list);
       await markAnnouncementsRead(userId);
+      if (isHub) {
+        const [hist, b] = await Promise.all([
+          listAgencyNotices(40),
+          listNoticeAudienceBuckets(agencyId),
+        ]);
+        setSent(hist);
+        setBuckets(b);
+      }
     } finally {
       setLoading(false);
     }
-  }, [userId]);
+  }, [userId, isHub, agencyId]);
 
   useEffect(() => {
     if (visible) {
       setDetail(null);
-      refresh();
+      setTab('brief');
     }
-  }, [visible, refresh]);
+  }, [visible]);
+
+  useEffect(() => {
+    if (visible) refresh();
+  }, [visible, reloadAt, refresh]);
 
   useEffect(() => {
     if (!visible || !userId) return undefined;
@@ -70,9 +88,12 @@ export default function AnnouncementsListSheet({ visible, onClose, userId }) {
   };
 
   const pack = detail ? announcementText(detail.payload || {}, lang) : null;
-  const detailTitle = pack?.title || t('notif_announcement');
+  const isAgency = detail?.type === 'agency_notice' || detail?.payload?.from === 'agency';
+  const fromLabel = isAgency ? agencyNoticeFromLabel(detail?.payload || {}, t) : '';
+  const detailTitle = pack?.title || (isAgency ? fromLabel : t('notif_announcement'));
   const detailBody = pack?.body || '';
   const detailWhen = detail?.createdAt ? fmt(detail.createdAt) : '';
+  const detailTone = detail?.payload?.tone;
 
   return (
     <Modal visible={!!visible} animationType="slide" onRequestClose={detail ? () => setDetail(null) : handleClose}>
@@ -86,10 +107,30 @@ export default function AnnouncementsListSheet({ visible, onClose, userId }) {
             <Text style={styles.back}>‹</Text>
           </TouchableOpacity>
           <Text style={styles.headTitle}>
-            {detail ? t('notif_announcement_read') : t('home_announcements')}
+            {detail ? (isAgency ? fromLabel : t('notif_announcement_read')) : t('home_announcements')}
           </Text>
           <View style={{ width: 28 }} />
         </View>
+
+        {isHub && !detail ? (
+          <View style={styles.tabs}>
+            <TouchableOpacity
+              style={[styles.tab, tab === 'brief' && styles.tabOn]}
+              onPress={() => setTab('brief')}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.tabText, tab === 'brief' && styles.tabTextOn]}>{t('agency_notice_hub')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, tab === 'turquz' && styles.tabOn]}
+              onPress={() => setTab('turquz')}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.tabText, tab === 'turquz' && styles.tabTextOn]}>{t('agency_notice_turquz')}</Text>
+              {items.some((n) => !n.read_at) ? <View style={styles.tabDot} /> : null}
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {detail ? (
           <ScrollView
@@ -101,9 +142,64 @@ export default function AnnouncementsListSheet({ visible, onClose, userId }) {
                 <View style={styles.detailBell}><BellIcon size={20} /></View>
                 {detailWhen ? <Text style={styles.when}>{detailWhen}</Text> : null}
               </View>
+              {isAgency ? (
+                <Text style={styles.agencyKicker}>
+                  {fromLabel}
+                  {detailTone ? ` · ${t(`agency_notice_tone_${detailTone}`)}` : ''}
+                </Text>
+              ) : null}
               <Text style={styles.detailTitle}>{detailTitle}</Text>
               {detailBody ? <Text style={styles.detailText}>{detailBody}</Text> : null}
+              {isAgency ? <Text style={styles.noReply}>{t('agency_notice_no_reply')}</Text> : null}
             </View>
+          </ScrollView>
+        ) : isHub && tab === 'brief' ? (
+          <ScrollView
+            contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 28 }]}
+            showsVerticalScrollIndicator={false}
+          >
+            <TouchableOpacity style={styles.compose} onPress={() => onCompose?.()} activeOpacity={0.88}>
+              <Text style={styles.composeText}>{t('agency_notice_new')}</Text>
+            </TouchableOpacity>
+            <Text style={styles.hubHint}>{t('agency_notice_hub_hint')}</Text>
+            <NoticeAudienceBuckets
+              buckets={buckets}
+              mode="send"
+              theme="dark"
+              t={t}
+              onSendGroup={(b) => onComposeGroup?.(b)}
+            />
+            {loading && !sent.length ? (
+              <ActivityIndicator color={GOLD} style={{ marginTop: 40 }} />
+            ) : sent.length ? (
+              <View style={styles.panel}>
+                {sent.map((h, idx) => {
+                  const last = idx === sent.length - 1;
+                  return (
+                    <TouchableOpacity
+                      key={h.id}
+                      style={[styles.row, !last && styles.rowBorder]}
+                      onPress={() => onOpenSent?.(h)}
+                      activeOpacity={0.85}
+                    >
+                      <View style={styles.mid}>
+                        <Text style={styles.agencyKicker}>{t(`agency_notice_tone_${h.tone || 'info'}`)}</Text>
+                        <Text style={styles.title} numberOfLines={2}>{h.title}</Text>
+                        <Text style={styles.when}>
+                          {fmt(h.created_at)} · {t('agency_notice_read_n', { a: String(h.readN), b: String(h.sentN) })}
+                        </Text>
+                      </View>
+                      <Text style={styles.chev}>›</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ) : (
+              <View style={styles.empty}>
+                <View style={styles.emptyIcon}><BellIcon size={28} color="#cbb88a" /></View>
+                <Text style={styles.emptyText}>{t('agency_notice_empty_hist')}</Text>
+              </View>
+            )}
           </ScrollView>
         ) : (
           <ScrollView
@@ -117,16 +213,32 @@ export default function AnnouncementsListSheet({ visible, onClose, userId }) {
                 {items.map((n, idx) => {
                   const { title, body } = announcementText(n.payload || {}, lang);
                   const last = idx === items.length - 1;
+                  const agency = n.type === 'agency_notice' || n.payload?.from === 'agency';
+                  const unread = !n.read_at;
+                  const fromLabelRow = agency ? agencyNoticeFromLabel(n.payload || {}, t) : '';
                   return (
                     <TouchableOpacity
                       key={n.id}
-                      style={[styles.row, !last && styles.rowBorder]}
-                      onPress={() => setDetail({ payload: n.payload || {}, createdAt: n.created_at })}
+                      style={[styles.row, !last && styles.rowBorder, unread && styles.rowUnread]}
+                      onPress={async () => {
+                        setDetail({
+                          id: n.id,
+                          type: n.type,
+                          payload: n.payload || {},
+                          createdAt: n.created_at,
+                        });
+                        if (agency) {
+                          const noticeId = n.payload?.notice_id;
+                          await markAgencyNoticeRead(noticeId);
+                          setItems((prev) => prev.map((x) => (x.id === n.id ? { ...x, read_at: x.read_at || new Date().toISOString() } : x)));
+                        }
+                      }}
                       activeOpacity={0.85}
                     >
                       <View style={styles.iconWrap}><BellIcon size={20} /></View>
                       <View style={styles.mid}>
-                        <Text style={styles.title} numberOfLines={2}>{title || t('notif_announcement')}</Text>
+                        {agency ? <Text style={styles.agencyKicker}>{fromLabelRow}</Text> : null}
+                        <Text style={styles.title} numberOfLines={2}>{title || (agency ? fromLabelRow : t('notif_announcement'))}</Text>
                         {body ? <Text style={styles.sub} numberOfLines={2}>{body}</Text> : null}
                         <Text style={styles.when}>{fmt(n.created_at)}</Text>
                       </View>
@@ -171,6 +283,27 @@ const styles = StyleSheet.create({
   sub: { color: '#9fb0c4', fontSize: 13, fontWeight: '500', marginTop: 4, lineHeight: 18 },
   when: { color: '#7a8796', fontSize: 11.5, fontWeight: '600', marginTop: 6 },
   chev: { color: GOLD, fontSize: 24, fontWeight: '300' },
+  agencyKicker: {
+    color: GOLD, fontSize: 11, fontWeight: '800', letterSpacing: 0.3,
+    marginBottom: 4,
+  },
+  rowUnread: { backgroundColor: 'rgba(194,162,90,0.08)' },
+  noReply: { marginTop: 18, fontSize: 13, fontWeight: '600', color: '#7a8796', lineHeight: 19 },
+  tabs: {
+    flexDirection: 'row', marginHorizontal: 18, marginBottom: 10, padding: 4,
+    backgroundColor: '#0a1524', borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(90,130,170,0.28)',
+  },
+  tab: { flex: 1, paddingVertical: 10, borderRadius: 11, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 6 },
+  tabOn: { backgroundColor: GOLD },
+  tabText: { color: '#9fb0c4', fontSize: 13, fontWeight: '800' },
+  tabTextOn: { color: '#0e141c' },
+  tabDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#d24b40' },
+  compose: {
+    backgroundColor: GOLD, borderRadius: 14, paddingVertical: 14, alignItems: 'center', marginBottom: 10,
+  },
+  composeText: { color: '#0e141c', fontSize: 15, fontWeight: '800' },
+  hubHint: { color: '#1b2533', fontSize: 14, fontWeight: '800', lineHeight: 20, marginBottom: 16 },
   empty: { alignItems: 'center', paddingTop: 60, gap: 14 },
   emptyIcon: {
     width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(194,162,90,0.12)',

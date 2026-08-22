@@ -11,12 +11,12 @@ import { Icon } from '../components/Icon.jsx';
 import Arrivals from './Arrivals.jsx';
 import { listRatingStats } from '../lib/ratings';
 import { listFavoriteCandidateIds, removeFavorite } from '../lib/favorites';
-import FavoriteEmployerModal from '../components/FavoriteEmployerModal.jsx';
+import AgencyNoticeModal from '../components/AgencyNoticeModal.jsx';
 import { JOIN_PERIOD_MIN, slotMs } from '../lib/interviews';
 
 const BADGE = { pool: 'gold', offered: 'navy', process: 'green', hired: 'teal', transit: 'navy' };
-const BADGE_TXT = { offered: 'Teklifli', process: 'Süreçte', hired: 'Personel', transit: 'Yolda' };
-const TITLES = { pool: 'Havuz', process: 'Süreç', hired: 'Personel' };
+const BADGE_KEYS = { offered: 'agency_filter_offered', process: 'in_process_label', hired: 'nav_staff', transit: 'ops_transit' };
+const TITLE_KEYS = { pool: 'nav_pool', process: 'nav_candidates', hired: 'nav_candidates' };
 const PROCESS_SUBS = [
   { id: 'interviews', key: 'sub_interviews' },
   { id: 'concluded', key: 'sub_concluded' },
@@ -123,7 +123,7 @@ function WorkAreaFacet({ groups, selected, onToggle, title }) {
   );
 }
 
-export default function Pool({ category, query, rows, onOpen, agencyId, onRefresh, processJump, onProcessJumpConsumed }) {
+export default function Pool({ category, query, rows, onOpen, agencyId, onRefresh, processJump, onProcessJumpConsumed, hideStageTabs }) {
   const { t, lang } = useLang();
   const [fPos, setFPos] = useState([]);
   const [fLang, setFLang] = useState([]);
@@ -149,12 +149,12 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   const [transitRows, setTransitRows] = useState([]);
   const [transitLoading, setTransitLoading] = useState(false);
   const [ratingMap, setRatingMap] = useState({});
-  const [favEmployer, setFavEmployer] = useState(null); // { id, name }
-  const [favIds, setFavIds] = useState(null); // string[] | null — shortlist sırası
-  const [favFilterOpen, setFavFilterOpen] = useState(false);
+  const [favOn, setFavOn] = useState(false);
+  const [favIds, setFavIds] = useState(null); // string[] | null — favori sırası
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [noticeOpen, setNoticeOpen] = useState(false);
   const [empSections, setEmpSections] = useState(null);
 
   useEffect(() => {
@@ -165,9 +165,10 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     } else if (typeof processJump === 'string' && processJump.startsWith('pipe_')) {
       setProcessSub('inprocess');
       setPipeStepFilter(Number(processJump.slice(5)) || null);
-    }
-    if (processJump === 'transit') {
-      setHiredView('transit');
+    } else if (processJump === 'transit' || processJump === 'arrivals' || processJump === 'former') {
+      setHiredView(processJump);
+    } else if (processJump === 'staff' || processJump === 'cards') {
+      setHiredView('cards');
     }
     onProcessJumpConsumed?.();
   }, [processJump, onProcessJumpConsumed]);
@@ -175,9 +176,8 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   const posLabel = (v) => (POSITION_LABELS[v]?.[lang] || POSITION_LABELS[v]?.en) || v;
   const langLabel = (v) => (LANG_LABELS[v]?.[lang] || LANG_LABELS[v]?.en) || v;
   const skillLabel = (v) => (SKILL_LABELS[v]?.[lang] || SKILL_LABELS[v]?.en) || v;
-  const employFilterLabel = { student: { tr: 'Öğrenci', en: 'Student', ru: 'Студент' }, employed: { tr: 'Çalışan', en: 'Employed', ru: 'Работающий' } };
   const employLabel = (v) => (EMPLOYMENT_STATUS_LABELS[v]?.[lang] || EMPLOYMENT_STATUS_LABELS[v]?.en) || v;
-  const employFilterLbl = (v) => (employFilterLabel[v]?.[lang] || employFilterLabel[v]?.tr) || employLabel(v);
+  const employFilterLbl = (v) => t(`es_${v}`) || employLabel(v);
   const rowLangs = (r) => (r.data?.languages || []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean);
   const workLabel = (v) => (WORK_AVAILABILITY_LABELS[v]?.[lang] || WORK_AVAILABILITY_LABELS[v]?.en) || v;
   const rowWorkAvail = (r) => normalizeWorkAvailability(r.work_availability ?? r.data?.availableMonths);
@@ -275,6 +275,16 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     if (category === 'hired') {
       if (hiredView === 'former') return formerRows.filter(matchTerm);
       if (hiredView === 'transit') return transitRows.filter(matchTerm);
+      if (hiredView === 'arrivals') {
+        const seen = new Set();
+        const out = [];
+        [...transitRows, ...rows.filter((r) => categoryOf(r.st) === 'hired')].forEach((r) => {
+          if (seen.has(r.user_id) || !matchTerm(r)) return;
+          seen.add(r.user_id);
+          out.push({ ...r, arrivalStatus: categoryOf(r.st) === 'transit' ? 'transit' : 'hired' });
+        });
+        return out;
+      }
       return rows.filter((r) => categoryOf(r.st) === 'hired' && matchTerm(r));
     }
     if (category === 'process') {
@@ -321,15 +331,21 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     label: workLabel(v),
     count: count((r) => rowWorkAvail(r) === v),
   })), [base, lang]);
+  const certFacet = useMemo(() => [{
+    value: 'yes',
+    label: t('f_turquz_certified') || 'Turquz sertifikalı',
+    count: count((r) => !!r.turquz_certified),
+  }], [base, lang, t]);
 
   useEffect(() => {
-    if (!agencyId || !favEmployer?.id) { setFavIds(null); return undefined; }
+    if (!agencyId || !favOn) { setFavIds(null); return undefined; }
     let alive = true;
-    listFavoriteCandidateIds(agencyId, favEmployer.id).then((ids) => {
+    setFavIds([]);
+    listFavoriteCandidateIds(agencyId).then((ids) => {
       if (alive) setFavIds(ids);
     });
     return () => { alive = false; };
-  }, [agencyId, favEmployer?.id]);
+  }, [agencyId, favOn]);
 
   const list = useMemo(() => {
     const aMin = parseInt(ageMin, 10) || 0, aMax = parseInt(ageMax, 10) || 0;
@@ -419,27 +435,38 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     ...fEmployment.map((v) => ({ id: 'e' + v, label: employFilterLbl(v), rm: () => rmFrom(setFEmployment)(v) })),
     ...fMonths.map((v) => ({ id: 'm' + v, label: workLabel(v), rm: () => rmFrom(setFMonths)(v) })),
     ...fNat.map((v) => ({ id: 'n' + v, label: v, rm: () => rmFrom(setFNat)(v) })),
-    ...(fCertified ? [{ id: 'cert', label: '🏅 Turquz sertifikalı', rm: () => setFCertified(false) }] : []),
-    ...((ageMin || ageMax) ? [{ id: 'age', label: `Yaş ${ageMin || '…'}–${ageMax || '…'}`, rm: () => { setAgeMin(''); setAgeMax(''); } }] : []),
+    ...(fCertified ? [{ id: 'cert', label: t('f_turquz_certified') || '', rm: () => setFCertified(false) }] : []),
+    ...((ageMin || ageMax) ? [{ id: 'age', label: t('agency_age_chip', { min: ageMin || '…', max: ageMax || '…' }) || `${t('agency_age') || ''} ${ageMin || '…'}–${ageMax || '…'}`, rm: () => { setAgeMin(''); setAgeMax(''); } }] : []),
   ];
 
   const showSort = !(category === 'hired' && hiredView === 'arrivals')
     && !(category === 'process' && (processSub === 'interviews' || processSub === 'concluded'));
   const showFav = category === 'pool';
-  const canBulkSelect = category === 'pool';
-  const selectableIds = useMemo(
-    () => list.filter((r) => categoryOf(r.st) === 'pool').map((r) => r.user_id),
-    [list],
-  );
+  const canOfferSelect = category === 'pool';
+  const canNoticeSelect =
+    (category === 'process' && (processSub === 'offered' || processSub === 'inprocess'))
+    || (category === 'hired' && (hiredView === 'cards' || hiredView === 'transit'));
+  const canSelectMode = canOfferSelect || canNoticeSelect;
+  const selectableIds = useMemo(() => {
+    if (canNoticeSelect) return list.map((r) => r.user_id).filter(Boolean);
+    if (canOfferSelect) return list.filter((r) => categoryOf(r.st) === 'pool').map((r) => r.user_id);
+    return [];
+  }, [list, canNoticeSelect, canOfferSelect]);
 
   useEffect(() => {
-    if (!canBulkSelect && selectMode) {
+    if (!canSelectMode && selectMode) {
       setSelectMode(false);
       setSelectedIds([]);
     }
-  }, [canBulkSelect, selectMode]);
+  }, [canSelectMode, selectMode]);
 
-  const exitSelect = () => { setSelectMode(false); setSelectedIds([]); };
+  useEffect(() => {
+    setSelectMode(false);
+    setSelectedIds([]);
+    setNoticeOpen(false);
+  }, [processSub, hiredView, category]);
+
+  const exitSelect = () => { setSelectMode(false); setSelectedIds([]); setNoticeOpen(false); };
   const toggleSelect = (id) => {
     if (!selectableIds.includes(id)) return;
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -463,7 +490,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
       await onRefresh?.();
       exitSelect();
     } catch (e) {
-      window.alert(e?.message || (t('agency_offer') || 'Teklif') + ' hatası');
+      window.alert(e?.message || t('err_generic') || '');
     } finally {
       setBulkBusy(false);
     }
@@ -472,9 +499,9 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   if (rows == null) {
     return (
       <div className="ecBody">
-        <aside className="ecSidebar"><div className="ecSideTop"><span className="ecSideTitle">Filtrele</span></div></aside>
+        <aside className="ecSidebar"><div className="ecSideTop"><span className="ecSideTitle">{t('agency_filter_btn') || ''}</span></div></aside>
         <section className="ecResults">
-          <div className="ecResultBar"><h1 className="ecTitle">Yükleniyor…</h1></div>
+          <div className="ecResultBar"><h1 className="ecTitle">{t('loading_label') || ''}</h1></div>
           <div className="ecGrid">
             {Array.from({ length: 10 }).map((_, i) => (
               <div key={i} className="pcard skel"><div className="pcardImg skelBox" /><div className="pcardBody"><div className="skelLine w60" /><div className="skelLine w40" /></div></div>
@@ -488,42 +515,39 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   return (
     <div className={`ecBody ${collapsed ? 'collapsed' : ''}`}>
       {collapsed ? (
-        <button className="filterReopen" onClick={() => setCollapsed(false)} title="Filtreleri aç">
-          <Icon name="filter" size={16} /><span>Filtrele{activeCount ? ` (${activeCount})` : ''}</span>
+        <button className="filterReopen" onClick={() => setCollapsed(false)} title={t('agency_filters') || ''}>
+          <Icon name="filter" size={16} /><span>{t('agency_filter_btn') || ''}{activeCount ? ` (${activeCount})` : ''}</span>
         </button>
       ) : (
       <aside className="ecSidebar">
         <div className="ecSideTop">
-          <span className="ecSideTitle">Filtrele</span>
+          <span className="ecSideTitle">{t('agency_filter_btn') || ''}</span>
           <div className="ecSideTopBtns">
-            {activeCount ? <button className="clearF" onClick={clearAll}>Temizle ({activeCount})</button> : null}
-            <button className="collapseF" onClick={() => setCollapsed(true)} title="Filtreleri kapat">«</button>
+            {activeCount ? <button className="clearF" onClick={clearAll}>{t('agency_clear') || ''} ({activeCount})</button> : null}
+            <button className="collapseF" onClick={() => setCollapsed(true)} title={t('agency_filters') || ''}>«</button>
           </div>
         </div>
 
         <div className="facet">
-          <button className={`facetHead ${ageOpen ? 'on' : ''}`} onClick={() => setAgeOpen((v) => !v)}><span>Yaş</span><span className={`caret ${ageOpen ? 'o' : ''}`}>▾</span></button>
+          <button className={`facetHead ${ageOpen ? 'on' : ''}`} onClick={() => setAgeOpen((v) => !v)}><span>{t('agency_age') || ''}</span><span className={`caret ${ageOpen ? 'o' : ''}`}>▾</span></button>
           {ageOpen ? (
             <div className="facetBody ageBody">
-              <input className="ageInput" inputMode="numeric" placeholder="Min" value={ageMin} onChange={(e) => setAgeMin(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))} />
+              <input className="ageInput" inputMode="numeric" placeholder={t('agency_age_min') || 'Min'} value={ageMin} onChange={(e) => setAgeMin(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))} />
               <span className="ageDash">–</span>
-              <input className="ageInput" inputMode="numeric" placeholder="Maks" value={ageMax} onChange={(e) => setAgeMax(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))} />
+              <input className="ageInput" inputMode="numeric" placeholder={t('agency_age_max') || 'Max'} value={ageMax} onChange={(e) => setAgeMax(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))} />
             </div>
           ) : null}
         </div>
 
         <Facet title={t('f_gender') || 'Cinsiyet'} items={genderFacet} selected={fGender} onToggle={toggle(setFGender)} max={3} />
         <Facet title={t('f_employment_status') || 'Çalışma Durumu'} items={employFacet} selected={fEmployment} onToggle={toggle(setFEmployment)} max={2} />
-        <div className="facet">
-          <div className="facetTitle">{t('f_turquz_certified') || 'Turquz sertifikalı'}</div>
-          <button
-            type="button"
-            className={`facetChip ${fCertified ? 'on' : ''}`}
-            onClick={() => setFCertified((v) => !v)}
-          >
-            🏅 {t('f_turquz_certified') || 'Turquz sertifikalı'}
-          </button>
-        </div>
+        <Facet
+          title={t('f_turquz_certified') || 'Turquz sertifikalı'}
+          items={certFacet}
+          selected={fCertified ? ['yes'] : []}
+          onToggle={() => setFCertified((v) => !v)}
+          max={1}
+        />
         <Facet title={t('f_work_duration') || 'Çalışma Süresi'} items={workFacet} selected={fMonths} onToggle={toggle(setFMonths)} max={2} />
 
         <WorkAreaFacet
@@ -541,16 +565,16 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
 
       <section className="ecResults">
         <div className="ecResultBar">
-          <h1 className="ecTitle">{TITLES[category] || 'Adaylar'}</h1>
-          {category === 'hired' ? (
+          <h1 className="ecTitle">{t(TITLE_KEYS[category]) || category}</h1>
+          {!hideStageTabs && category === 'hired' ? (
             <div className="arrToggle">
-              <button type="button" className={`arrTab ${hiredView === 'cards' ? 'on' : ''}`} onClick={() => setHiredView('cards')}>Personeller</button>
-              <button type="button" className={`arrTab ${hiredView === 'transit' ? 'on' : ''}`} onClick={() => setHiredView('transit')}>Yolda</button>
-              <button type="button" className={`arrTab ${hiredView === 'arrivals' ? 'on' : ''}`} onClick={() => setHiredView('arrivals')}>Varışlar</button>
-              <button type="button" className={`arrTab ${hiredView === 'former' ? 'on' : ''}`} onClick={() => setHiredView('former')}>Eski personel</button>
+              <button type="button" className={`arrTab ${hiredView === 'cards' ? 'on' : ''}`} onClick={() => setHiredView('cards')}>{t('staff_tab_list') || ''}</button>
+              <button type="button" className={`arrTab ${hiredView === 'transit' ? 'on' : ''}`} onClick={() => setHiredView('transit')}>{t('ops_transit') || ''}</button>
+              <button type="button" className={`arrTab ${hiredView === 'arrivals' ? 'on' : ''}`} onClick={() => setHiredView('arrivals')}>{t('staff_tab_arrivals') || ''}</button>
+              <button type="button" className={`arrTab ${hiredView === 'former' ? 'on' : ''}`} onClick={() => setHiredView('former')}>{t('staff_tab_former') || ''}</button>
             </div>
           ) : null}
-          {category === 'process' ? (
+          {!hideStageTabs && category === 'process' ? (
             <div className="arrToggle processSubs">
               {PROCESS_SUBS.map((s) => (
                 <button
@@ -590,25 +614,16 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
               }</b>
               {' '}
               {category === 'hired'
-                ? (hiredView === 'former' ? 'eski' : hiredView === 'transit' ? 'yolda' : 'personel')
-                : 'aday'}
+                ? (hiredView === 'former' ? (t('count_former') || '') : hiredView === 'transit' ? (t('count_transit') || '') : (t('count_staff') || ''))
+                : (t('count_candidates') || '')}
             </span>
             {agencyId && showFav ? (
               <button
                 type="button"
-                className={`favFilterBtn ${favEmployer ? 'on' : ''}`}
-                onClick={() => setFavFilterOpen(true)}
+                className={`favFilterBtn ${favOn ? 'on' : ''}`}
+                onClick={() => setFavOn((v) => !v)}
               >
-                ★ {favEmployer ? favEmployer.name : (t('fav_filter_btn') || 'Favoriler')}
-                {favEmployer ? (
-                  <span
-                    className="x"
-                    onClick={(e) => { e.stopPropagation(); setFavEmployer(null); }}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setFavEmployer(null); } }}
-                  >✕</span>
-                ) : null}
+                ★ {t('fav_filter_btn') || 'Favoriler'}
               </button>
             ) : null}
             {showSort ? (
@@ -622,7 +637,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                 </button>
               </div>
             ) : null}
-            {canBulkSelect ? (
+            {canSelectMode ? (
               <button
                 type="button"
                 className={`selectModeBtn ${selectMode ? 'on' : ''}`}
@@ -632,7 +647,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
               </button>
             ) : null}
           </div>
-          {selectMode && canBulkSelect ? (
+          {selectMode && canSelectMode ? (
             <div className="selectToolbar">
               <button type="button" className="selectAllBtn" onClick={selectAllVisible}>
                 ☑ {t('agency_select_all') || 'Tümünü Seç'}
@@ -645,7 +660,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
               {chips.map((ch) => (
                 <button key={ch.id} className="aChip" onClick={ch.rm}>{ch.label} <span className="aChipX">✕</span></button>
               ))}
-              <button className="aClear" onClick={clearAll}>Tümünü temizle</button>
+              <button className="aClear" onClick={clearAll}>{t('agency_clear_all') || ''}</button>
             </div>
           ) : null}
         </div>
@@ -656,7 +671,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
         <>
         {list.length === 0 ? (
           <div className="empty">
-            {favEmployer
+            {favOn
               ? (t('fav_empty') || 'Bu işletme için henüz favori aday yok.')
               : category === 'process' && processSub === 'interviews'
                 ? (t('interviews_empty') || 'Mülakat teklif edilen aday yok.')
@@ -667,10 +682,10 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
               : category === 'process' && processSub === 'inprocess'
                     ? (t('inprocess_empty') || 'Süreçte aday yok.')
                     : category === 'hired' && hiredView === 'former'
-                      ? (t('former_empty') || 'Eski personel kaydı yok.')
+                      ? (t('staff_former_empty') || t('former_empty') || '')
                     : category === 'hired' && hiredView === 'transit'
-                      ? 'Yolda / başlangıç bekleyen aday yok.'
-                    : 'Bu görünümde aday yok.'}
+                      ? (t('transit_empty') || '')
+                    : (t('candidates_empty') || t('agency_empty') || '')}
           </div>
         ) : null}
 
@@ -696,15 +711,15 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
             const extra = allPos.length - positions.length;
             const age = ageOf(r);
             const flag = flagUrl(r.nationality);
-            const showUnfav = !!favEmployer?.id && !selectMode;
-            const canSelect = c === 'pool';
+            const showUnfav = favOn && !selectMode;
+            const canSelect = canNoticeSelect || c === 'pool';
             const isSel = selectedIds.includes(r.user_id);
             const onUnfav = async (e) => {
               e.preventDefault();
               e.stopPropagation();
-              if (!agencyId || !favEmployer?.id) return;
+              if (!agencyId || !favOn) return;
               try {
-                await removeFavorite(agencyId, favEmployer.id, r.user_id);
+                await removeFavorite(agencyId, r.user_id);
                 setFavIds((prev) => (prev || []).filter((id) => id !== r.user_id));
               } catch (err) {
                 console.warn('unfav:', err?.message);
@@ -729,7 +744,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                 <div className="pcardImg">
                   {photo ? <img src={photo} alt="" /> : <div className="pcardNoImg"><Icon name="users" size={34} /></div>}
                   {c !== 'pool' ? (
-                    <span className={`badge ${BADGE[c]} pcardBadge`}>{BADGE_TXT[c]}</span>
+                    <span className={`badge ${BADGE[c]} pcardBadge`}>{t(BADGE_KEYS[c]) || c}</span>
                   ) : null}
                   {selectMode ? (
                     <span className={`pcardCheck ${isSel ? 'on' : ''} ${!canSelect ? 'disabled' : ''}`} aria-hidden>
@@ -737,7 +752,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                     </span>
                   ) : null}
                   {ratingMap[r.user_id] ? (
-                    <div className={`pcardRate ${showUnfav || selectMode ? 'withUnfav' : ''}`} title={`${ratingMap[r.user_id].count} değerlendirme`}>
+                    <div className={`pcardRate ${showUnfav || selectMode ? 'withUnfav' : ''}`} title={t('rate_n_count', { n: ratingMap[r.user_id].count }) || String(ratingMap[r.user_id].count)}>
                       <span className="pcardRateStar">★</span>
                       <span className="pcardRateAvg">{Number(ratingMap[r.user_id].avg).toFixed(1)}</span>
                       <span className="pcardRateCount">({ratingMap[r.user_id].count})</span>
@@ -747,8 +762,8 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                     <button
                       type="button"
                       className="pcardUnfav"
-                      title={t('fav_remove') || 'Favorilerden çıkar'}
-                      aria-label={t('fav_remove') || 'Favorilerden çıkar'}
+                      title={t('fav_remove') || ''}
+                      aria-label={t('fav_remove') || ''}
                       onClick={onUnfav}
                     >
                       ✕
@@ -760,14 +775,14 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                   {r.employerLabel ? <div className="pcardEmp">{r.employerLabel}</div> : null}
                   <div className="pcardNat">
                     {flag ? <img className="flag" src={flag} alt="" /> : null}
-                    <span>{r.nationality || '—'}{age ? ` · ${age} yaş` : ''}</span>
+                    <span>{r.nationality || '—'}{age ? ` · ${t('age_n', { n: age }) || age}` : ''}</span>
                   </div>
                   {category === 'process' && processSub === 'inprocess' && processMeta[r.user_id] ? (
                     <div className={`pcardPipe turn-${processMeta[r.user_id].turn || 'none'}`}>
                       <span className="pcardPipeStep">
                         {processMeta[r.user_id].titleKey
-                          ? (t(processMeta[r.user_id].titleKey) || `Adım ${processMeta[r.user_id].pipeStep}`)
-                          : `Adım ${processMeta[r.user_id].pipeStep}`}
+                          ? (t(processMeta[r.user_id].titleKey) || t('step_n', { n: processMeta[r.user_id].pipeStep }) || '')
+                          : (t('step_n', { n: processMeta[r.user_id].pipeStep }) || '')}
                       </span>
                       <span className="pcardPipeTurn">
                         {TURN_KEYS[processMeta[r.user_id].turn]
@@ -778,20 +793,25 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                   ) : null}
                   {category === 'process' && processSub === 'offered' ? (
                     <div className="pcardPipe turn-candidate">
-                      <span className="pcardPipeTurn">Aday yanıtı bekleniyor</span>
+                      <span className="pcardPipeTurn">{t('offer_awaiting_reply') || ''}</span>
                     </div>
                   ) : null}
                   {category === 'hired' && hiredView === 'transit' ? (
                     <div className="pcardPipe turn-agency">
                       <span className="pcardPipeStep">
-                        {r.work_start_at ? `Başlangıç ${String(r.work_start_at).slice(0, 10)}` : 'Başlangıç tarihi yok'}
+                        {r.work_start_at
+                          ? (t('ops_start_on', { date: String(r.work_start_at).slice(0, 10) }) || String(r.work_start_at).slice(0, 10))
+                          : (t('work_start_none') || '')}
                       </span>
-                      <span className="pcardPipeTurn">Personel onayı bekleniyor</span>
+                      <span className="pcardPipeTurn">{t('staff_confirm_waiting') || ''}</span>
                     </div>
                   ) : null}
                   {r.former && r.formerMeta?.outcome ? (
-                    <div className="pcardPipe turn-none">
-                      <span className="pcardPipeTurn">{r.formerMeta.outcome}</span>
+                    <div className={`pcardPipe ${r.formerMeta.needs_rating ? 'turn-agency' : 'turn-none'}`}>
+                      <span className="pcardPipeTurn">
+                        {r.formerMeta.outcome === 'completed' ? (t('staff_outcome_completed') || 'Tamamladı') : (t('staff_outcome_early') || r.formerMeta.outcome)}
+                        {r.formerMeta.needs_rating ? ` · ★ ${t('rate_required_badge') || 'Puan gerekli'}` : ''}
+                      </span>
                     </div>
                   ) : null}
                   <div className={`pcardOnline tier-${lastSeenTier(r.last_seen_at)}`} title={r.last_seen_at || ''}>
@@ -814,33 +834,41 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
         )}
       </section>
 
-      {selectMode && canBulkSelect ? (
+      {selectMode && canSelectMode ? (
         <div className="bulkBar">
           <span className="bulkText">{t('agency_selected', { n: selectedIds.length }) || `${selectedIds.length} seçili`}</span>
           <div className="bulkActions">
             <button type="button" className="bulkCancel" onClick={exitSelect} disabled={bulkBusy}>
               {t('agency_cancel') || 'İptal'}
             </button>
-            <button
-              type="button"
-              className="bulkOffer"
-              onClick={bulkOffer}
-              disabled={bulkBusy || !selectedIds.length}
-            >
-              {bulkBusy ? '…' : (t('agency_offer') || 'Teklif Gönder')}
-            </button>
+            {canNoticeSelect ? (
+              <button
+                type="button"
+                className="bulkOffer"
+                onClick={() => selectedIds.length && setNoticeOpen(true)}
+                disabled={!selectedIds.length}
+              >
+                {t('agency_notice')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="bulkOffer"
+                onClick={bulkOffer}
+                disabled={bulkBusy || !selectedIds.length}
+              >
+                {bulkBusy ? '…' : (t('agency_offer') || 'Teklif Gönder')}
+              </button>
+            )}
           </div>
         </div>
       ) : null}
 
-      <FavoriteEmployerModal
-        open={favFilterOpen}
-        mode="filter"
-        agencyId={agencyId}
-        selectedEmployerId={favEmployer?.id || null}
-        onPickEmployer={(emp) => setFavEmployer({ id: emp.id, name: emp.name })}
-        onClearFilter={() => setFavEmployer(null)}
-        onClose={() => setFavFilterOpen(false)}
+      <AgencyNoticeModal
+        open={noticeOpen}
+        onClose={() => setNoticeOpen(false)}
+        userIds={selectedIds}
+        targetKind="selected"
       />
     </div>
   );

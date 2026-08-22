@@ -10,7 +10,7 @@ const CORS = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 
-const AGENCY_KINDS = ['contract_unsigned', 'flight_ticket', 'pickup'];
+const AGENCY_KINDS = ['contract_unsigned', 'flight_ticket', 'pickup', 'agency_doc_retracted', 'agency_doc_updated', 'flight_ticket_updated'];
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
@@ -50,8 +50,14 @@ Deno.serve(async (req) => {
     const tokens = (toks ?? []) as PushTokenRow[];
     if (!tokens.length) return json({ ok: true, skipped: 'no_tokens' });
 
+    let when = '';
+    if (kind === 'flight_ticket') {
+      const { data: fl } = await admin.from('flights').select('arrive_at').eq('user_id', candidateUserId).maybeSingle();
+      when = String(fl?.arrive_at || '').trim();
+    }
+
     const messages = tokens.filter((t) => t.token).map(({ token: to, locale }) => {
-      const txt = docPushText(kind, byAgency, locale);
+      const txt = docPushText(kind, byAgency, locale, { when });
       return {
         to,
         title: txt.title,
@@ -60,11 +66,29 @@ Deno.serve(async (req) => {
         sound: 'notify.wav',
         channelId: byAgency ? 'calls' : 'default',
         ...(byAgency ? { interruptionLevel: 'critical' } : {}),
-        data: { kind, candidateUserId },
+        data: { kind, candidateUserId, scrollToStep: kind === 'pickup' ? 6 : kind === 'flight_ticket' ? 5 : undefined },
       };
     });
 
     const result = await sendExpoPush(messages);
+
+    if (kind === 'flight_ticket') {
+      const { data: n } = await admin
+        .from('notifications')
+        .select('id, payload')
+        .eq('user_id', recipientId)
+        .eq('type', 'flight_ticket_ready')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (n?.id) {
+        const prev = (n.payload && typeof n.payload === 'object') ? n.payload as Record<string, unknown> : {};
+        await admin.from('notifications').update({
+          payload: { ...prev, arriveAt: when || prev.arriveAt || null, pushed: '1' },
+        }).eq('id', n.id);
+      }
+    }
+
     return json({ ok: true, sent: messages.length, result });
   } catch (e) {
     return json({ error: String(e?.message ?? e) }, 500);

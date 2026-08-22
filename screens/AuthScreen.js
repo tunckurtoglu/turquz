@@ -3,7 +3,7 @@
 // - E-posta + şifre ile giriş ve kayıt (kayıtta şifre iki kez + eşleşme kontrolü)
 // - Şifremi unuttum → e-posta linki turquz://reset-password (App.js recovery ekranı)
 // - Google / Apple: Supabase OAuth (in-app tarayıcı) → register_as_* ile portal kilidi
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, Platform, Image,
@@ -18,6 +18,7 @@ import { getRole } from '../lib/roles';
 import { registerAsAgency, registerAsCandidate } from '../lib/agencyProfile';
 import { GoogleIcon, AppleIcon } from '../components/BrandIcons';
 import { openPrivacy } from '../lib/config';
+import { clearRememberedLogin, loadRememberedLogin, saveRememberedLogin } from '../lib/rememberLogin';
 
 const GOLD = '#c2a25a';
 const GOLD_D = '#9a7b1f';
@@ -61,7 +62,21 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   const [msg, setMsg] = useState(null);           // { type:'err'|'ok', text }
   const [showReset, setShowReset] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
   const agencyMode = portal === 'agency';
+
+  useEffect(() => {
+    let live = true;
+    loadRememberedLogin(portal).then((saved) => {
+      if (!live) return;
+      if (saved.remember) {
+        setEmail(saved.email);
+        setPass(saved.password);
+        setRememberMe(true);
+      }
+    });
+    return () => { live = false; };
+  }, [portal]);
 
   const rtl = dir === 'rtl';
   const ta = { textAlign: rtl ? 'right' : 'left' };
@@ -142,6 +157,8 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
         const { data, error } = await signInWithEmail(email, pass);
         if (error) { setMsg({ type: 'err', text: error.message }); return; }
         if (data?.session) {
+          if (rememberMe) await saveRememberedLogin(portal, { email, password: pass });
+          else await clearRememberedLogin(portal);
           if (agencyMode) {
             await finishAgencySession(data.session);
             return;
@@ -274,6 +291,8 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
             placeholder="••••••••"
             secureTextEntry
             autoCapitalize="none"
+            textContentType="password"
+            autoComplete="password"
           />
 
           {mode === 'signup' ? (
@@ -296,9 +315,23 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
           ) : null}
 
           {mode === 'signin' ? (
-            <TouchableOpacity onPress={() => { setResetEmail(email); setShowReset(true); clearMsg(); }} activeOpacity={0.7}>
-              <Text style={[styles.forgot, { textAlign: rtl ? 'left' : 'right' }]}>{t('auth_forgot')}</Text>
-            </TouchableOpacity>
+            <View style={[styles.signinMeta, rtl && styles.signinMetaRtl]}>
+              <TouchableOpacity
+                style={styles.rememberRow}
+                onPress={() => setRememberMe((v) => !v)}
+                activeOpacity={0.7}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: rememberMe }}
+              >
+                <View style={[styles.checkbox, rememberMe && styles.checkboxOn]}>
+                  {rememberMe ? <Text style={styles.checkboxMark}>✓</Text> : null}
+                </View>
+                <Text style={styles.rememberLbl}>{t('auth_remember')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => { setResetEmail(email); setShowReset(true); clearMsg(); }} activeOpacity={0.7}>
+                <Text style={styles.forgot}>{t('auth_forgot')}</Text>
+              </TouchableOpacity>
+            </View>
           ) : null}
 
           {msg ? (
@@ -440,7 +473,20 @@ const styles = StyleSheet.create({
   },
   warn: { color: '#c0392b', fontSize: 13, fontWeight: '600', marginTop: 6 },
   ok: { color: '#1f8a4c', fontSize: 13, fontWeight: '600', marginTop: 6 },
-  forgot: { color: '#7a6550', fontSize: 13, fontWeight: '700', marginTop: 12 },
+  signinMeta: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginTop: 12, gap: 8,
+  },
+  signinMetaRtl: { flexDirection: 'row-reverse' },
+  rememberRow: { flexDirection: 'row', alignItems: 'center', flexShrink: 1, gap: 8 },
+  checkbox: {
+    width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: LINE,
+    backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center',
+  },
+  checkboxOn: { backgroundColor: NAVY, borderColor: NAVY },
+  checkboxMark: { color: '#fff', fontSize: 11, fontWeight: '800', marginTop: -1 },
+  rememberLbl: { color: '#3d4654', fontSize: 13, fontWeight: '700' },
+  forgot: { color: '#7a6550', fontSize: 13, fontWeight: '700' },
 
   cta: { backgroundColor: NAVY, borderRadius: 12, paddingVertical: 15, alignItems: 'center', marginTop: 18 },
   ctaDisabled: { opacity: 0.55 },

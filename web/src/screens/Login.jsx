@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getRole, registerAsAgency, sendPasswordReset, signIn, signOut, signUp } from '../lib/api';
 import { useLang } from '../i18n.jsx';
+import { clearRememberedLogin, loadRememberedLogin, saveRememberedLogin } from '../lib/rememberLogin';
 
 /** Sol panelde hafif dünya haritası filigranı — mockup’taki atmosphere. */
 function BrandMapWatermark() {
@@ -64,6 +65,16 @@ export default function Login({ loggedInButNotStaff, onLogout }) {
   const [err, setErr] = useState('');
   const [ok, setOk] = useState('');
   const [showPass, setShowPass] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
+
+  useEffect(() => {
+    const saved = loadRememberedLogin('agency');
+    if (saved.remember) {
+      setEmail(saved.email);
+      setPass(saved.password);
+      setRememberMe(true);
+    }
+  }, []);
 
   const finishAgency = async (session) => {
     try {
@@ -71,14 +82,14 @@ export default function Login({ loggedInButNotStaff, onLogout }) {
     } catch (e) {
       if (String(e?.message || '').includes('already_candidate')) {
         await signOut();
-        throw new Error('Bu e-posta aday hesabı. Acente için farklı e-posta kullanın.');
+        throw new Error(t('auth_err_agency_already_candidate') || '');
       }
       console.warn(e);
     }
     const role = await getRole(session.user.id);
     if (role !== 'agency' && role !== 'admin') {
       await signOut();
-      throw new Error('Acente hesabı oluşturulamadı. Destek ile iletişime geçin.');
+      throw new Error(t('auth_err_agency_create') || '');
     }
   };
 
@@ -87,20 +98,24 @@ export default function Login({ loggedInButNotStaff, onLogout }) {
     setErr(''); setOk(''); setBusy(true);
     try {
       if (mode === 'forgot') {
-        if (!email.trim()) throw new Error(t('auth_err_email') || 'Geçerli bir e-posta gir.');
+        if (!email.trim()) throw new Error(t('auth_err_email') || '');
         await sendPasswordReset(email);
-        setOk(t('auth_reset_sent') || 'Sıfırlama bağlantısı e-postana gönderildi.');
+        setOk(t('auth_reset_sent') || '');
       } else if (mode === 'signup') {
-        if (pass.length < 6) throw new Error(t('auth_err_pass_short') || 'Şifre en az 6 karakter olmalı');
-        if (pass !== pass2) throw new Error(t('auth_err_pass_match') || 'Şifreler eşleşmiyor');
+        if (pass.length < 6) throw new Error(t('auth_err_pass_short') || '');
+        if (pass !== pass2) throw new Error(t('auth_err_pass_match') || '');
         const data = await signUp(email, pass, { portal: 'agency' });
         if (data?.session) await finishAgency(data.session);
-        else setOk(t('auth_check_email') || 'E-posta onayınızı kontrol edin, ardından giriş yapın.');
+        else setOk(t('auth_check_email') || '');
       } else {
         const data = await signIn(email, pass);
-        if (data?.session) await finishAgency(data.session);
+        if (data?.session) {
+          if (rememberMe) saveRememberedLogin('agency', { email, password: pass });
+          else clearRememberedLogin('agency');
+          await finishAgency(data.session);
+        }
       }
-    } catch (e2) { setErr(e2?.message || 'İşlem başarısız'); }
+    } catch (e2) { setErr(e2?.message || t('auth_err_generic') || ''); }
     finally { setBusy(false); }
   };
 
@@ -146,8 +161,8 @@ export default function Login({ loggedInButNotStaff, onLogout }) {
 
           {loggedInButNotStaff ? (
             <>
-              <p className="loginErr">Bu hesap acente/yönetici değil. Acente hesabıyla giriş yapın.</p>
-              <button className="authCta" type="button" onClick={onLogout}>Çıkış</button>
+              <p className="loginErr">{t('auth_err_not_agency') || ''}</p>
+              <button className="authCta" type="button" onClick={onLogout}>{t('set_logout') || ''}</button>
             </>
           ) : (
             <>
@@ -208,7 +223,7 @@ export default function Login({ loggedInButNotStaff, onLogout }) {
                         type="button"
                         className="authInputTrail"
                         onClick={() => setShowPass((v) => !v)}
-                        aria-label={showPass ? 'Gizle' : 'Göster'}
+                        aria-label={showPass ? (t('auth_hide') || '') : (t('auth_show') || '')}
                       >
                         <IconEye off={showPass} />
                       </button>
@@ -234,9 +249,19 @@ export default function Login({ loggedInButNotStaff, onLogout }) {
                   </>
                 ) : null}
                 {mode === 'signin' ? (
-                  <button type="button" className="authLink" onClick={() => { setMode('forgot'); setErr(''); setOk(''); }}>
-                    {t('auth_forgot') || 'Şifremi unuttum'}
-                  </button>
+                  <div className="authSigninMeta">
+                    <label className="authRemember">
+                      <input
+                        type="checkbox"
+                        checked={rememberMe}
+                        onChange={(e) => setRememberMe(e.target.checked)}
+                      />
+                      {t('auth_remember') || 'Beni hatırla'}
+                    </label>
+                    <button type="button" className="authLink" onClick={() => { setMode('forgot'); setErr(''); setOk(''); }}>
+                      {t('auth_forgot') || 'Şifremi unuttum'}
+                    </button>
+                  </div>
                 ) : null}
                 {err ? <p className="loginErr" role="alert">{err}</p> : null}
                 {ok ? <p className="authOk">{ok}</p> : null}

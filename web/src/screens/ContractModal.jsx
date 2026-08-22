@@ -1,13 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
-import { getContract, saveContract, getCandidateContractFields, getMySignature, logContractSignature, getLatestContractSignature, uploadDocument, removeDocument } from '../lib/api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  getContract, saveContract, getCandidateContractFields, uploadDocument,
+  logContractSignature, submitDocuments, notifyDocument,
+} from '../lib/api';
 import { buildAuditLine, sha256Hex } from '../lib/esign';
 import { buildContractHtml } from '../../../cv/buildContractHtml';
 import { withLatinName } from '../../../lib/translit';
 import { candidateCode } from '../../../lib/candidateCode';
-import { listEmployers, saveEmployer, touchEmployer, deleteEmployer, mergeEmployerIntoContract } from '../lib/employers';
-import SignatureSetup from './SignatureSetup.jsx';
+import {
+  listEmployers, saveEmployer, touchEmployer, deleteEmployer, mergeEmployerIntoContract,
+  getEmployer, employerStampInfo, employerReadyForContract, employerContractBlockReason,
+} from '../lib/employers';
+import StampSetup from './StampSetup.jsx';
+import { stampMakeTransparentSafe } from '../lib/stampProcess';
+import { useLang } from '../i18n.jsx';
 
-// İmzalı HTML -> A4 PDF (base64). Ekran stilleri atlanır (screen:false), html2pdf ile.
 async function htmlToPdfBase64(html) {
   const html2pdf = (await import('html2pdf.js')).default;
   const styleM = html.match(/<style>([\s\S]*?)<\/style>/);
@@ -28,21 +35,27 @@ async function htmlToPdfBase64(html) {
 }
 
 const FIELDS = [
-  ['title', 'İşveren unvanı *', true], ['address', 'İşyeri adresi *', true], ['phone', 'Telefon'], ['email', 'E-posta'],
-  ['contactPhone', 'İletişim telefonu'], ['contactEmail', 'İletişim e-postası'],
-  ['position', 'Pozisyon / görev *'], ['salary', 'Brüt ücret (TL)'], ['consulate', 'Konsolosluk / şehir'],
+  ['title', 'contract_f_title', true], ['address', 'contract_f_address', true],
+  ['phone', 'contract_f_phone'], ['email', 'contract_f_email'],
+  ['contactPhone', 'contract_f_contact_phone'], ['contactEmail', 'contract_f_contact_email'],
+  ['position', 'contract_f_position'], ['salary', 'contract_f_salary'], ['consulate', 'contract_f_consulate'],
 ];
 
 const EMPLOYER_FORM = [
-  ['name', 'Liste adı *'], ['title', 'İşveren unvanı *'], ['address', 'İşyeri adresi *'],
-  ['phone', 'Telefon'], ['email', 'E-posta'], ['contactPhone', 'İletişim telefonu'], ['contactEmail', 'İletişim e-postası'],
+  ['name', 'employer_f_name'], ['title', 'contract_f_title'], ['address', 'contract_f_address'],
+  ['phone', 'contract_f_phone'], ['email', 'contract_f_email'],
+  ['contactPhone', 'contract_f_contact_phone'], ['contactEmail', 'contract_f_contact_email'],
 ];
 
-export default function ContractModal({ candidate, esigned, onClose, onChanged }) {
+const REQ_CONTRACT = new Set(['title', 'address', 'position']);
+const REQ_EMPLOYER = new Set(['name', 'title', 'address']);
+
+export default function ContractModal({ candidate, onClose, onChanged, autoSend = false }) {
+  const { t } = useLang();
   const agencyId = candidate.agencyUserId;
   const [data, setData] = useState(candidate.data || {});
   const [contract, setContract] = useState(null);
-  const [signature, setSignature] = useState(null);
+  const [stamp, setStamp] = useState(null);
   const [formOpen, setFormOpen] = useState(false);
   const [employerPickOpen, setEmployerPickOpen] = useState(false);
   const [employerFormOpen, setEmployerFormOpen] = useState(false);
@@ -51,11 +64,23 @@ export default function ContractModal({ candidate, esigned, onClose, onChanged }
   const [empSaving, setEmpSaving] = useState(false);
   const [empF, setEmpF] = useState({});
   const [empEditId, setEmpEditId] = useState(null);
-  const [sigOpen, setSigOpen] = useState(false);
-  const [signing, setSigning] = useState(false);
-  const [canceling, setCanceling] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [stampOpen, setStampOpen] = useState(null); // employer object or null
   const [f, setF] = useState({});
   const code = candidateCode(candidate.nationality, candidate.reg_no);
+  const autoSendTried = useRef(false);
+
+  const blockMsg = (reason) => (
+    reason === 'tax' ? t('employer_need_tax')
+      : reason === 'stamp' ? t('employer_need_stamp')
+        : t('employer_need_both')
+  );
+
+  const reloadStamp = async (employerId = contract?.employerId) => {
+    if (!agencyId || !employerId) { setStamp(null); return; }
+    const emp = await getEmployer(agencyId, employerId);
+    setStamp(employerStampInfo(emp));
+  };
 
   useEffect(() => {
     (async () => {
@@ -63,12 +88,9 @@ export default function ContractModal({ candidate, esigned, onClose, onChanged }
       setContract(c || {});
       setF(c || {});
       if (priv) setData((d) => ({ ...d, ...priv }));
-      if (esigned) {
-        const [mine, log] = await Promise.all([getMySignature(), getLatestContractSignature(candidate.user_id)]);
-        if (mine && log) setSignature({ image: mine.image, name: mine.signerName, subtitle: mine.signerTitle, auditLine: buildAuditLine(log) });
-      }
+      if (c?.employerId) await reloadStamp(c.employerId);
     })();
-  }, [candidate.user_id, esigned]);
+  }, [candidate.user_id]);
 
   const refreshEmployers = async () => {
     if (!agencyId) return;
@@ -82,7 +104,10 @@ export default function ContractModal({ candidate, esigned, onClose, onChanged }
     if (employerPickOpen) refreshEmployers();
   }, [employerPickOpen, agencyId]);
 
-  const html = useMemo(() => buildContractHtml(withLatinName(data), contract || {}, signature ? { signature } : {}), [data, contract, signature]);
+  const html = useMemo(
+    () => buildContractHtml(withLatinName(data), contract || {}, stamp?.image ? { signature: stamp } : {}),
+    [data, contract, stamp],
+  );
   const hasInfo = !!(contract?.title?.trim() && contract?.position?.trim());
 
   const openEdit = () => {
@@ -91,64 +116,78 @@ export default function ContractModal({ candidate, esigned, onClose, onChanged }
   };
 
   const pickEmployer = async (employer) => {
+    const reason = employerContractBlockReason(employer);
+    if (reason || !employerReadyForContract(employer)) {
+      alert(blockMsg(reason));
+      return;
+    }
     await touchEmployer(agencyId, employer.id);
     const merged = mergeEmployerIntoContract(contract, employer);
     setContract(merged);
     setF(merged);
+    setStamp(employerStampInfo(employer));
     setEmployerPickOpen(false);
     setFormOpen(true);
   };
 
   const openNewEmployer = () => {
     setEmpEditId(null);
-    setEmpF({});
+    setEmpF({ name: '', title: '', address: '', phone: '', email: '', contactPhone: '', contactEmail: '' });
     setEmployerFormOpen(true);
   };
 
   const openEditEmployer = (e) => {
     setEmpEditId(e.id);
     setEmpF({
-      name: e.name || '',
-      title: e.title || '',
-      address: e.address || '',
-      phone: e.phone || '',
-      email: e.email || '',
-      contactPhone: e.contactPhone || '',
-      contactEmail: e.contactEmail || '',
+      name: e.name || '', title: e.title || '', address: e.address || '',
+      phone: e.phone || '', email: e.email || '',
+      contactPhone: e.contact_phone || '', contactEmail: e.contact_email || '',
     });
     setEmployerFormOpen(true);
-  };
-
-  const removeEmployer = async (e) => {
-    if (!confirm(`"${e.name}" listeden silinsin mi? Bu işlem geri alınamaz.`)) return;
-    try {
-      await deleteEmployer(agencyId, e.id);
-      await refreshEmployers();
-    } catch (err) { alert(err?.message || 'Hata'); }
   };
 
   const saveEmployerForm = async () => {
     if (!empF.name?.trim() || !empF.title?.trim() || !empF.address?.trim()) return;
     setEmpSaving(true);
     try {
-      const row = await saveEmployer(agencyId, empF, empEditId || undefined);
-      const wasEdit = !!empEditId;
+      await saveEmployer(agencyId, {
+        id: empEditId || undefined,
+        name: empF.name, title: empF.title, address: empF.address,
+        phone: empF.phone, email: empF.email,
+        contact_phone: empF.contactPhone, contact_email: empF.contactEmail,
+      });
       setEmployerFormOpen(false);
-      setEmpF({});
       setEmpEditId(null);
       await refreshEmployers();
-      if (!wasEdit) await pickEmployer(row);
-    } catch (e) { alert(e?.message || 'Hata'); }
-    finally { setEmpSaving(false); }
+    } catch (e) {
+      alert(e?.message || t('err_title'));
+    } finally {
+      setEmpSaving(false);
+    }
+  };
+
+  const removeEmployer = async (e) => {
+    if (!confirm(t('employer_delete_confirm', { name: e.name || '' }))) return;
+    try {
+      await deleteEmployer(agencyId, e.id);
+      await refreshEmployers();
+    } catch (err) {
+      alert(err?.message || t('err_title'));
+    }
   };
 
   const changeEmployerFromForm = () => {
     setFormOpen(false);
     setEmployerPickOpen(true);
   };
+
   const saveForm = async () => {
+    if (!f.title?.trim() || !f.position?.trim() || !f.address?.trim()) {
+      alert(t('contract_required'));
+      return;
+    }
     const issueDate = contract?.issueDate || new Date().toLocaleDateString('tr-TR');
-    const full = { ...f, issueDate };
+    const full = { ...f, issueDate, employerId: f.employerId || contract?.employerId || null };
     await saveContract(candidate.user_id, full, agencyId);
     setContract(full); setFormOpen(false);
   };
@@ -159,45 +198,68 @@ export default function ContractModal({ candidate, esigned, onClose, onChanged }
     setTimeout(() => { try { w.print(); } catch (_) {} }, 400);
   };
 
-  const doSign = async () => {
-    if (!hasInfo) { alert('Önce sözleşme bilgilerini doldurun.'); openEdit(); return; }
-    const mine = await getMySignature();
-    if (!mine) { alert('Önce imza & kaşenizi tanımlayın.'); setSigOpen(true); return; }
-    if (!confirm('Sözleşme imza ve kaşenizle elektronik olarak imzalanacak. Onaylıyor musunuz?')) return;
-    setSigning(true);
+  const sendStamped = async (skipConfirm = false) => {
+    if (!hasInfo) { alert(t('contract_need_info')); openEdit(); return; }
+    if (!contract?.employerId) { alert(t('stamp_need_employer')); setEmployerPickOpen(true); return; }
+    const emp = await getEmployer(agencyId, contract.employerId);
+    const reason = employerContractBlockReason(emp);
+    if (reason || !employerReadyForContract(emp)) {
+      alert(blockMsg(reason));
+      return;
+    }
+    if (!stamp?.image) {
+      alert(t('employer_need_stamp'));
+      setStampOpen(emp || { id: contract.employerId, name: contract.title || '' });
+      return;
+    }
+    if (!skipConfirm && !window.confirm(t('contract_send_confirm'))) return;
+    setPreparing(true);
     try {
       const latin = withLatinName(data);
       const baseHtml = buildContractHtml(latin, contract, { screen: false });
       const docHash = (await sha256Hex(baseHtml)).slice(0, 16);
-      const log = await logContractSignature({ candidateUserId: candidate.user_id, signerName: mine.signerName, signerTitle: mine.signerTitle, docNo: code, docHash });
-      const sigInfo = { image: mine.image, name: mine.signerName, subtitle: mine.signerTitle, auditLine: buildAuditLine(log) };
-      const signedHtml = buildContractHtml(latin, contract, { signature: sigInfo, screen: false });
-      const base64 = await htmlToPdfBase64(signedHtml);
+      const log = await logContractSignature({
+        candidateUserId: candidate.user_id,
+        signerName: stamp.name,
+        signerTitle: stamp.subtitle,
+        docNo: code,
+        docHash,
+      });
+      const cleanedImage = await stampMakeTransparentSafe(stamp.image);
+      const sigInfo = { ...stamp, image: cleanedImage, auditLine: buildAuditLine(log) };
+      const stampedHtml = buildContractHtml(latin, contract, { signature: sigInfo, screen: false });
+      const base64 = await htmlToPdfBase64(stampedHtml);
       await uploadDocument(candidate.user_id, 'contract_unsigned', base64, 'application/pdf');
-      setSignature(sigInfo); onChanged?.();
-      alert('Sözleşme e-imzalandı. "Gönder" ile adaya iletebilirsiniz.');
-    } catch (e) { alert(e?.message || 'Hata'); } finally { setSigning(false); }
+      await submitDocuments(candidate.user_id, ['contract_unsigned']);
+      notifyDocument(candidate.user_id, 'contract_unsigned');
+      onChanged?.();
+      onClose?.();
+    } catch (e) {
+      alert(e?.message || t('agency_notice_err'));
+    } finally {
+      setPreparing(false);
+    }
   };
 
-  const cancelEsign = async () => {
-    if (!confirm('E-imza kaldırılsın mı? Sözleşme imzasız hâle döner.')) return;
-    setCanceling(true);
-    try { await removeDocument(candidate.user_id, 'contract_unsigned'); setSignature(null); onChanged?.(); }
-    catch (e) { alert(e?.message || 'Hata'); } finally { setCanceling(false); }
-  };
+  useEffect(() => {
+    if (!autoSend || autoSendTried.current || formOpen || contract === null) return;
+    if (!hasInfo || !stamp?.image) return;
+    autoSendTried.current = true;
+    sendStamped(true);
+  }, [autoSend, formOpen, contract, hasInfo, stamp?.image]);
 
   return (
     <div className="modalOverlay" onClick={onClose}>
       <div className="modalCard contractCard" onClick={(e) => e.stopPropagation()}>
-        <div className="modalHead"><h3>Hizmet Sözleşmesi — {code}</h3><button className="modalX" onClick={onClose}>✕</button></div>
+        <div className="modalHead"><h3>{t('contract_title')} — {code}</h3><button className="modalX" onClick={onClose}>✕</button></div>
 
         {formOpen ? (
           <div className="modalBody cForm">
-            <p className="fieldHint">Resmi sözleşme metni değişmez; yalnızca doldurulan alanlar güncellenir.</p>
-            <button type="button" className="ghostBtn" style={{ marginBottom: 14 }} onClick={changeEmployerFromForm}>İşletmeyi değiştir</button>
-            {FIELDS.map(([key, label, multi]) => (
+            <p className="fieldHint">{t('contract_fields_hint')}</p>
+            <button type="button" className="ghostBtn" style={{ marginBottom: 14 }} onClick={changeEmployerFromForm}>{t('employer_reselect')}</button>
+            {FIELDS.map(([key, labelKey, multi]) => (
               <div key={key} className="cField">
-                <label className="fieldLbl">{label}</label>
+                <label className="fieldLbl">{t(labelKey)}{REQ_CONTRACT.has(key) ? ' *' : ''}</label>
                 {multi
                   ? <textarea className="input" rows={2} value={f[key] || ''} onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))} />
                   : <input className="input" value={f[key] || ''} onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))} />}
@@ -215,37 +277,44 @@ export default function ContractModal({ candidate, esigned, onClose, onChanged }
         <div className="modalFoot wrap">
           {formOpen ? (
             <>
-              <button className="ghostBtn" onClick={() => { setF(contract || {}); setFormOpen(false); }}>Vazgeç</button>
-              <button className="goldBtn sm" onClick={saveForm}>Kaydet</button>
+              <button className="ghostBtn" onClick={() => { setF(contract || {}); setFormOpen(false); }}>{t('intro_video_cancel')}</button>
+              <button className="goldBtn sm" onClick={saveForm}>{t('save')}</button>
             </>
           ) : (
             <>
-              <button className="ghostBtn" onClick={openEdit}>✎ Bilgileri Düzenle</button>
-              <button className="ghostBtn" onClick={download}>İndir / Yazdır</button>
+              <button className="ghostBtn" onClick={openEdit}>✎ {t('contract_edit_info')}</button>
+              <button
+                className="ghostBtn"
+                type="button"
+                onClick={async () => {
+                  if (!contract?.employerId) { alert(t('stamp_need_employer')); setEmployerPickOpen(true); return; }
+                  const emp = await getEmployer(agencyId, contract.employerId);
+                  setStampOpen(emp || { id: contract.employerId, name: contract.title || '' });
+                }}
+              >
+                {stamp?.image ? t('stamp_change') : t('stamp_menu')}
+              </button>
               <div style={{ flex: 1 }} />
-              {signature ? (
-                <>
-                  <span className="signedTag">✓ E-imzalandı</span>
-                  <button className="ghostBtn" onClick={() => setSigOpen(true)}>İmza & Kaşe</button>
-                  <button className="dangerBtn sm" onClick={cancelEsign} disabled={canceling}>{canceling ? '…' : 'E-imzayı İptal Et'}</button>
-                </>
-              ) : (
-                <>
-                  <button className="ghostBtn" onClick={() => setSigOpen(true)}>İmza & Kaşe</button>
-                  <button className="goldBtn sm" onClick={doSign} disabled={signing}>{signing ? 'İmzalanıyor…' : '✍️ E-imza ile İmzala'}</button>
-                </>
-              )}
+              <button className="ghostBtn" type="button" onClick={download}>{t('contract_download')}</button>
+              <button className="goldBtn sm" type="button" onClick={onClose}>{t('done')}</button>
             </>
           )}
         </div>
+        {!formOpen ? (
+          <p className="fieldHint" style={{ padding: '0 16px 14px', margin: 0 }}>
+            {stamp?.image
+              ? t('stamp_contract_preview_hint')
+              : t('stamp_contract_need_hint')}
+          </p>
+        ) : null}
       </div>
 
       {employerPickOpen ? (
         <div className="modalOverlay inner" onClick={() => setEmployerPickOpen(false)}>
           <div className="modalCard sm" onClick={(e) => e.stopPropagation()}>
-            <div className="modalHead"><h3>İşletme Seç</h3><button className="modalX" onClick={() => setEmployerPickOpen(false)}>✕</button></div>
+            <div className="modalHead"><h3>{t('employer_pick_title')}</h3><button className="modalX" onClick={() => setEmployerPickOpen(false)}>✕</button></div>
             <div className="modalBody">
-              <p className="fieldHint">İşveren bilgileri kayıtlı işletmeden dolar. Pozisyon ve ücreti aday için ayrıca girersiniz.</p>
+              <p className="fieldHint">{t('employer_pick_sub')}</p>
               {empLoading ? <div className="center pad"><div className="spinner" /></div> : (
                 <div className="employerList">
                   {employers.map((e) => (
@@ -253,16 +322,23 @@ export default function ContractModal({ candidate, esigned, onClose, onChanged }
                       <button type="button" className="employerCardMain" onClick={() => pickEmployer(e)}>
                         <strong>{e.name}</strong>
                         {e.title ? <span>{e.title}</span> : null}
-                        <em>Bu işletmeyi kullan</em>
+                        <em>
+                          {e.hasTaxPlate ? `✓ ${t('hotels_badge_tax')}` : `· ${t('hotels_badge_no_tax')}`}
+                          {' · '}
+                          {e.hasStamp ? `✓ ${t('hotels_badge_stamp')}` : `· ${t('hotels_badge_no_stamp')}`}
+                          {' — '}
+                          {employerReadyForContract(e) ? t('employer_use') : t('employer_not_ready')}
+                        </em>
                       </button>
                       <div className="employerCardActions">
-                        <button type="button" onClick={() => openEditEmployer(e)}>Düzenle</button>
-                        <button type="button" className="danger" onClick={() => removeEmployer(e)}>Sil</button>
+                        <button type="button" onClick={() => openEditEmployer(e)}>{t('employer_edit')}</button>
+                        <button type="button" onClick={() => setStampOpen(e)}>{t('hotels_badge_stamp')}</button>
+                        <button type="button" className="danger" onClick={() => removeEmployer(e)}>{t('employer_delete')}</button>
                       </div>
                     </div>
                   ))}
-                  {employers.length === 0 ? <p className="fieldHint">Henüz kayıtlı işletme yok.</p> : null}
-                  <button type="button" className="ghostBtn full" onClick={openNewEmployer}>+ Yeni işletme ekle</button>
+                  {employers.length === 0 ? <p className="fieldHint">{t('employer_pick_empty')}</p> : null}
+                  <button type="button" className="ghostBtn full" onClick={openNewEmployer}>+ {t('employer_add_new')}</button>
                 </div>
               )}
             </div>
@@ -273,12 +349,15 @@ export default function ContractModal({ candidate, esigned, onClose, onChanged }
       {employerFormOpen ? (
         <div className="modalOverlay inner" onClick={() => setEmployerFormOpen(false)}>
           <div className="modalCard sm" onClick={(e) => e.stopPropagation()}>
-            <div className="modalHead"><h3>{empEditId ? 'İşletmeyi Düzenle' : 'İşletme Kaydet'}</h3><button className="modalX" onClick={() => { setEmployerFormOpen(false); setEmpEditId(null); }}>✕</button></div>
+            <div className="modalHead">
+              <h3>{empEditId ? t('employer_form_edit_title') : t('employer_form_title')}</h3>
+              <button className="modalX" onClick={() => { setEmployerFormOpen(false); setEmpEditId(null); }}>✕</button>
+            </div>
             <div className="modalBody cForm">
-              <p className="fieldHint">Bu bilgiler tekrar kullanılır; resmi sözleşme metni değişmez.</p>
-              {EMPLOYER_FORM.map(([key, label]) => (
+              <p className="fieldHint">{t('employer_form_hint')}</p>
+              {EMPLOYER_FORM.map(([key, labelKey]) => (
                 <div key={key} className="cField">
-                  <label className="fieldLbl">{label}</label>
+                  <label className="fieldLbl">{t(labelKey)}{REQ_EMPLOYER.has(key) ? ' *' : ''}</label>
                   {['title', 'address'].includes(key)
                     ? <textarea className="input" rows={2} value={empF[key] || ''} onChange={(e) => setEmpF((p) => ({ ...p, [key]: e.target.value }))} />
                     : <input className="input" value={empF[key] || ''} onChange={(e) => setEmpF((p) => ({ ...p, [key]: e.target.value }))} />}
@@ -286,16 +365,27 @@ export default function ContractModal({ candidate, esigned, onClose, onChanged }
               ))}
             </div>
             <div className="modalFoot">
-              <button className="ghostBtn" onClick={() => setEmployerFormOpen(false)}>Vazgeç</button>
+              <button className="ghostBtn" onClick={() => setEmployerFormOpen(false)}>{t('intro_video_cancel')}</button>
               <button className="goldBtn sm" onClick={saveEmployerForm} disabled={empSaving || !empF.name?.trim() || !empF.title?.trim() || !empF.address?.trim()}>
-                {empSaving ? '…' : 'Kaydet'}
+                {empSaving ? '…' : t('save')}
               </button>
             </div>
           </div>
         </div>
       ) : null}
 
-      {sigOpen ? <SignatureSetup onClose={() => setSigOpen(false)} onSaved={() => {}} /> : null}
+      {stampOpen ? (
+        <StampSetup
+          agencyId={agencyId}
+          employer={stampOpen}
+          onClose={() => setStampOpen(null)}
+          onSaved={async (row) => {
+            setStamp(employerStampInfo(row));
+            setStampOpen(null);
+            await refreshEmployers();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

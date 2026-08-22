@@ -7,12 +7,14 @@ import Agencies from './screens/Agencies.jsx';
 import Candidates from './screens/Candidates.jsx';
 import Hotels from './screens/Hotels.jsx';
 import Announcements from './screens/Announcements.jsx';
-import EmploymentDisputes from './screens/EmploymentDisputes.jsx';
+import Interventions from './screens/Interventions.jsx';
+import ProcessChats from './screens/ProcessChats.jsx';
 
 const TABS = [
   { id: 'overview', label: 'Özet' },
+  { id: 'interventions', label: 'Müdahale', badgeKey: 'interventions' },
   { id: 'announcements', label: 'Duyurular' },
-  { id: 'disputes', label: 'İstihdam' },
+  { id: 'chats', label: 'Sohbetler' },
   { id: 'agencies', label: 'Acenteler' },
   { id: 'candidates', label: 'Adaylar' },
   { id: 'hotels', label: 'Oteller' },
@@ -77,16 +79,20 @@ export default function App() {
         </button>
         <div className="topBrand">ADMIN</div>
         <nav className="topNav">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={`navBtn ${tab === t.id ? 'on' : ''}`}
-              onClick={() => goTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
+          {TABS.map((t) => {
+            const badge = t.badgeKey ? stats?.[t.badgeKey] : 0;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                className={`navBtn ${tab === t.id ? 'on' : ''}`}
+                onClick={() => goTab(t.id)}
+              >
+                {t.label}
+                {badge > 0 ? <span className="navBadge">{badge}</span> : null}
+              </button>
+            );
+          })}
         </nav>
         <div className="topRight">
           <span className="topWho">{session.user.email}</span>
@@ -117,10 +123,19 @@ export default function App() {
                 <div className="statLabel">Admin</div>
                 <div className="statVal">{stats?.admins ?? '—'}</div>
               </div>
+              <div className="statCard">
+                <div className="statLabel">Müdahale bekleyen</div>
+                <div className="statVal">{stats?.interventions ?? '—'}</div>
+              </div>
             </div>
             <div className="card">
               <h2>Hızlı erişim</h2>
               <div className="actions">
+                {(stats?.interventions ?? 0) > 0 ? (
+                  <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('interventions')}>
+                    Müdahale kuyruğu ({stats.interventions})
+                  </button>
+                ) : null}
                 <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('announcements')}>Duyuru gönder</button>
                 <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('agencies')}>Acenteleri aç</button>
                 <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('candidates')}>Adayları aç</button>
@@ -150,7 +165,15 @@ export default function App() {
         ) : null}
 
         {tab === 'announcements' ? <Announcements /> : null}
-        {tab === 'disputes' ? <EmploymentDisputes /> : null}
+        {tab === 'interventions' ? (
+          <Interventions
+            onOpenCandidate={(id) => {
+              setCandidateId(id);
+              setTab('candidates');
+            }}
+          />
+        ) : null}
+        {tab === 'chats' ? <ProcessChats /> : null}
         {tab === 'hotels' ? <Hotels /> : null}
       </main>
     </div>

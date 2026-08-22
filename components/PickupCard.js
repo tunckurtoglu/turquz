@@ -10,9 +10,12 @@ import { notifyDocument } from '../lib/push';
 const INK = '#1b2533';
 const GOLD = '#c2a25a';
 
-export default function PickupCard({ userId, role, agencyId, label, flight, embedded }) {
+export default function PickupCard({ userId, role, agencyId, label, flight, embedded, onInputFocus }) {
   const { t } = useLanguage();
   const isAgency = role === 'agency';
+  const focusInput = () => {
+    if (typeof onInputFocus === 'function') onInputFocus();
+  };
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -90,10 +93,25 @@ export default function PickupCard({ userId, role, agencyId, label, flight, embe
         )}
         <Text style={styles.hint}>Adayı havaalanında karşılayacak kişinin bilgileri. Hazır olduğunuzda "Adaya Gönder" deyin (sonradan da güncelleyebilirsiniz).</Text>
 
-        <Text style={styles.lbl}>Karşılayacak kişi (ad soyad)</Text>
-        <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Örn. Ahmet Yılmaz" placeholderTextColor="#9aa1ac" />
-        <Text style={styles.lbl}>Telefon (WhatsApp)</Text>
-        <TextInput style={styles.input} value={phone} onChangeText={setPhone} placeholder="+90 5xx xxx xx xx" placeholderTextColor="#9aa1ac" keyboardType="phone-pad" />
+        <Text style={styles.lbl}>{t('pickup_agency_name')}</Text>
+        <TextInput
+          style={styles.input}
+          value={name}
+          onChangeText={setName}
+          placeholder={t('pickup_agency_name_ph')}
+          placeholderTextColor="#9aa1ac"
+          onFocus={focusInput}
+        />
+        <Text style={styles.lbl}>{t('pickup_agency_phone')}</Text>
+        <TextInput
+          style={styles.input}
+          value={phone}
+          onChangeText={setPhone}
+          placeholder="+90 5xx xxx xx xx"
+          placeholderTextColor="#9aa1ac"
+          keyboardType="phone-pad"
+          onFocus={focusInput}
+        />
 
         <View style={styles.row}>
           <TouchableOpacity style={[styles.ghost, busy && { opacity: 0.5 }]} onPress={save} disabled={busy}><Text style={styles.ghostText}>Kaydet</Text></TouchableOpacity>

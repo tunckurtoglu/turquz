@@ -6,6 +6,7 @@ export const FOCUS_ORDER = [
   'start_confirm',
   'docs_overdue',
   'boarding',
+  'arrival',
   'agency_turn',
   'interview_today',
   'chat',
@@ -47,6 +48,17 @@ export const PENDING_ACTIONS = [
     titleKey: 'ops_boarding',
     hintKey: 'ops_boarding_hint',
     urgent: true,
+  },
+  {
+    key: 'arrivalsSoon',
+    filter: 'arrival',
+    titleKey: 'ops_arrival',
+    hintKey: 'ops_arrival_hint',
+    urgent: true,
+    cat: 'staff',
+    sub: 'arrivals',
+    webCat: 'hired',
+    webSub: 'arrivals',
   },
   {
     key: 'interviewsToday',
@@ -94,6 +106,7 @@ export const FOCUS_DEFS = {
   start_confirm: { key: 'startConfirm', titleKey: 'ops_start_confirm', hintKey: 'ops_start_confirm_hint', urgent: true },
   docs_overdue: { key: 'docsOverdue', titleKey: 'ops_docs_overdue', hintKey: 'ops_docs_overdue_hint', urgent: true },
   boarding: { key: 'boardingRisk', titleKey: 'ops_boarding', hintKey: 'ops_boarding_hint', urgent: true },
+  arrival: { key: 'arrivalsSoon', titleKey: 'ops_arrival', hintKey: 'ops_arrival_hint', urgent: true, cat: 'staff', sub: 'arrivals' },
   agency_turn: { key: 'agencyTurn', titleKey: 'ops_agency_turn', hintKey: 'ops_agency_turn_hint', urgent: true },
   interview_today: { key: 'interviewsToday', titleKey: 'ops_interview_today', hintKey: 'ops_interview_today_hint', urgent: false },
   chat: { key: 'chatUnread', titleKey: 'ops_chat', hintKey: 'ops_chat_hint', urgent: false, cat: 'messages' },
@@ -134,6 +147,23 @@ export function pendingTotal(metrics = {}) {
 export function urgentTotal(metrics = {}) {
   return PENDING_ACTIONS.filter((a) => a.urgent)
     .reduce((sum, a) => sum + (Number(metrics[a.key]) || 0), 0);
+}
+
+/** Sessiz tarama: değişmeyen masayı yeniden çizme. */
+export function opsFingerprint(data) {
+  const m = data?.metrics || {};
+  const metricPart = Object.keys(m).sort().map((k) => `${k}:${m[k]}`).join(',');
+  const countPart = Object.entries(data?.countsByKind || {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}:${v}`)
+    .join(',');
+  const queuePart = (data?.queue || [])
+    .map((q) => [
+      q.kind, q.candidateId, q.detail || '', q.titleKey || '', q.label || '',
+      q.openChat ? 1 : 0, q.boarding || '', q.openHireConfirm ? 1 : 0,
+    ].join(':'))
+    .join('|');
+  return `${metricPart}#${countPart}#${queuePart}`;
 }
 
 /** Mevcut odak boşaldıysa bir sonrakine geç. */

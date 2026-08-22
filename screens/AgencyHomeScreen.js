@@ -2,7 +2,7 @@
 // Acente paneli — premium aday havuzu (2 sütun foto galeri + alt bilgi).
 // Arama yok; bulma ⚙ Filtreler (tam ekran) ile. FlatList sanallaştırma + sonsuz kaydırma.
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, Image, FlatList, SectionList, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Keyboard, Modal, Pressable, useWindowDimensions, Animated, Linking } from 'react-native';
+import { View, Text, Image, FlatList, SectionList, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Keyboard, Modal, Pressable, useWindowDimensions, Animated, Linking, Platform } from 'react-native';
 import Svg, { Line, Circle, Path, Polyline, Rect } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,14 +14,16 @@ import { candidateCode, parseCode, maskedName } from '../lib/candidateCode';
 import { formatLastSeen, lastSeenTier } from '../lib/lastSeenFormat';
 import { slotDateKey, slotTime, weekdayOf, fromISO, formatCountdown, cancelInterview } from '../lib/interviews';
 import { callWindow, JOIN_PERIOD_MIN } from '../lib/livekitCall';
-import { scanDocsDeadline, scanInterviewReminders, scanInterviewSla, notifyOffer } from '../lib/push';
+import { scanOps, notifyOffer } from '../lib/push';
 import { Select } from '../components/Select';
 import { DAYS, monthOptions, FLIGHT_YEARS } from '../cv/options';
 import AgencyFilterSheet from '../components/AgencyFilterSheet';
 import NotificationBell from '../components/NotificationBell';
 import PhotoWatermark from '../components/PhotoWatermark';
 import AgencyOpsDesk from '../components/AgencyOpsDesk';
-import AgencyChatInbox from '../components/AgencyChatInbox';
+import AgencyHotelsPanel from '../components/AgencyHotelsPanel';
+import AgencyNoticeSheet from '../components/AgencyNoticeSheet';
+import AgencyChatInboxSheet from '../components/AgencyChatInboxSheet';
 import AgencyRemindersSheet from '../components/AgencyRemindersSheet';
 import AnnouncementsListSheet from '../components/AnnouncementsListSheet';
 import ContactSheet from '../components/ContactSheet';
@@ -38,11 +40,16 @@ import { urgentTotal } from '../lib/opsUi';
 import { unreadAnnouncementCount } from '../lib/notifications';
 import { listRatingStats } from '../lib/ratings';
 import RatingBadge from '../components/RatingBadge';
-import FavoriteEmployerSheet from '../components/FavoriteEmployerSheet';
 import { listFavoriteCandidates, removeFavorite } from '../lib/favorites';
-import { readAgencyHomeUi, writeAgencyHomeUi, resetAgencyHomeUi } from '../lib/agencyHomeUi';
+import {
+  readAgencyHomeUi, writeAgencyHomeUi, resetAgencyHomeUi,
+  PIPELINE_STAGES_PRIMARY, PIPELINE_STAGES_MORE, normalizeAgencyView, normalizePipelineStage,
+  isProcessPipelineStage, isStaffPipelineStage, isPipelineMoreStage, stageFromOpsNav,
+} from '../lib/agencyHomeUi';
 import AgencyArrivals from '../components/AgencyArrivals';
+import { supabase } from '../lib/supabase';
 import ProcessChatSheet from '../components/ProcessChatSheet';
+import EmployerStampListSheet from '../components/EmployerStampListSheet';
 
 const PAGE = 24;
 const FOOTER_LOGO = require('../assets/icon-dark.png');
@@ -196,6 +203,12 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [noticeOpen, setNoticeOpen] = useState(false);
+  const [hubCompose, setHubCompose] = useState(false);
+  const [hubNotice, setHubNotice] = useState(null);
+  const [hubIds, setHubIds] = useState([]);
+  const [hubPeople, setHubPeople] = useState([]);
+  const [hubNonce, setHubNonce] = useState(0);
   const [codeInput, setCodeInput] = useState('');
   const [codeChips, setCodeChips] = useState([]); // koda göre eklenenler {user_id, code, photo}
   const [codeBusy, setCodeBusy] = useState(false);
@@ -203,6 +216,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const filterKey = JSON.stringify(advFilters);
   const activeCount = countFilters(advFilters);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [stampOpen, setStampOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [agencyProfile, setAgencyProfile] = useState(null);
   const [taxBusy, setTaxBusy] = useState(false);
@@ -224,6 +238,14 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   }, [userId]);
 
   useEffect(() => { refreshAgencyProfile(); }, [refreshAgencyProfile]);
+
+  useEffect(() => {
+    const show = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hide = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const s1 = Keyboard.addListener(show, () => setKbOpen(true));
+    const s2 = Keyboard.addListener(hide, () => setKbOpen(false));
+    return () => { s1.remove(); s2.remove(); };
+  }, []);
 
   const openSettings = () => {
     setLangOpen(false);
@@ -304,8 +326,9 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
 
   const [searchOpen, setSearchOpen] = useState(false); // header'da açılır arama
   const [pipeStepFilter, setPipeStepFilter] = useState(null); // 1–6 | null
-  const [view, setView] = useState(() => savedUi.view || 'ops');          // ops | pool | process | staff | messages
-  const [subView, setSubView] = useState(() => savedUi.subView || 'interviews'); // interviews | concluded | offered | inprocess
+  const [view, setView] = useState(() => normalizeAgencyView(savedUi.view)); // ops | pool | pipeline | hotels
+  const [kbOpen, setKbOpen] = useState(false);
+  const [pipelineStage, setPipelineStage] = useState(() => normalizePipelineStage(savedUi.pipelineStage, savedUi));
   const [ivList, setIvList] = useState([]);
   const [inProcessList, setInProcessList] = useState([]);
   const [offeredList, setOfferedList] = useState([]);
@@ -314,7 +337,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const [ivSortDesc, setIvSortDesc] = useState(true);   // yeni -> eski
   // Havuz sıralaması: son görünürlük (yeniden eskiye) | eskiden yeniye | CV tarihi
   const [poolSort, setPoolSort] = useState(() => savedUi.poolSort || 'online'); // online | online_old
-  const [staffView, setStaffView] = useState('cards'); // cards | transit | arrivals | former
+  const subView = isProcessPipelineStage(pipelineStage) ? pipelineStage : 'interviews';
   const [formerList, setFormerList] = useState([]);
   const [transitList, setTransitList] = useState([]);
   const [rangeOpen, setRangeOpen] = useState(false);
@@ -327,6 +350,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const [remindWarn, setRemindWarn] = useState(false);
   const [announcementsOpen, setAnnouncementsOpen] = useState(false);
   const [remindersOpen, setRemindersOpen] = useState(false);
+  const [messagesOpen, setMessagesOpen] = useState(false);
   const [contactOpen, setContactOpen] = useState(false);
   const [chatPeer, setChatPeer] = useState(null); // { id, label } — inbox’tan açılan sohbet
   const remindBlink = React.useRef(new Animated.Value(1)).current;
@@ -334,21 +358,18 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const [generalPush, setGeneralPush] = useState(true);
   const [chatPush, setChatPush] = useState(true);
   const [ratingMap, setRatingMap] = useState({}); // user_id -> { avg, count }
-  const [favEmployer, setFavEmployer] = useState(() => savedUi.favEmployer || null); // { id, name } | null
-  const [favFilterOpen, setFavFilterOpen] = useState(false);
+  const [favOn, setFavOn] = useState(() => !!savedUi.favOn);
 
   // Aday detayına gidip gelince unmount olmasın diye UI durumunu sakla.
   useEffect(() => {
-    writeAgencyHomeUi({ view, subView, poolSort, advFilters, favEmployer });
-  }, [view, subView, poolSort, advFilters, favEmployer]);
+    writeAgencyHomeUi({ view, pipelineStage, poolSort, advFilters, favOn });
+  }, [view, pipelineStage, poolSort, advFilters, favOn]);
 
   // Tarama + tercih yükleme: dil değişiminde TEKRAR ÇALIŞMASIN (menü donmasını önler).
   useEffect(() => {
     if (!userId) return undefined;
     let alive = true;
-    scanDocsDeadline();
-    scanInterviewReminders();
-    scanInterviewSla();
+    scanOps();
     getAgencyNotifPrefs().then((p) => {
       if (!alive) return;
       setGeneralPush(p.generalPush);
@@ -365,10 +386,10 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
 
   // Mülakat listesinde geri sayım / katıl penceresi için tick.
   useEffect(() => {
-    if (!(view === 'process' && subView === 'interviews')) return undefined;
+    if (!(view === 'pipeline' && pipelineStage === 'interviews')) return undefined;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [view, subView]);
+  }, [view, pipelineStage]);
 
   // Süreç / Personel sekmesine geçince ilgili listeleri yükle.
   const reloadProcess = useCallback(async () => {
@@ -393,14 +414,17 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   }, [userId]);
 
   useEffect(() => {
-    if (view === 'pool' || view === 'ops' || view === 'messages') return undefined;
+    if (view === 'pool' || view === 'ops' || view === 'hotels') return undefined;
     let alive = true;
     (async () => {
       setListLoading(true);
-      if (view === 'process') {
+      const needProcess = view === 'pipeline' && isProcessPipelineStage(pipelineStage);
+      const needStaff = view === 'pipeline' && isStaffPipelineStage(pipelineStage);
+      if (needProcess) {
         await reloadProcess();
-        if (subView === 'offered') await reloadOffered();
-      } else {
+        if (pipelineStage === 'offered') await reloadOffered();
+      }
+      if (needStaff) {
         const [rows, former, transit] = await Promise.all([
           listStaff(userId),
           listFormerStaff(userId),
@@ -420,7 +444,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       if (alive) setListLoading(false);
     })();
     return () => { alive = false; };
-  }, [view, subView, userId, reloadProcess, reloadOffered]);
+  }, [view, pipelineStage, userId, reloadProcess, reloadOffered]);
 
   useEffect(() => {
     if (!userId) return undefined;
@@ -440,7 +464,18 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     };
     tick();
     const tmr = setInterval(tick, 20000);
-    return () => { alive = false; clearInterval(tmr); };
+    const ch = supabase
+      .channel(`agency-chat-badge-${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
+        (payload) => {
+          const row = payload.new || payload.old;
+          if (row?.type === 'chat_message') tick();
+        },
+      )
+      .subscribe();
+    return () => { alive = false; clearInterval(tmr); supabase.removeChannel(ch); };
   }, [userId, view]);
 
   useEffect(() => {
@@ -463,8 +498,8 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     (async () => {
       setLoading(true);
       let rows;
-      if (favEmployer?.id) {
-        rows = await listFavoriteCandidates(userId, favEmployer.id);
+      if (favOn) {
+        rows = await listFavoriteCandidates(userId);
         const [st, dids] = await Promise.all([listStatuses(), listCandidatesWithDocs()]);
         if (!alive) return;
         setItems(rows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(false); setLoading(false);
@@ -480,7 +515,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKey, poolSort, favEmployer?.id, userId]);
+  }, [filterKey, poolSort, favOn, userId]);
 
   // Havuz + süreç listelerindeki adayların açık puan özeti
   useEffect(() => {
@@ -497,19 +532,19 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   }, [items, ivList, inProcessList, staffList]);
 
   const loadMore = useCallback(async () => {
-    if (favEmployer?.id || loadingMore || !hasMore || loading) return;
+    if (favOn || loadingMore || !hasMore || loading) return;
     setLoadingMore(true);
     const next = page + 1;
     const rows = await listCandidates({ filters: advFilters, from: next * PAGE, to: next * PAGE + PAGE - 1, sort: poolSort });
     setItems((prev) => [...prev, ...rows]); setPage(next); setHasMore(rows.length === PAGE); setLoadingMore(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingMore, hasMore, loading, page, filterKey, poolSort, favEmployer?.id]);
+  }, [loadingMore, hasMore, loading, page, filterKey, poolSort, favOn]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    if (favEmployer?.id) {
+    if (favOn) {
       const [rows, st, dids] = await Promise.all([
-        listFavoriteCandidates(userId, favEmployer.id),
+        listFavoriteCandidates(userId),
         listStatuses(),
         listCandidatesWithDocs(),
       ]);
@@ -532,11 +567,12 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const category = (id) => (isAccepted(id) ? 'active' : isOffered(id) ? 'offered' : 'pending');
   const isSelected = (id) => selectedIds.includes(id);
 
-  // Bildirime tıklayınca: ilgili adayı aç (chat_message → sohbet; boarding_missed → tarih düzenle).
+  // Bildirime tıklayınca: ilgili adayı aç (chat_message → sohbet).
   const NOTIF_TO_CANDIDATE = [
     'interview_scheduled', 'document', 'offer_accepted', 'offer_rejected', 'docs_deadline', 'docs_extra',
     'chat_message', 'boarding_missed', 'boarding_no_response', 'boarding_confirmed', 'flight_ticket_sent',
-    'work_start_confirm', 'work_start_remind', 'employment_started',
+    'work_start_confirm', 'work_start_remind', 'transit_stalled', 'employment_started',
+    'arrival_today', 'arrival_tomorrow',
   ];
   const onNotifNavigate = async (n) => {
     if (!n?.type) return;
@@ -556,17 +592,22 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         onOpenCandidate(c, {
           ...(statuses[candId] || {}),
           ...(n.type === 'chat_message' ? { _openChat: true } : {}),
-          ...((n.type === 'boarding_missed' || n.type === 'boarding_no_response' || n.payload?.openWorkStart)
+          // Uçak kaçırma: bileti aday alır — bilet yükleme sheet otomatik açılmaz
+          ...(n.payload?.openWorkStart && n.type !== 'boarding_missed'
             ? { _openWorkStart: true } : {}),
-          ...((n.type === 'work_start_confirm' || n.type === 'work_start_remind' || n.payload?.openHireConfirm)
+          ...(n.type === 'boarding_no_response' || n.payload?.openBoardingResolve
+            ? { status: 'in_transit' } : {}),
+          ...((n.type === 'work_start_confirm' || n.type === 'work_start_remind' || n.type === 'transit_stalled' || n.payload?.openHireConfirm)
             ? { _openHireConfirm: true, status: 'in_transit' } : {}),
+          ...((n.type === 'rating_required' || n.type === 'rating_remind' || n.payload?.openRate)
+            ? { _openRate: true, status: 'new' } : {}),
         });
       }
     } catch (e) { /* yoksay */ }
   };
 
   const toggleSelect = (id) => setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  const exitSelect = () => { setSelectMode(false); setSelectedIds([]); setCodeChips([]); setCodeInput(''); setCodeError(false); };
+  const exitSelect = () => { setSelectMode(false); setSelectedIds([]); setCodeChips([]); setCodeInput(''); setCodeError(false); setNoticeOpen(false); };
 
   // Kod veya isimle aday bul: seçim modunda seçime ekle; tek sonuçta aç; çok sonuçta havuzu filtrele.
   const handleCode = async () => {
@@ -674,9 +715,9 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   };
 
   const removeFromFavList = async (candidateId) => {
-    if (!favEmployer?.id || !candidateId) return;
+    if (!favOn || !candidateId) return;
     try {
-      await removeFavorite(userId, favEmployer.id, candidateId);
+      await removeFavorite(userId, candidateId);
       setItems((prev) => prev.filter((r) => r.user_id !== candidateId));
       tapHaptic();
     } catch (e) {
@@ -692,7 +733,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     const flag = NATION_FLAG[c.data?.nationality];
     const sel = isSelected(c.user_id);
     const name = maskedName(c.data) || code;
-    const showUnfav = !!favEmployer?.id && !selectMode;
+    const showUnfav = favOn && !selectMode;
     return (
       <TouchableOpacity style={[styles.fbCard, sel && styles.fbCardSel]} onPress={() => onCardPress(c)} onLongPress={() => onCardLongPress(c)} delayLongPress={300} activeOpacity={0.92}>
         {photo ? (
@@ -746,13 +787,27 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   };
 
   // Aktif mod: pool dışındayken hangi alt liste gösteriliyor.
-  const mode = view === 'process' ? subView : view; // interviews | concluded | offered | inprocess | staff
+  const mode = view === 'pipeline'
+    ? (isStaffPipelineStage(pipelineStage) ? 'staff' : pipelineStage)
+    : view; // interviews | concluded | offered | inprocess | staff
+  const canNoticeSelect =
+    view === 'pipeline' && (
+      pipelineStage === 'offered' || pipelineStage === 'inprocess'
+      || pipelineStage === 'staff' || pipelineStage === 'transit'
+    );
+
+  useEffect(() => {
+    setSelectMode(false);
+    setSelectedIds([]);
+    setCodeChips([]);
+  }, [view, pipelineStage]);
 
   // Premium kart — moda göre rozet/aksiyon değişir.
   const renderRich = ({ item: c }) => {
     const photo = c.data?.photoClose || c.data?.photo || c.data?.photoFull;
     const code = candidateCode(c.data?.nationality || c.nationality, c.reg_no);
     const flag = NATION_FLAG[c.data?.nationality || c.nationality];
+    const sel = isSelected(c.user_id);
     let badgeLabel = ''; let badgeStyle = styles.bMuted; let dotColor = '#9aa1ac';
     let dateDay = ''; let dateTime = ''; let strip = 'none'; // none | gold | red
 
@@ -786,10 +841,19 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
 
     return (
       <TouchableOpacity
-        style={styles.rich}
-        onPress={() => onOpenCandidate(c, mode === 'staff'
-          ? { ...(statuses[c.user_id] || {}), status: 'hired', docs_unlocked: true }
-          : statuses[c.user_id])}
+        style={[styles.rich, sel && styles.richSel]}
+        onPress={() => {
+          if (canNoticeSelect && selectMode) { tapHaptic(); toggleSelect(c.user_id); return; }
+          onOpenCandidate(c, mode === 'staff'
+            ? { ...(statuses[c.user_id] || {}), status: 'hired', docs_unlocked: true }
+            : statuses[c.user_id]);
+        }}
+        onLongPress={canNoticeSelect ? () => {
+          pressHaptic();
+          if (selectMode) exitSelect();
+          else { setSelectMode(true); toggleSelect(c.user_id); }
+        } : undefined}
+        delayLongPress={300}
         activeOpacity={0.92}
       >
         <View style={styles.richTop}>
@@ -814,7 +878,13 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
               <Text style={[styles.badgeText, { color: dotColor }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{badgeLabel}</Text>
             </View>
           </View>
-          <Text style={styles.richChev}>›</Text>
+          {canNoticeSelect && selectMode ? (
+            <View style={[styles.checkbox, styles.richCheck, sel && styles.checkboxOn]}>
+              {sel ? <Text style={styles.checkmark}>✓</Text> : null}
+            </View>
+          ) : (
+            <Text style={styles.richChev}>›</Text>
+          )}
         </View>
 
         {strip !== 'none' && dateDay ? (
@@ -938,6 +1008,16 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const richSections = groupByEmployer(richListData, { noneLabel: noneEmp });
   const transitSections = groupByEmployer(transitList, { noneLabel: noneEmp });
   const formerSections = groupByEmployer(formerList, { noneLabel: noneEmp });
+  const noticeListIds = canNoticeSelect
+    ? (view === 'pipeline' && pipelineStage === 'transit'
+      ? transitList
+      : richListData).map((c) => c.user_id).filter(Boolean)
+    : [];
+  const selectAllNotice = () => {
+    if (!noticeListIds.length) return;
+    if (noticeListIds.every((id) => selectedIds.includes(id))) setSelectedIds([]);
+    else setSelectedIds(noticeListIds.slice());
+  };
 
   const renderEmpHeader = ({ section }) => (
     <View style={styles.empSec}>
@@ -996,10 +1076,10 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
                 <Text style={styles.heroHi} numberOfLines={1}>{t('agency_panel_kicker')}</Text>
                 <Text style={[styles.heroTitle, fontsReady && styles.heroTitleFont]} numberOfLines={1}>
                   {view === 'ops' ? t('nav_today')
-                    : view === 'messages' ? t('nav_messages')
                     : view === 'pool' ? t('agency_title')
-                    : view === 'process' ? t('nav_process')
-                    : t('nav_staff')}
+                    : view === 'pipeline' ? t('nav_candidates')
+                    : view === 'hotels' ? t('nav_hotels')
+                    : t('nav_candidates')}
                 </Text>
               </View>
             </View>
@@ -1120,6 +1200,20 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
                 </View>
               </View>
 
+              <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('stamp_menu')}</Text>
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => { setMenuOpen(false); setStampOpen(true); }}
+                activeOpacity={0.85}
+              >
+                <View style={[styles.menuLogoutIcon, { backgroundColor: '#eef3fb' }]}><Text style={{ fontSize: 16 }}>✒️</Text></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.menuLogoutText, { color: INK }]}>{t('stamp_title')}</Text>
+                  <Text style={styles.menuLogoutHint}>{t('stamp_list_hint_short')}</Text>
+                </View>
+                <Text style={styles.menuLogoutHint}>›</Text>
+              </TouchableOpacity>
+
               <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('agency_tax_section') || 'Vergi levhası'}</Text>
               <View style={styles.taxCard}>
                 <Text style={styles.taxStatus} numberOfLines={2}>
@@ -1167,6 +1261,12 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         </View>
       </Modal>
 
+      <EmployerStampListSheet
+        visible={stampOpen}
+        agencyId={userId}
+        onClose={() => setStampOpen(false)}
+      />
+
       {/* Acente bilgilerini düzenle */}
       <Modal visible={profOpen} transparent animationType="fade" onRequestClose={() => setProfOpen(false)}>
         <Pressable style={styles.profOverlay} onPress={() => setProfOpen(false)}>
@@ -1191,14 +1291,14 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         </Pressable>
       </Modal>
 
-      {/* Üst menü: Bugün / Havuz / Süreç / Personel */}
+      {/* Üst menü: Bugün / Adaylar / Havuz / Oteller */}
       <View style={styles.menu}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segTrack}>
           {[
             { id: 'ops', label: t('nav_today') },
+            { id: 'pipeline', label: t('nav_candidates') },
             { id: 'pool', label: t('nav_pool') },
-            { id: 'process', label: t('nav_process') },
-            { id: 'staff', label: t('nav_staff') },
+            { id: 'hotels', label: t('nav_hotels') },
           ].map((v) => (
             <TouchableOpacity
               key={v.id}
@@ -1214,112 +1314,149 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         </ScrollView>
       </View>
 
-      {/* Süreç / Personel alt sekmeleri */}
-      {view === 'process' ? (
+      {/* Adaylar: 6 ana aşama + Daha fazla (Sonuçlanan / Eski) */}
+      {view === 'pipeline' ? (
         <View style={styles.subTabs}>
-          {['interviews', 'concluded', 'offered', 'inprocess'].map((sv) => (
-            <TouchableOpacity key={sv} style={[styles.subChip, subView === sv && styles.subChipOn]} onPress={() => { setSubView(sv); setPipeStepFilter(null); }} activeOpacity={0.85}>
-              <Text style={[styles.subChipText, subView === sv && styles.subChipTextOn]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
-                {sv === 'offered' ? (t('sub_offered') || 'Teklif bekleyen') : t(sv === 'interviews' ? 'sub_interviews' : sv === 'concluded' ? 'sub_concluded' : 'sub_inprocess')}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingRight: 8 }}>
+            {PIPELINE_STAGES_PRIMARY.map((st) => (
+              <TouchableOpacity
+                key={st.id}
+                style={[styles.subChip, pipelineStage === st.id && styles.subChipOn]}
+                onPress={() => { setPipelineStage(st.id); setPipeStepFilter(null); }}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.subChipText, pipelineStage === st.id && styles.subChipTextOn]} numberOfLines={1}>
+                  {st.id === 'arrivals' ? `🛬 ${t(st.labelKey)}` : (st.id === 'offered' ? (t(st.labelKey) || 'Teklif') : t(st.labelKey))}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={[styles.subChip, isPipelineMoreStage(pipelineStage) && styles.subChipOn]}
+              onPress={() => {
+                Alert.alert(t('pipeline_more'), undefined, [
+                  ...PIPELINE_STAGES_MORE.map((st) => ({
+                    text: t(st.labelKey),
+                    onPress: () => { setPipelineStage(st.id); setPipeStepFilter(null); },
+                  })),
+                  { text: t('agency_cancel'), style: 'cancel' },
+                ]);
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.subChipText, isPipelineMoreStage(pipelineStage) && styles.subChipTextOn]} numberOfLines={1}>
+                {isPipelineMoreStage(pipelineStage)
+                  ? t(PIPELINE_STAGES_MORE.find((s) => s.id === pipelineStage)?.labelKey || 'pipeline_more')
+                  : `${t('pipeline_more')} ▾`}
               </Text>
             </TouchableOpacity>
-          ))}
+            {canNoticeSelect ? (
+              <TouchableOpacity
+                style={[styles.subChip, selectMode && styles.subChipOn]}
+                onPress={() => (selectMode ? exitSelect() : setSelectMode(true))}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.subChipText, selectMode && styles.subChipTextOn]} numberOfLines={1}>
+                  {selectMode ? t('agency_cancel') : `☑ ${t('agency_select')}`}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </ScrollView>
         </View>
       ) : null}
-      {view === 'staff' ? (
-        <View style={styles.subTabs}>
-          <TouchableOpacity style={[styles.subChip, staffView === 'cards' && styles.subChipOn]} onPress={() => setStaffView('cards')} activeOpacity={0.85}>
-            <Text style={[styles.subChipText, staffView === 'cards' && styles.subChipTextOn]}>{t('staff_tab_list')}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.subChip, staffView === 'transit' && styles.subChipOn]} onPress={() => setStaffView('transit')} activeOpacity={0.85}>
-            <Text style={[styles.subChipText, staffView === 'transit' && styles.subChipTextOn]}>Yolda</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.subChip, staffView === 'former' && styles.subChipOn]} onPress={() => setStaffView('former')} activeOpacity={0.85}>
-            <Text style={[styles.subChipText, staffView === 'former' && styles.subChipTextOn]}>{t('staff_tab_former')}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.subChip, staffView === 'arrivals' && styles.subChipOn]} onPress={() => setStaffView('arrivals')} activeOpacity={0.85}>
-            <Text style={[styles.subChipText, staffView === 'arrivals' && styles.subChipTextOn]}>🛬 {t('staff_tab_arrivals')}</Text>
-          </TouchableOpacity>
+
+      {selectMode && canNoticeSelect ? (
+        <View style={styles.selectPanel}>
+          <View style={styles.selectRow}>
+            <TouchableOpacity style={styles.selectAllBtn} onPress={selectAllNotice} activeOpacity={0.8}>
+              <Text style={styles.selectAllText}>☑ {t('agency_select_all')}</Text>
+            </TouchableOpacity>
+            <Text style={styles.selectCount}>{t('agency_selected', { n: selectedIds.length })}</Text>
+          </View>
         </View>
       ) : null}
 
       {view === 'ops' ? (
         <AgencyOpsDesk
           agencyId={userId}
-          padBottom={insets.bottom + FOOTER_CONTENT_PAD}
+          padBottom={kbOpen ? 16 : insets.bottom + FOOTER_CONTENT_PAD}
           onOpen={(c, st) => onOpenCandidate(c, { ...(statuses[c.user_id] || {}), ...(st || {}) })}
           onNavigateCat={(cat, sub) => {
             if (cat === 'messages') {
-              setView('messages');
+              setMessagesOpen(true);
               return;
             }
-            setView(cat === 'hired' ? 'staff' : cat);
-            if (cat === 'staff' || cat === 'hired') {
-              if (sub === 'transit') setStaffView('transit');
-              else setStaffView('cards');
+            if (cat === 'pool' || cat === 'ops' || cat === 'hotels') {
+              setView(cat);
               setPipeStepFilter(null);
-            } else if (cat === 'process') {
-              if (typeof sub === 'string' && sub.startsWith('pipe_')) {
-                setSubView('inprocess');
-                setPipeStepFilter(Number(sub.slice(5)) || null);
-              } else if (sub) {
-                setSubView(sub);
-                setPipeStepFilter(null);
-              }
-            } else {
-              setPipeStepFilter(null);
+              return;
             }
+            setView('pipeline');
+            if (typeof sub === 'string' && sub.startsWith('pipe_')) {
+              setPipelineStage('inprocess');
+              setPipeStepFilter(Number(sub.slice(5)) || null);
+              return;
+            }
+            const stage = stageFromOpsNav(cat, sub);
+            if (stage) setPipelineStage(stage);
+            setPipeStepFilter(null);
           }}
         />
-      ) : view === 'messages' ? (
-        <AgencyChatInbox
-          agencyId={userId}
-          padBottom={insets.bottom + FOOTER_CONTENT_PAD}
-          onBadgeChange={(n) => setChatBadge(n || 0)}
-          onOpen={(c) => {
-            const code = candidateCode(c.nationality || c.data?.nationality, c.reg_no);
-            const label = [maskedName(c.data), code].filter(Boolean).join(' · ') || code;
-            setChatPeer({ id: c.user_id, label });
-          }}
-        />
+      ) : view === 'hotels' ? (
+        <AgencyHotelsPanel agencyId={userId} />
       ) : view !== 'pool' ? (
         listLoading ? (
           <ActivityIndicator color="#c2a25a" style={{ marginTop: 50 }} />
-        ) : view === 'staff' && staffView === 'transit' ? (
+        ) : view === 'pipeline' && pipelineStage === 'transit' ? (
           <SectionList
             sections={transitSections}
             keyExtractor={(c) => c.user_id}
             stickySectionHeadersEnabled
             renderSectionHeader={renderEmpHeader}
-            contentContainerStyle={[styles.richContent, { paddingBottom: insets.bottom + FOOTER_CONTENT_PAD }]}
+            contentContainerStyle={[styles.richContent, { paddingBottom: insets.bottom + FOOTER_CONTENT_PAD + (selectMode ? 64 : 0) }]}
             ListEmptyComponent={<Text style={styles.empty}>Yolda / başlangıç bekleyen aday yok.</Text>}
             renderItem={({ item: c }) => {
               const code = candidateCode(c.nationality || c.data?.nationality, c.reg_no);
               const start = c.work_start_at ? String(c.work_start_at).slice(0, 10) : '—';
+              const sel = isSelected(c.user_id);
               return (
                 <TouchableOpacity
-                  style={styles.rich}
+                  style={[styles.rich, sel && styles.richSel]}
                   activeOpacity={0.9}
-                  onPress={() => onOpenCandidate(c, {
-                    ...(statuses[c.user_id] || {}),
-                    status: 'in_transit',
-                    work_start_at: c.work_start_at,
-                    boarding_status: c.boarding_status,
-                    flight_depart_on: c.flight_depart_on,
-                    _openHireConfirm: true,
-                  })}
+                  onPress={() => {
+                    if (selectMode) { tapHaptic(); toggleSelect(c.user_id); return; }
+                    onOpenCandidate(c, {
+                      ...(statuses[c.user_id] || {}),
+                      status: 'in_transit',
+                      work_start_at: c.work_start_at,
+                      boarding_status: c.boarding_status,
+                      flight_depart_on: c.flight_depart_on,
+                      _openHireConfirm: true,
+                    });
+                  }}
+                  onLongPress={() => {
+                    pressHaptic();
+                    if (selectMode) exitSelect();
+                    else { setSelectMode(true); toggleSelect(c.user_id); }
+                  }}
+                  delayLongPress={300}
                 >
                   <View style={{ flex: 1, padding: 14 }}>
                     <Text style={styles.richName} numberOfLines={1}>{maskedName(c.data) || code}</Text>
                     <Text style={styles.richCode} numberOfLines={1}>{code} · başlangıç {start}</Text>
                     <Text style={[styles.richCode, { color: '#9a7b1f', marginTop: 4 }]}>Personel onayı bekleniyor</Text>
                   </View>
-                  <Text style={styles.richChev}>›</Text>
+                  {selectMode ? (
+                    <View style={[styles.checkbox, styles.richCheck, sel && styles.checkboxOn]}>
+                      {sel ? <Text style={styles.checkmark}>✓</Text> : null}
+                    </View>
+                  ) : (
+                    <Text style={styles.richChev}>›</Text>
+                  )}
                 </TouchableOpacity>
               );
             }}
           />
-        ) : view === 'staff' && staffView === 'former' ? (
+        ) : view === 'pipeline' && pipelineStage === 'former' ? (
           <SectionList
             sections={formerSections}
             keyExtractor={(c) => c.episode_id || c.candidate_id}
@@ -1337,6 +1474,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
               };
               const code = candidateCode(c.nationality, c.reg_no);
               const outcomeLabel = row.outcome === 'completed' ? t('staff_outcome_completed') : t('staff_outcome_early');
+              const needRate = !!row.needs_rating;
               return (
                 <TouchableOpacity
                   style={styles.rich}
@@ -1346,35 +1484,58 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
                   <View style={{ flex: 1, padding: 14 }}>
                     <Text style={styles.richName} numberOfLines={1}>{maskedName(c.data) || code}</Text>
                     <Text style={styles.richCode} numberOfLines={1}>{code} · {outcomeLabel}</Text>
-                    <TouchableOpacity
-                      style={[styles.subChip, styles.subChipOn, { alignSelf: 'flex-start', marginTop: 10 }]}
-                      onPress={async (e) => {
-                        e?.stopPropagation?.();
-                        try {
-                          await offerCandidate(c.user_id);
-                          notifyOffer(c.user_id, 'offer');
-                          Alert.alert(t('agency_offer'), t('offer_sent_note'));
-                        } catch (err) {
-                          Alert.alert(t('agency_offer'), err?.message || 'error');
-                        }
-                      }}
-                    >
-                      <Text style={[styles.subChipText, styles.subChipTextOn]}>{t('agency_offer')}</Text>
-                    </TouchableOpacity>
+                    {needRate ? (
+                      <Text style={[styles.richCode, { color: '#9a7b1f', fontWeight: '700', marginTop: 4 }]}>
+                        ★ {t('rate_required_badge')}
+                      </Text>
+                    ) : null}
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                      {needRate ? (
+                        <TouchableOpacity
+                          style={[styles.subChip, styles.subChipOn]}
+                          onPress={(e) => {
+                            e?.stopPropagation?.();
+                            onOpenCandidate(c, { ...(statuses[c.user_id] || {}), status: 'new', openRate: true });
+                          }}
+                        >
+                          <Text style={[styles.subChipText, styles.subChipTextOn]}>{t('rate_btn')}</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                      <TouchableOpacity
+                        style={[styles.subChip, styles.subChipOn]}
+                        onPress={async (e) => {
+                          e?.stopPropagation?.();
+                          try {
+                            await offerCandidate(c.user_id);
+                            notifyOffer(c.user_id, 'offer');
+                            Alert.alert(t('agency_offer'), t('offer_sent_note'));
+                          } catch (err) {
+                            Alert.alert(t('agency_offer'), err?.message || 'error');
+                          }
+                        }}
+                      >
+                        <Text style={[styles.subChipText, styles.subChipTextOn]}>{t('agency_offer')}</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </TouchableOpacity>
               );
             }}
           />
-        ) : view === 'staff' && staffView === 'arrivals' ? (
+        ) : view === 'pipeline' && pipelineStage === 'arrivals' ? (
           <AgencyArrivals
-            candidates={staffList}
+            candidates={(() => {
+              const m = {};
+              (staffList || []).forEach((c) => { m[c.user_id] = { ...c, arrivalStatus: 'hired' }; });
+              (transitList || []).forEach((c) => { m[c.user_id] = { ...c, arrivalStatus: 'transit' }; });
+              return Object.values(m);
+            })()}
             contentPadBottom={insets.bottom + FOOTER_CONTENT_PAD}
-            onOpen={(c) => onOpenCandidate(c, { ...(statuses[c.user_id] || {}), status: 'hired', docs_unlocked: true })}
+            onOpen={(c) => onOpenCandidate(c, { ...(statuses[c.user_id] || {}), status: c.arrivalStatus === 'transit' ? 'in_transit' : 'hired', docs_unlocked: true })}
           />
         ) : (
           <>
-            {view === 'process' && (mode === 'interviews' || mode === 'concluded') && baseIv.length ? (
+            {view === 'pipeline' && (mode === 'interviews' || mode === 'concluded') && baseIv.length ? (
               <View style={styles.ivToolbar}>
                 <TouchableOpacity style={styles.sortPill} onPress={() => setIvSortDesc((s) => !s)} activeOpacity={0.85}>
                   <Text style={styles.sortArrow}>{ivSortDesc ? '↓' : '↑'}</Text>
@@ -1392,7 +1553,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
                 </TouchableOpacity>
               </View>
             ) : null}
-            {view === 'process' && mode === 'inprocess' && pipeStepFilter ? (
+            {view === 'pipeline' && mode === 'inprocess' && pipeStepFilter ? (
               <View style={styles.pipeFilterBar}>
                 <Text style={styles.pipeFilterText} numberOfLines={1}>
                   {t('ops_pipe_filter', {
@@ -1415,7 +1576,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
               stickySectionHeadersEnabled
               renderSectionHeader={renderEmpHeader}
               renderItem={renderRich}
-              contentContainerStyle={[styles.richContent, { paddingBottom: insets.bottom + FOOTER_CONTENT_PAD }]}
+              contentContainerStyle={[styles.richContent, { paddingBottom: insets.bottom + FOOTER_CONTENT_PAD + (selectMode ? 64 : 0) }]}
               ListEmptyComponent={(
                 <Text style={styles.empty}>
                   {mode === 'offered'
@@ -1450,22 +1611,13 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           </TouchableOpacity>
         </View>
         <TouchableOpacity
-          style={[styles.favFilterPill, favEmployer && styles.favFilterPillOn]}
-          onPress={() => setFavFilterOpen(true)}
+          style={[styles.favFilterPill, favOn && styles.favFilterPillOn]}
+          onPress={() => setFavOn((v) => !v)}
           activeOpacity={0.85}
         >
-          <Text style={[styles.favFilterText, favEmployer && styles.favFilterTextOn]} numberOfLines={1}>
-            ★ {favEmployer ? favEmployer.name : t('fav_filter_btn')}
+          <Text style={[styles.favFilterText, favOn && styles.favFilterTextOn]} numberOfLines={1}>
+            ★ {t('fav_filter_btn')}
           </Text>
-          {favEmployer ? (
-            <TouchableOpacity
-              onPress={() => setFavEmployer(null)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={styles.favFilterX}
-            >
-              <Text style={styles.favFilterXText}>✕</Text>
-            </TouchableOpacity>
-          ) : null}
         </TouchableOpacity>
         <TouchableOpacity style={styles.filterIconBtn} onPress={() => setSheetVisible(true)} activeOpacity={0.8}>
           <FilterIcon color="#fff" knobFill={GOLD} size={18} />
@@ -1513,7 +1665,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           onEndReachedThreshold={0.4}
           refreshing={refreshing}
           onRefresh={onRefresh}
-          ListEmptyComponent={<Text style={styles.empty}>{favEmployer ? t('fav_empty') : t('agency_empty')}</Text>}
+          ListEmptyComponent={<Text style={styles.empty}>{favOn ? t('fav_empty') : t('agency_empty')}</Text>}
           ListFooterComponent={loadingMore ? <ActivityIndicator color="#c2a25a" style={{ marginVertical: 16 }} /> : null}
         />
       )}
@@ -1534,7 +1686,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       </>
       )}
 
-      {!selectMode ? (
+      {!selectMode && !kbOpen ? (
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
           <View style={styles.footerGold} />
           <TouchableOpacity style={styles.footerTab} onPress={() => setAnnouncementsOpen(true)} activeOpacity={0.85}>
@@ -1555,8 +1707,8 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
             </View>
             <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_remind_short')}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.footerTab} onPress={() => setView('messages')} activeOpacity={0.85}>
-            <View style={[styles.footerIconWrap, view === 'messages' && styles.footerIconOn]}>
+          <TouchableOpacity style={styles.footerTab} onPress={() => setMessagesOpen(true)} activeOpacity={0.85}>
+            <View style={styles.footerIconWrap}>
               <FooterChatIcon color="#e7dcc4" size={20} />
               {chatBadge > 0 ? (
                 <View style={styles.footerBadge}>
@@ -1575,30 +1727,95 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         </View>
       ) : null}
 
+      {selectMode && canNoticeSelect ? (
+        <View style={[styles.bulkBar, { paddingBottom: insets.bottom + 12 }]}>
+          <Text style={styles.bulkText}>{t('agency_selected', { n: selectedIds.length })}</Text>
+          <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={exitSelect} activeOpacity={0.85}>
+              <Text style={styles.cancelBtnText}>{t('agency_cancel')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.bulkBtn, !selectedIds.length && { opacity: 0.5 }]}
+              onPress={() => selectedIds.length && setNoticeOpen(true)}
+              disabled={!selectedIds.length}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.bulkBtnText}>{t('agency_notice')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
+
+      <AgencyNoticeSheet
+        visible={noticeOpen || hubCompose}
+        onClose={() => {
+          setNoticeOpen(false);
+          setHubCompose(false);
+          setHubNotice(null);
+          setHubIds([]);
+          setHubPeople([]);
+          setHubNonce((n) => n + 1);
+        }}
+        userIds={noticeOpen ? selectedIds : hubIds}
+        previewPeople={noticeOpen ? [] : hubPeople}
+        allowAudience={hubCompose && !noticeOpen && !hubIds.length}
+        agencyId={userId}
+        startNotice={hubNotice}
+        hideHistory={hubCompose}
+        targetKind="selected"
+      />
+
+      <AgencyChatInboxSheet
+        visible={messagesOpen && !chatPeer}
+        onClose={() => {
+          setChatPeer(null);
+          setMessagesOpen(false);
+          unreadChatCount(userId).then(setChatBadge).catch(() => {});
+        }}
+        agencyId={userId}
+        onBadgeChange={(n) => setChatBadge(n || 0)}
+        onOpen={(c) => {
+          const code = candidateCode(c.nationality || c.data?.nationality, c.reg_no);
+          const label = [maskedName(c.data), code].filter(Boolean).join(' · ') || code;
+          setChatPeer({ id: c.user_id, label });
+        }}
+      />
+
       <ProcessChatSheet
         visible={!!chatPeer}
         onClose={() => {
           setChatPeer(null);
           unreadChatCount(userId).then(setChatBadge).catch(() => {});
         }}
+        onRead={() => unreadChatCount(userId).then(setChatBadge).catch(() => {})}
         candidateId={chatPeer?.id}
         peerLabel={chatPeer?.label}
       />
 
       <AnnouncementsListSheet
-        visible={announcementsOpen}
+        visible={announcementsOpen && !hubCompose}
         onClose={() => {
           setAnnouncementsOpen(false);
           unreadAnnouncementCount(userId).then(setAnnounceUnread).catch(() => {});
         }}
         userId={userId}
+        agencyId={userId}
+        reloadAt={hubNonce}
+        onCompose={() => { setHubNotice(null); setHubIds([]); setHubPeople([]); setHubCompose(true); }}
+        onComposeGroup={(b) => {
+          setHubNotice(null);
+          setHubIds((b.people || []).map((p) => p.userId));
+          setHubPeople(b.people || []);
+          setHubCompose(true);
+        }}
+        onOpenSent={(row) => { setHubNotice(row); setHubIds([]); setHubPeople([]); setHubCompose(true); }}
       />
       <AgencyRemindersSheet
         visible={remindersOpen}
         onClose={() => setRemindersOpen(false)}
         agencyId={userId}
         onPick={(a) => {
-          if (a?.cat === 'messages' || a?.filter === 'chat') setView('messages');
+          if (a?.cat === 'messages' || a?.filter === 'chat') setMessagesOpen(true);
           else setView('ops');
         }}
       />
@@ -1615,16 +1832,6 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           setSheetVisible(false);
         }}
         onClose={() => setSheetVisible(false)}
-      />
-
-      <FavoriteEmployerSheet
-        visible={favFilterOpen}
-        mode="filter"
-        agencyId={userId}
-        selectedEmployerId={favEmployer?.id || null}
-        onPickEmployer={(emp) => setFavEmployer({ id: emp.id, name: emp.name })}
-        onClearFilter={() => setFavEmployer(null)}
-        onClose={() => setFavFilterOpen(false)}
       />
 
       {/* Tarih aralığı seçici */}
@@ -1863,6 +2070,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(184,149,74,0.2)', fontSize: 11, fontWeight: '800', color: '#8f7130', textAlign: 'center',
   },
   rich: { backgroundColor: '#fff', borderRadius: 20, padding: 15, marginBottom: 14, shadowColor: '#16202e', shadowOpacity: 0.10, shadowRadius: 18, shadowOffset: { width: 0, height: 9 }, elevation: 4 },
+  richSel: { borderWidth: 2, borderColor: GOLD },
+  richCheck: { position: 'relative', top: 0, right: 0, marginLeft: 6 },
   richTop: { flexDirection: 'row', alignItems: 'center' },
   richPhotoBox: { width: 62, height: 62, borderRadius: 16, overflow: 'hidden', backgroundColor: '#eef0f2' },
   richPhoto: { width: '100%', height: '100%' },

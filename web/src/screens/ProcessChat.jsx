@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listProcessMessages, sendProcessMessage, syncChatLang, subscribeProcessMessages } from '../lib/processChat';
+import { markChatMessagesReadForCandidate } from '../lib/api';
 import { useLang } from '../i18n.jsx';
+import { supabase } from '../lib/supabase';
 
 function fmtTime(iso) {
   const d = new Date(iso);
@@ -8,10 +10,11 @@ function fmtTime(iso) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export default function ProcessChat({ candidateId, peerLabel, onClose }) {
+export default function ProcessChat({ candidateId, peerLabel, onClose, onRead }) {
   const { lang, t } = useLang();
   const [messages, setMessages] = useState([]);
   const [chatId, setChatId] = useState(null);
+  const [readOnly, setReadOnly] = useState(false);
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -27,17 +30,27 @@ export default function ProcessChat({ candidateId, peerLabel, onClose }) {
       const data = await listProcessMessages(candidateId, lang);
       setChatId(data.chatId || null);
       setMessages(data.messages || []);
+      setReadOnly(!!(data.readOnly || data.closed));
+      supabase.auth.getUser().then(({ data: auth }) => {
+        const uid = auth?.user?.id;
+        if (!uid) return;
+        markChatMessagesReadForCandidate(uid, candidateId)
+          .then(() => { onRead?.(); })
+          .catch(() => {});
+      });
     } catch (e) {
       setErr(e?.message === 'chat_locked' ? (t('chat_locked') || e.message) : (e?.message || 'error'));
     } finally {
       setLoading(false);
     }
-  }, [candidateId, lang, t]);
+  }, [candidateId, lang, t, onRead]);
 
   useEffect(() => { load({ spinner: true }); }, [load]);
   useEffect(() => {
     if (!chatId) return undefined;
-    return subscribeProcessMessages(chatId, () => { load({ spinner: false }); });
+    const unsub = subscribeProcessMessages(chatId, () => { load({ spinner: false }); });
+    const tmr = setInterval(() => { load({ spinner: false }); }, 12000);
+    return () => { unsub(); clearInterval(tmr); };
   }, [chatId, load]);
   useEffect(() => { endRef.current?.scrollIntoView?.({ behavior: 'smooth' }); }, [messages]);
 
@@ -54,6 +67,7 @@ export default function ProcessChat({ candidateId, peerLabel, onClose }) {
       original: body,
       sourceLang: lang,
       createdAt: new Date().toISOString(),
+      readAt: null,
       mine: true,
     }]);
     setSending(true);
@@ -95,21 +109,35 @@ export default function ProcessChat({ candidateId, peerLabel, onClose }) {
           {messages.map((m) => (
             <div key={m.id} className={`chatBubble ${m.mine ? 'mine' : 'theirs'}`}>
               <div>{m.body}</div>
-              <div className="chatTime">{fmtTime(m.createdAt)}</div>
+              <div className="chatMeta">
+                <span className="chatTime">{fmtTime(m.createdAt)}</span>
+                {m.mine ? (
+                  <span
+                    className={`chatTicks ${m.readAt ? 'read' : ''}`}
+                    title={m.readAt ? (t('chat_seen') || 'Okundu') : (t('chat_sent') || 'İletildi')}
+                  >
+                    {m.readAt ? '✓✓' : '✓'}
+                  </span>
+                ) : null}
+              </div>
             </div>
           ))}
           <div ref={endRef} />
         </div>
-        <form className="chatComposer" onSubmit={send}>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={t('chat_placeholder') || ''}
-            maxLength={2000}
-            rows={2}
-          />
-          <button type="submit" disabled={!text.trim() || sending}>{t('chat_send')}</button>
-        </form>
+        {readOnly ? (
+          <div className="chatReadonly">{t('chat_history_readonly') || 'Bu süreç sonlandı. Konuşma salt okunur.'}</div>
+        ) : (
+          <form className="chatComposer" onSubmit={send}>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={t('chat_placeholder') || ''}
+              maxLength={2000}
+              rows={2}
+            />
+            <button type="submit" disabled={!text.trim() || sending}>{t('chat_send')}</button>
+          </form>
+        )}
       </div>
     </div>
   );

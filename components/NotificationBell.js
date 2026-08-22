@@ -25,6 +25,9 @@ const META = {
   docs_deadline: { icon: '⏰', bg: '#fbeae8', fg: '#b5413a' },
   docs_extra: { icon: '⏳', bg: '#fbf0db', fg: '#c98a1e' },
   reupload: { icon: '🔄', bg: '#fbf0db', fg: '#c98a1e' },
+  agency_doc_retracted: { icon: '↩', bg: '#fbeae8', fg: '#b5413a' },
+  agency_doc_updated: { icon: '📄', bg: '#e7ecf3', fg: '#1f3a63' },
+  flight_ticket_updated: { icon: '✈️', bg: '#e7ecf3', fg: '#1f3a63' },
   interview: { icon: '🎥', bg: '#f3ecdc', fg: '#9a7b1f' },
   interview_proposed: { icon: '🎥', bg: '#f3ecdc', fg: '#9a7b1f' },
   interview_scheduled: { icon: '🎥', bg: '#f3ecdc', fg: '#9a7b1f' },
@@ -34,6 +37,7 @@ const META = {
   pool_passive: { icon: '⏸', bg: '#f1f3f6', fg: '#5b6575' },
   chat_message: { icon: '💬', bg: '#e7ecf3', fg: '#1f3a63' },
   announcement: { icon: '📢', bg: '#f3ecdc', fg: '#9a7b1f' },
+  agency_notice: { icon: '📌', bg: '#e7ecf3', fg: '#1f3a63' },
   employment_end_requested: { icon: '🚪', bg: '#fbeae8', fg: '#b5413a' },
   employment_end_requested_ack: { icon: '🚪', bg: '#fbf0db', fg: '#c98a1e' },
   employment_end_undone: { icon: '↩', bg: '#e7f3ec', fg: '#1f8a4c' },
@@ -42,15 +46,25 @@ const META = {
   employment_early_exit: { icon: '🚪', bg: '#f1f3f6', fg: '#5b6575' },
   employment_continued: { icon: '✓', bg: '#e7f3ec', fg: '#1f8a4c' },
   employment_end_remind: { icon: '⏰', bg: '#fbf0db', fg: '#c98a1e' },
+  employment_term_due: { icon: '🏅', bg: '#f3ecdc', fg: '#9a7b1f' },
+  employment_term_remind: { icon: '⏰', bg: '#fbf0db', fg: '#c98a1e' },
+  employment_term_stalled: { icon: '⚖️', bg: '#fbf0db', fg: '#c98a1e' },
+  employment_term_voted: { icon: '🏅', bg: '#e7f3ec', fg: '#1f8a4c' },
+  employment_restored: { icon: '↩', bg: '#e7f3ec', fg: '#1f8a4c' },
+  rating_required: { icon: '★', bg: '#f3ecdc', fg: '#9a7b1f' },
+  rating_remind: { icon: '★', bg: '#fbf0db', fg: '#c98a1e' },
   flight_ticket_ready: { icon: '✈️', bg: '#e7ecf3', fg: '#1f3a63' },
   flight_ticket_sent: { icon: '✈️', bg: '#e7f3ec', fg: '#1f8a4c' },
   employment_started: { icon: '🏨', bg: '#e7f3ec', fg: '#1f8a4c' },
   work_start_confirm: { icon: '❓', bg: '#fbf0db', fg: '#c98a1e' },
   work_start_remind: { icon: '⏰', bg: '#fbf0db', fg: '#c98a1e' },
+  transit_stalled: { icon: '🚨', bg: '#fbeae8', fg: '#b5413a' },
   boarding_check: { icon: '🛫', bg: '#f3ecdc', fg: '#9a7b1f' },
   boarding_confirmed: { icon: '✓', bg: '#e7f3ec', fg: '#1f8a4c' },
   boarding_missed: { icon: '⚠️', bg: '#fbeae8', fg: '#b5413a' },
   boarding_no_response: { icon: '⏰', bg: '#fbf0db', fg: '#c98a1e' },
+  arrival_today: { icon: '🛬', bg: '#fbeae8', fg: '#b5413a' },
+  arrival_tomorrow: { icon: '🛬', bg: '#fbf0db', fg: '#c98a1e' },
   pickup: { icon: '🤝', bg: '#e7ecf3', fg: '#1f3a63' },
   default: { icon: '🔔', bg: '#f3ecdc', fg: '#9a7b1f' },
 };
@@ -87,9 +101,12 @@ const fmt = (iso) => {
 
 function notifText(n, t, lang) {
   const p = n.payload || {};
-  if (n.type === 'announcement') {
+  if (n.type === 'announcement' || n.type === 'agency_notice') {
     const { title: rawTitle, body } = announcementText(p, lang);
-    const title = rawTitle || t('notif_announcement');
+    const from = n.type === 'agency_notice'
+      ? (String(p.agencyName || '').trim() ? t('agency_notice_from_named', { name: String(p.agencyName).trim() }) : t('agency_notice_from'))
+      : t('notif_announcement');
+    const title = rawTitle || from;
     // Listede özet; tam metin AnnouncementSheet'te.
     if (!body) return title;
     const short = body.length > 90 ? `${body.slice(0, 87)}…` : body;
@@ -117,6 +134,15 @@ function notifText(n, t, lang) {
     }
     return (t('notif_interview_no_response') || '') + (hours ? ` (${hours}s)` : '');
   }
+  if (n.type === 'flight_ticket_ready') {
+    const when = p.arriveAt || p.when;
+    if (when) return t('notif_flight_ticket_ready', { when });
+    return t('notif_flight_ticket_ready_plain');
+  }
+  if (n.type === 'arrival_today' || n.type === 'arrival_tomorrow') {
+    const vars = { code: n.payload?.code || '', when: n.payload?.when || '—' };
+    return t(n.payload?.missingDriver ? `notif_${n.type}_nodriver` : `notif_${n.type}`, vars);
+  }
   return t(`notif_${n.type}`);
 }
 
@@ -130,7 +156,8 @@ export default function NotificationBell({ userId, color = '#cbd2db', onNavigate
 
   const excludeTypes = [
     ...(excludeChat ? ['chat_message'] : []),
-    ...(excludeAnnouncement ? ['announcement'] : []),
+    ...(excludeAnnouncement ? ['announcement', 'agency_notice'] : []),
+    'agency_notice',
   ];
 
   const refresh = useCallback(async () => {

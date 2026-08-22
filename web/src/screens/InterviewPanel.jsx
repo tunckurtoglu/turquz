@@ -11,11 +11,7 @@ import { supabase } from '../lib/supabase';
 const CallRoom = lazy(() => import('./CallRoom.jsx'));
 
 const BAND_KEYS = ['t0', 't1', 't2'];
-const BAND_TITLES = [
-  'Gece – Öğle · 00:00–11:59',
-  'Öğle – İkindi · 12:00–15:59',
-  'İkindi – Akşam · 16:00–23:59',
-];
+const BAND_TITLE_KEYS = ['iv_morning', 'iv_noon', 'iv_evening'];
 
 const emptyForm = () => ({ d: '', m: '', y: '', t0: '', t1: '', t2: '' });
 const openBandsOf = (g, nowMs = Date.now()) => {
@@ -52,7 +48,7 @@ function Sel({ value, onChange, options, placeholder }) {
 }
 
 export default function InterviewPanel({ candidate, agencyUserId }) {
-  const { lang } = useLang();
+  const { lang, t } = useLang();
   const userId = candidate.user_id;
   const [iv, setIv] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -151,21 +147,21 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
     } catch (e) {
       const msg = String(e?.message || e || '');
       alert(msg.includes('candidate_passive')
-        ? 'Bu aday geçici olarak havuzda pasif (yanıtsız davetler). Şu an davet gönderilemez.'
-        : (msg || 'Hata'));
+        ? (t('iv_candidate_passive') || '')
+        : (msg || t('err_generic') || ''));
     }
     finally { setBusy(false); }
   };
 
   const sendSlots = async () => {
-    if (!(form.d && form.m && form.y)) { alert('Bir gün seçin.'); return; }
-    if (!openBands.length) { alert('Geçmiş bir tarih/saat seçilemez.'); return; }
+    if (!(form.d && form.m && form.y)) { alert(t('iv_need_day') || ''); return; }
+    if (!openBands.length) { alert(t('iv_past_slot') || ''); return; }
     const times = openBands.map((bi) => form[BAND_KEYS[bi]]).filter(Boolean);
-    if (times.length !== openBands.length) { alert('Açık dilimlere saat seçin. Geçmiş dilimler kilitlidir.'); return; }
-    if (new Set(times).size !== times.length) { alert('Saatler birbirinden farklı olmalı.'); return; }
+    if (times.length !== openBands.length) { alert(t('iv_need_open_times') || ''); return; }
+    if (new Set(times).size !== times.length) { alert(t('iv_times_distinct') || ''); return; }
     const slots = times.map((tm) => toISO(form.d, form.m, form.y, tm)).sort();
     if (slots.some((s) => !(slotMs(s) > Date.now() + 60 * 1000))) {
-      alert('Geçmiş bir tarih/saat seçilemez.');
+      alert(t('iv_past_slot') || '');
       return;
     }
 
@@ -173,32 +169,32 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
       const kind = slotConflictKind(s, busySlots);
       if (kind === 'near') {
         const n = conflictNeighborLabels(s, busySlots, lang);
-        alert(`Bu saat başka bir mülakata 30 dakikadan yakın (${n?.conflict || ''}). En erken ${n?.later || ''} veya en geç ${n?.earlier || ''} — ya da tam aynı saat (grup).`);
+        alert(t('iv_near_conflict', { conflict: n?.conflict || '', later: n?.later || '', earlier: n?.earlier || '' }) || '');
         return;
       }
       if (kind === 'exact' && (schedCounts[s] || 0) >= 3) {
-        alert('Bu saat dolu (3 aday). Başka bir saat seçin.');
+        alert(t('iv_slot_full') || '');
         return;
       }
     }
 
     const exacts = slots.filter((s) => slotConflictKind(s, busySlots) === 'exact');
     if (exacts.length) {
-      if (!confirm('Aynı saate başka davet(ler) var. Aday kabul ederse grup mülakatına girersiniz (en fazla 3). Devam?')) return;
+      if (!confirm(t('iv_group_warn') || '')) return;
     }
     await doPropose(slots);
   };
 
   const doCancel = async () => {
-    if (!confirm('Mülakat iptal edilsin mi?')) return;
+    if (!confirm(t('iv_cancel_confirm') || '')) return;
     setBusy(true);
-    try { await cancelInterview(userId); await load(); } catch (e) { alert(e?.message || 'Hata'); } finally { setBusy(false); }
+    try { await cancelInterview(userId); await load(); } catch (e) { alert(e?.message || t('err_generic') || ''); } finally { setBusy(false); }
   };
 
   const startTest = async () => {
     setBusy(true);
     try { await forceScheduleForTest(userId, agencyUserId); setIv(await getInterview(userId)); setCallOpen(true); }
-    catch (e) { alert(e?.message || 'Hata'); } finally { setBusy(false); }
+    catch (e) { alert(e?.message || t('err_generic') || ''); } finally { setBusy(false); }
   };
 
   if (loading) return <div className="center pad"><div className="spinner" /></div>;
@@ -209,12 +205,12 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
   const showTest = import.meta.env.DEV || import.meta.env.VITE_IV_TEST === '1';
   const testBar = showTest ? (
     <div className="ivTestBar">
-      <div><b>🧪 Test modu</b> — tarih/saat olmadan görüşmeyi aç</div>
-      <button className="ivJoinBtn sm" onClick={startTest} disabled={busy}>🎥 Görüşmeyi Hemen Başlat</button>
+      <div>{t('iv_test_mode') || ''}</div>
+      <button className="ivJoinBtn sm" onClick={startTest} disabled={busy}>{t('iv_test_start') || ''}</button>
     </div>
   ) : null;
   const closeCall = useCallback(() => setCallOpen(false), []);
-  const callModal = callOpen ? <Suspense fallback={null}><CallRoom candidateUserId={userId} candidateLabel={candidate.code || 'Aday'} slotISO={iv?.selectedSlot || ''} onClose={closeCall} /></Suspense> : null;
+  const callModal = callOpen ? <Suspense fallback={null}><CallRoom candidateUserId={userId} candidateLabel={candidate.code || t('role_candidate') || ''} slotISO={iv?.selectedSlot || ''} onClose={closeCall} /></Suspense> : null;
 
   if (status === 'scheduled' && iv.selectedSlot && !callWindow(iv.selectedSlot, callOpts).ended) {
     const win = callWindow(iv.selectedSlot, callOpts);
@@ -226,19 +222,19 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
         <div className="ivSchedCard">
           <div className="ivSchedAccent" />
           <div className="ivSchedBadge">✓</div>
-          <div className="ivSchedKicker">Mülakat Planlandı</div>
+          <div className="ivSchedKicker">{t('iv_scheduled') || ''}</div>
           <div className="ivSchedDay">{weekdayOf(iv.selectedSlot, lang)}</div>
           <div className="ivSchedDate">{slotDateKey(iv.selectedSlot)}</div>
           <div className="ivSchedTime">🕒 {slotTime(iv.selectedSlot)}</div>
-          {left > 0 ? <div className="ivSchedCountdown">⏱ Kalan süre: {formatCountdown(left)}</div> : null}
-          <div className="ivSchedTz">🌍 Yerel saatinizle</div>
+          {left > 0 ? <div className="ivSchedCountdown">⏱ {t('iv_countdown') || ''}: {formatCountdown(left)}</div> : null}
+          <div className="ivSchedTz">🌍 {t('iv_localtime') || ''}</div>
         </div>
         {joinable
-          ? <button className="ivJoinBtn" onClick={() => setCallOpen(true)}>🎥 Görüşmeye Katıl</button>
-          : <div className="ivWaitNote">Görüşme butonu randevu saatinde aktifleşir.</div>}
+          ? <button className="ivJoinBtn" onClick={() => setCallOpen(true)}>🎥 {t('call_join') || ''}</button>
+          : <div className="ivWaitNote">{t('iv_waiting_join') || ''}</div>}
         <div className="ivBtnRow">
-          <button className="ghostBtn" onClick={() => { setReplan(true); setIv({ ...iv, status: 'proposed' }); setForm(slotsToForm(iv.slots?.length ? iv.slots : [iv.selectedSlot])); }}>Yeniden Planla</button>
-          <button className="dangerBtn" onClick={doCancel} disabled={busy}>Mülakatı İptal Et</button>
+          <button className="ghostBtn" onClick={() => { setReplan(true); setIv({ ...iv, status: 'proposed' }); setForm(slotsToForm(iv.slots?.length ? iv.slots : [iv.selectedSlot])); }}>{t('iv_replan') || ''}</button>
+          <button className="dangerBtn" onClick={doCancel} disabled={busy}>{t('iv_cancel') || ''}</button>
         </div>
         {callModal}
       </div>
@@ -250,19 +246,19 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
     const left = by - nowTick;
     const slaLine = !by ? null
       : (left <= 0 || iv.noResponseNotifiedAt)
-        ? '⏳ Yanıt süresi doldu — acenteye bildirildi'
-        : `⏱ Adayın yanıt süresi: ${formatCountdown(left)}`;
+        ? (t('iv_respond_overdue') || '')
+        : (t('iv_waiting_sla', { left: formatCountdown(left) }) || '');
     return (
       <div className="ivWrap">
         {testBar}
         <div className="ivWaitBox">
-          <div className="ivWaitTitle">⏳ Aday bir slot seçmeyi bekliyor</div>
+          <div className="ivWaitTitle">⏳ {t('iv_waiting_candidate') || ''}</div>
           {slaLine ? <div className="ivWaitSla">{slaLine}</div> : null}
           <div className="ivChips">{iv.slots.map((s) => <span key={s} className="ivChip">{slotLabel(s, lang)}</span>)}</div>
         </div>
         <div className="ivBtnRow">
-          <button className="ghostBtn" onClick={() => setReplan(true)}>Yeniden Planla</button>
-          <button className="dangerBtn" onClick={doCancel} disabled={busy}>İptal Et</button>
+          <button className="ghostBtn" onClick={() => setReplan(true)}>{t('iv_replan') || ''}</button>
+          <button className="dangerBtn" onClick={doCancel} disabled={busy}>{t('agency_cancel') || ''}</button>
         </div>
         {callModal}
       </div>
@@ -272,33 +268,29 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
   return (
     <div className="ivWrap">
       {testBar}
-      <div className="ivHint">
-        <b>Tek bir gün</b> seçin. Açık dilimlere saat yazın; <b>geçmiş dilimler kilitlenir</b> ve zorunlu değildir
-        (ör. akşam 21:00’de yalnızca ikindi–akşam). Aynı gün başka adaya ±30 dk içinde farklı saat gönderilemez; <b>tam aynı saat</b> grup mülakatıdır.
-        🌍 Saatler sizin yerel saatinizle girilir.
-      </div>
+      <div className="ivHint">{t('iv_rule_hint') || ''}</div>
 
       <div className="ivDayCard">
         <div className="ivDayHead">
           <span className="ivDayNo">1</span>
-          <span className="ivDayTitle">Mülakat günü</span>
+          <span className="ivDayTitle">{t('iv_day_title') || ''}</span>
           {form.d && form.m && form.y ? <span className="ivDayWeek">{weekdayOfParts(form.d, form.m, form.y, lang)}</span> : null}
         </div>
-        <div className="ivLbl">Tarih</div>
+        <div className="ivLbl">{t('iv_date_label') || ''}</div>
         <div className="ivRow">
-          <Sel value={form.d} onChange={(v) => updateForm('d', v)} options={DAYS} placeholder="Gün" />
-          <Sel value={form.m} onChange={(v) => updateForm('m', v)} options={months} placeholder="Ay" />
-          <Sel value={form.y} onChange={(v) => updateForm('y', v)} options={FLIGHT_YEARS} placeholder="Yıl" />
+          <Sel value={form.d} onChange={(v) => updateForm('d', v)} options={DAYS} placeholder={t('iv_day') || t('f_day') || ''} />
+          <Sel value={form.m} onChange={(v) => updateForm('m', v)} options={months} placeholder={t('f_month') || ''} />
+          <Sel value={form.y} onChange={(v) => updateForm('y', v)} options={FLIGHT_YEARS} placeholder={t('f_year') || ''} />
         </div>
-        <div className="ivLbl">Saatler (serbest dakika)</div>
+        <div className="ivLbl">{t('iv_times_free') || ''}</div>
         {BAND_KEYS.map((key, bi) => {
           const locked = !!(form.d && form.m && form.y) && !ivBandOpen(form.d, form.m, form.y, bi, bandTick);
           const earliest = locked ? '' : (ivEarliestInBand(form.d, form.m, form.y, bi, bandTick) || IV_BANDS[bi].min);
           return (
             <div key={key} className={`ivTimeBand${locked ? ' locked' : ''}`}>
-              <label className="ivTimeBandLbl">{BAND_TITLES[bi]}</label>
+              <label className="ivTimeBandLbl">{t(BAND_TITLE_KEYS[bi]) || ''}</label>
               {locked ? (
-                <span className="ivTimeLocked">🔒 Bu dilim bu gün için geçti</span>
+                <span className="ivTimeLocked">🔒 {t('iv_band_locked') || ''}</span>
               ) : (
                 <input
                   type="time"
@@ -320,8 +312,8 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
       </div>
 
       <div className="ivBtnRow">
-        <button className="goldBtn sm" onClick={sendSlots} disabled={busy || !ruleOk}>{busy ? '…' : 'Slotları Gönder'}</button>
-        {iv ? <button className="dangerBtn" onClick={doCancel} disabled={busy}>İptal Et</button> : null}
+        <button className="goldBtn sm" onClick={sendSlots} disabled={busy || !ruleOk}>{busy ? '…' : (t('iv_send_slots') || '')}</button>
+        {iv ? <button className="dangerBtn" onClick={doCancel} disabled={busy}>{t('agency_cancel') || ''}</button> : null}
       </div>
       {callModal}
     </div>

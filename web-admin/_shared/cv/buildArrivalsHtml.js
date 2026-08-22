@@ -23,8 +23,9 @@ export function buildArrivalsHtml(rows = [], opts = {}) {
         <td class="c b">${esc(r.time)}</td>
         <td class="c">${esc(r.flightNo)}</td>
         <td>${esc(r.airline)}</td>
+        <td>${esc(r.driver || '—')}</td>
       </tr>`).join('')
-    : `<tr><td colspan="9" class="empty">Bu aralıkta varış kaydı yok.</td></tr>`;
+    : `<tr><td colspan="10" class="empty">Bu aralıkta varış kaydı yok.</td></tr>`;
 
   return `<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -60,7 +61,7 @@ export function buildArrivalsHtml(rows = [], opts = {}) {
   </div>
   <table>
     <thead><tr>
-      <th>#</th><th>Kod</th><th>Ad Soyad</th><th>Uyruk</th><th>Varış Havalimanı</th><th>Tarih</th><th>Saat</th><th>Uçuş No</th><th>Havayolu</th>
+      <th>#</th><th>Kod</th><th>Ad Soyad</th><th>Uyruk</th><th>Varış Havalimanı</th><th>Tarih</th><th>Saat</th><th>Uçuş No</th><th>Havayolu</th><th>Şoför</th>
     </tr></thead>
     <tbody>${body}</tbody>
   </table>

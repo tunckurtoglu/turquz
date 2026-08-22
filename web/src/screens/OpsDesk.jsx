@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { loadAgencyOps } from '../lib/ops';
+import { addDeskNote, formatNoteDate, listDeskNotes, removeDeskNote } from '../lib/agencyNotes';
 import {
   PENDING_ACTIONS, FUNNEL_TILES, QUEUE_SHOW,
   pendingTotal, urgentTotal, pickFocusFilter,
-  activeFocusGroups, FOCUS_DEFS, countForFocus,
+  activeFocusGroups, FOCUS_DEFS, countForFocus, opsFingerprint,
 } from '../../../lib/opsUi';
+import {
+  seedFunnelSeen, funnelNewDeltas, clampFunnelSeen, markFunnelTileSeen,
+} from '../../../lib/opsFunnelSeen';
+import { loadFunnelSeen, saveFunnelSeen } from '../lib/opsFunnelSeenStore';
 import { candidateCode, NATION_CODE } from '../../../lib/candidateCode';
 import { useLang } from '../i18n.jsx';
 import { Icon } from '../components/Icon.jsx';
+import AgencyNoticeModal from '../components/AgencyNoticeModal.jsx';
 
 const KIND_TONE = {
   interview_today: 'hot',
@@ -18,6 +24,7 @@ const KIND_TONE = {
   offered_wait: 'muted',
   start_confirm: 'hot',
   transit: 'info',
+  arrival: 'warn',
 };
 
 const flagUrl = (nat) => {
@@ -31,15 +38,47 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
   const [filter, setFilter] = useState(null);
   const [busy, setBusy] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [noticeOpen, setNoticeOpen] = useState(false);
   const [flashKeys, setFlashKeys] = useState({});
+  const [funnelSeen, setFunnelSeen] = useState(undefined);
+  const [notes, setNotes] = useState([]);
+  const [draft, setDraft] = useState('');
+  const [noteBusy, setNoteBusy] = useState(false);
   const prevMetrics = useRef(null);
   const userPicked = useRef(false);
+  const fpRef = useRef('');
 
-  const load = useCallback(async () => {
+  const syncFunnelSeen = useCallback((m) => {
+    setFunnelSeen((prev) => {
+      if (prev === undefined) return prev;
+      if (prev == null) {
+        const seeded = seedFunnelSeen(m);
+        saveFunnelSeen(agencyId, seeded);
+        return seeded;
+      }
+      const clamped = clampFunnelSeen(prev, m);
+      if (JSON.stringify(clamped) !== JSON.stringify(prev)) {
+        saveFunnelSeen(agencyId, clamped);
+        return clamped;
+      }
+      return prev;
+    });
+  }, [agencyId]);
+
+  const loadNotes = useCallback(async () => {
     if (!agencyId) return;
-    setBusy(true);
+    setNotes(await listDeskNotes(agencyId));
+  }, [agencyId]);
+
+  const load = useCallback(async (opts) => {
+    if (!agencyId) return;
+    const silent = !!opts?.silent;
+    if (!silent) setBusy(true);
     try {
       const d = await loadAgencyOps(agencyId);
+      const fp = opsFingerprint(d);
+      if (fp === fpRef.current) return;
+      fpRef.current = fp;
       const m = d?.metrics || {};
       const counts = d?.countsByKind || {};
       const prev = prevMetrics.current;
@@ -63,6 +102,7 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
       }
       prevMetrics.current = m;
       setData(d);
+      syncFunnelSeen(m);
       setFilter((cur) => {
         if (userPicked.current && cur && countForFocus(cur, m, counts) > 0) return cur;
         const auto = pickFocusFilter(m, counts);
@@ -71,14 +111,60 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
       });
     } catch (e) {
       console.warn('ops:', e?.message);
-      setData({ metrics: {}, queue: [], countsByKind: {} });
-      setFilter(null);
+      if (!silent) {
+        setData({ metrics: {}, queue: [], countsByKind: {} });
+        setFilter(null);
+      }
     } finally {
-      setBusy(false);
+      if (!silent) setBusy(false);
     }
+  }, [agencyId, syncFunnelSeen]);
+
+  useEffect(() => {
+    setFunnelSeen(undefined);
+    setFunnelSeen(loadFunnelSeen(agencyId));
   }, [agencyId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (funnelSeen === undefined || !data?.metrics) return;
+    syncFunnelSeen(data.metrics);
+  }, [funnelSeen, data, syncFunnelSeen]);
+
+  useEffect(() => { load(); loadNotes(); }, [load, loadNotes]);
+
+  useEffect(() => {
+    const tmr = setInterval(() => load({ silent: true }), 20000);
+    return () => clearInterval(tmr);
+  }, [load]);
+
+  const addNote = async (e) => {
+    e?.preventDefault?.();
+    const text = draft.trim();
+    if (!text || noteBusy) return;
+    setNoteBusy(true);
+    try {
+      const row = await addDeskNote(agencyId, text);
+      if (row) {
+        setNotes((prev) => [row, ...prev.filter((n) => n.id !== row.id)]);
+        setDraft('');
+      }
+    } catch (err) {
+      console.warn('add note:', err?.message);
+      window.alert(err?.message || t('ops_notes_err') || 'Not kaydedilemedi.');
+    } finally {
+      setNoteBusy(false);
+    }
+  };
+
+  const dropNote = async (id) => {
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+    try {
+      await removeDeskNote(agencyId, id);
+    } catch (err) {
+      console.warn('remove note:', err?.message);
+      loadNotes();
+    }
+  };
 
   const metrics = data?.metrics || {};
   const countsByKind = data?.countsByKind || {};
@@ -87,6 +173,7 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
   const focusCount = filter ? countForFocus(filter, metrics, countsByKind) : 0;
   const allRows = (data?.queue || []).filter((q) => filter && q.kind === filter);
   const shownRows = allRows.slice(0, QUEUE_SHOW);
+  const noticeIds = [...new Set(allRows.map((q) => q.candidateId).filter(Boolean))];
   const listMore = Math.max(0, focusCount - shownRows.length);
   const pendingN = pendingTotal(metrics);
   const urgentN = urgentTotal(metrics);
@@ -117,7 +204,21 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
       onNavigateCat?.('messages');
       return;
     }
+    if (a.filter === 'arrival' || a.sub === 'arrivals') {
+      onNavigateCat?.(a.webCat || 'hired', a.webSub || 'arrivals');
+      return;
+    }
     if (a.filter) selectFocus(a.filter);
+  };
+
+  const funnelDeltas = funnelNewDeltas(metrics, funnelSeen);
+
+  const openFunnelTile = (tile) => {
+    const nav = tile.nav || {};
+    const next = markFunnelTileSeen(funnelSeen, metrics, tile.metricKey);
+    setFunnelSeen(next);
+    saveFunnelSeen(agencyId, next);
+    onNavigateCat?.(nav.webCat || nav.cat, nav.webSub || nav.sub);
   };
 
   return (
@@ -139,6 +240,16 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
             <h2 className="opsFocusTitle">{t(focusDef.titleKey)}</h2>
             <p className="opsFocusHint">{t(focusDef.hintKey)}</p>
             <p className="opsFocusCount">{t('ops_people', { n: String(focusCount) })}</p>
+            {filter === 'arrival' ? (
+              <button type="button" className="opsFocusSend" onClick={() => onNavigateCat?.('hired', 'arrivals')}>
+                {t('ops_go_arrivals')}
+              </button>
+            ) : null}
+            {noticeIds.length ? (
+              <button type="button" className="opsFocusSend" onClick={() => setNoticeOpen(true)}>
+                {t('agency_notice_to_group', { n: String(noticeIds.length) })}
+              </button>
+            ) : null}
           </>
         ) : (
           <>
@@ -185,14 +296,18 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
       <div className="opsFunnel">
         {FUNNEL_TILES.map((tile) => {
           const n = metrics[tile.metricKey] ?? 0;
-          const nav = tile.nav || {};
+          const delta = funnelDeltas[tile.metricKey] || 0;
+          const hasNew = delta > 0;
           return (
             <button
               key={tile.id}
               type="button"
-              className={`opsFunnelTile ${n > 0 ? 'on' : ''}`}
-              onClick={() => onNavigateCat?.(nav.webCat || nav.cat, nav.webSub || nav.sub)}
+              className={`opsFunnelTile ${n > 0 ? 'on' : ''} ${hasNew ? 'new' : ''}`}
+              onClick={() => openFunnelTile(tile)}
             >
+              {hasNew ? (
+                <span className="opsFunnelBadge">{delta > 9 ? '9+' : delta}</span>
+              ) : null}
               <span className="opsFunnelN">{n}</span>
               <span className="opsFunnelL">{t(tile.titleKey)}</span>
             </button>
@@ -216,18 +331,7 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
 
       {busy && !data ? (
         <div className="opsEmpty"><div className="spinner" /></div>
-      ) : shownRows.length === 0 ? (
-        <div className="opsEmpty">
-          <strong>{urgentN > 0 ? t('ops_group_done') : t('ops_no_focus')}</strong>
-          <span>
-            {urgentN > 0 ? t('ops_refresh_next') : t('ops_no_action')}
-          </span>
-          <div className="opsEmptyActs">
-            <button type="button" onClick={load}>{t('ops_refresh')}</button>
-            <button type="button" className="ghost" onClick={() => onNavigateCat?.('pool')}>{t('ops_go_pool')}</button>
-          </div>
-        </div>
-      ) : (
+      ) : shownRows.length === 0 ? null : (
         <>
           <ul className="opsQueue">
             {shownRows.map((q) => {
@@ -270,13 +374,44 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
               {(filter === 'transit' || filter === 'start_confirm') ? (
                 <button type="button" onClick={() => onNavigateCat?.('hired', 'transit')}>{t('ops_go_transit')}</button>
               ) : null}
-              {filter === 'offered_wait' ? (
-                <button type="button" onClick={() => onNavigateCat?.('process', 'offered')}>{t('ops_go_offered')}</button>
+              {filter === 'arrival' ? (
+                <button type="button" onClick={() => onNavigateCat?.('hired', 'arrivals')}>{t('ops_go_arrivals')}</button>
               ) : null}
             </div>
           ) : null}
         </>
       )}
+
+      <section className="opsNotes">
+        <p className="opsSection">{t('ops_notes_title') || 'Not defteri'}</p>
+        <form className="opsNoteComposer" onSubmit={addNote}>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={t('ops_notes_ph') || 'Unutmamanız gerekeni yazın…'}
+            maxLength={400}
+            rows={2}
+          />
+          <button type="submit" disabled={!draft.trim() || noteBusy}>
+            {t('ops_notes_add') || 'Ekle'}
+          </button>
+        </form>
+        {notes.length === 0 ? (
+          <p className="opsNotesHint">{t('ops_notes_empty') || 'Yapışkan not yok — buraya yazın, önünüzde kalsın.'}</p>
+        ) : (
+          <ul className="opsNoteList">
+            {notes.map((n, i) => (
+              <li key={n.id} className={`opsPaper tone-${i % 4}`}>
+                <div className="opsPaperTop">
+                  <span>{formatNoteDate(n.created_at)}</span>
+                  <button type="button" className="opsPaperX" onClick={() => dropNote(n.id)} aria-label="×">✕</button>
+                </div>
+                <p>{n.body}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {sheetOpen ? (
         <div className="opsSheetScrim" onClick={() => setSheetOpen(false)} role="presentation">
@@ -336,6 +471,13 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
           </div>
         </div>
       ) : null}
+
+      <AgencyNoticeModal
+        open={noticeOpen}
+        onClose={() => setNoticeOpen(false)}
+        userIds={noticeIds}
+        targetKind="focus"
+      />
     </div>
   );
 }

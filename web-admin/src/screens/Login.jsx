@@ -1,17 +1,32 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getRole, signIn, signOut } from '../lib/api';
+import { clearRememberedLogin, loadRememberedLogin, saveRememberedLogin } from '../lib/rememberLogin';
 
 export default function Login({ wrongRole, onLogout }) {
   const [email, setEmail] = useState('');
   const [pass, setPass] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
+
+  useEffect(() => {
+    const saved = loadRememberedLogin();
+    if (saved.remember) {
+      setEmail(saved.email);
+      setPass(saved.password);
+      setRememberMe(true);
+    }
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault();
     setErr(''); setBusy(true);
     try {
       const data = await signIn(email, pass);
+      if (data?.session) {
+        if (rememberMe) saveRememberedLogin({ email, password: pass });
+        else clearRememberedLogin();
+      }
       const role = await getRole(data.session.user.id);
       if (role !== 'admin') {
         await signOut();
@@ -41,6 +56,10 @@ export default function Login({ wrongRole, onLogout }) {
             <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="username" />
             <label className="fieldLbl">Şifre</label>
             <input className="input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} required autoComplete="current-password" />
+            <label className="rememberLbl">
+              <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} />
+              Beni hatırla
+            </label>
             {err ? <p className="loginErr">{err}</p> : null}
             <button className="goldBtn" type="submit" disabled={busy}>{busy ? '…' : 'Giriş Yap'}</button>
           </form>

@@ -34,8 +34,7 @@ import {
 import { saveProfile, loadProfile } from './lib/profile';
 import { getRole, getCandidateById } from './lib/roles';
 import { isAgencySetupComplete } from './lib/agencyProfile';
-import { registerForPush, notifyNewCandidate, scanInterviewReminders, scanInterviewSla, scheduleDailyActivityNudge, cancelDailyActivityNudge } from './lib/push';
-import { scanEmploymentLifecycle } from './lib/employment';
+import { registerForPush, notifyNewCandidate, scanOps, scheduleDailyActivityNudge, cancelDailyActivityNudge } from './lib/push';
 import { startLastSeenTracking } from './lib/lastSeen';
 import { checkForOtaUpdate } from './lib/updates';
 import { syncAppIconTheme, watchAppIconTheme } from './lib/appIcon';
@@ -196,9 +195,7 @@ function Root() {
   useEffect(() => {
     if (session?.user?.id) {
       registerForPush(session.user.id, lang);
-      scanInterviewReminders();
-      scanInterviewSla();
-      scanEmploymentLifecycle();
+      scanOps();
     }
   }, [session?.user?.id, lang]);
 
@@ -207,21 +204,86 @@ function Root() {
     if (!authReady || !session?.user?.id || !roleReady) return undefined;
 
     const openFromPushData = async (data) => {
-      if (!data || data.kind !== 'chat_message') return;
-      if (role === 'agency' || role === 'admin') {
+      if (!data?.kind) return;
+      if (data.kind === 'chat_message') {
+        if (role === 'agency' || role === 'admin') {
+          const id = data.candidateUserId;
+          if (!id) return;
+          try {
+            const c = await getCandidateById(id);
+            if (c) {
+              setSelectedCandidate({ c, st: { _openChat: true } });
+              setStage(STAGE.AGENCY_CANDIDATE);
+            }
+          } catch (e) { /* yoksay */ }
+        } else {
+          setDocsOpenChat(true);
+          setDocsScrollStep(null);
+          setStage(STAGE.DOCS);
+        }
+        return;
+      }
+      if (data.kind === 'boarding_check' && role !== 'agency' && role !== 'admin') {
+        setStage(STAGE.HOME);
+        return;
+      }
+      const docsKinds = new Set(['flight_ticket', 'flight_ticket_ready', 'flight_ticket_updated', 'document', 'pickup', 'reupload', 'agency_doc_retracted', 'agency_doc_updated', 'accepted', 'docs_extra']);
+      if (docsKinds.has(data.kind) && role !== 'agency' && role !== 'admin') {
+        setDocsOpenChat(false);
+        const step = Number(data.scrollToStep);
+        if (step >= 1 && step <= 7) setDocsScrollStep(step);
+        else if (data.kind === 'pickup') setDocsScrollStep(6);
+        else if (data.kind === 'flight_ticket' || data.kind === 'flight_ticket_ready') setDocsScrollStep(5);
+        else setDocsScrollStep(null);
+        setStage(STAGE.DOCS);
+        return;
+      }
+      if ((data.kind === 'work_start_confirm' || data.kind === 'work_start_remind' || data.kind === 'transit_stalled') && (role === 'agency' || role === 'admin')) {
         const id = data.candidateUserId;
         if (!id) return;
         try {
           const c = await getCandidateById(id);
           if (c) {
-            setSelectedCandidate({ c, st: { _openChat: true } });
+            setSelectedCandidate({ c, st: { _openHireConfirm: true, status: 'in_transit' } });
             setStage(STAGE.AGENCY_CANDIDATE);
           }
         } catch (e) { /* yoksay */ }
-      } else {
-        setDocsOpenChat(true);
-        setDocsScrollStep(null);
-        setStage(STAGE.DOCS);
+        return;
+      }
+      if ((data.kind === 'boarding_missed') && (role === 'agency' || role === 'admin')) {
+        const id = data.candidateUserId;
+        if (!id) return;
+        try {
+          const c = await getCandidateById(id);
+          if (c) {
+            setSelectedCandidate({ c, st: { status: 'in_transit' } });
+            setStage(STAGE.AGENCY_CANDIDATE);
+          }
+        } catch (e) { /* yoksay */ }
+        return;
+      }
+      if ((data.kind === 'boarding_no_response') && (role === 'agency' || role === 'admin')) {
+        const id = data.candidateUserId;
+        if (!id) return;
+        try {
+          const c = await getCandidateById(id);
+          if (c) {
+            setSelectedCandidate({ c, st: { status: 'in_transit' } });
+            setStage(STAGE.AGENCY_CANDIDATE);
+          }
+        } catch (e) { /* yoksay */ }
+        return;
+      }
+      if ((data.kind === 'arrival_today' || data.kind === 'arrival_tomorrow') && (role === 'agency' || role === 'admin')) {
+        const id = data.candidateUserId;
+        if (!id) return;
+        try {
+          const c = await getCandidateById(id);
+          if (c) {
+            setSelectedCandidate({ c, st: {} });
+            setStage(STAGE.AGENCY_CANDIDATE);
+          }
+        } catch (e) { /* yoksay */ }
       }
     };
 
@@ -503,6 +565,7 @@ function Root() {
           openChat={!!selectedCandidate?.st?._openChat}
           openWorkStart={!!selectedCandidate?.st?._openWorkStart}
           openHireConfirm={!!selectedCandidate?.st?._openHireConfirm || selectedCandidate?.st?.status === 'in_transit'}
+          openRate={!!selectedCandidate?.st?.openRate || !!selectedCandidate?.st?._openRate}
           onBack={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
           onAccepted={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
         />

@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import {
   completeAgencySetup, getAgencyProfile, signOut, updateMyProfile, uploadAgencyTaxPlate,
 } from '../lib/api';
+import { useLang } from '../i18n.jsx';
 
 // Zorunlu kapı (onCancel yok) veya panelde "Bilgileri Güncelle" (onCancel var — hafif form).
 export default function AgencySetup({ user, onDone, onCancel }) {
+  const { t } = useLang();
   const editMode = !!onCancel;
   const uid = user?.id;
   const meta = user?.user_metadata || {};
@@ -34,13 +36,13 @@ export default function AgencySetup({ user, onDone, onCancel }) {
   const onTaxFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.type !== 'application/pdf') { setErr('Yalnızca PDF yükleyin.'); return; }
+    if (file.type !== 'application/pdf') { setErr(t('agency_tax_pdf_only')); return; }
     setErr(''); setBusy(true);
     try {
       const path = await uploadAgencyTaxPlate(uid, file);
       setTaxPath(path);
       setTaxName(file.name || 'vergi_levhasi.pdf');
-    } catch (e2) { setErr(e2?.message || 'PDF yüklenemedi'); }
+    } catch (e2) { setErr(e2?.message || t('agency_setup_err_pdf')); }
     finally { setBusy(false); }
   };
 
@@ -48,19 +50,19 @@ export default function AgencySetup({ user, onDone, onCancel }) {
     e.preventDefault();
     if (editMode) {
       const f = firstName.trim(), l = lastName.trim(), p = phoneAuth.trim();
-      if (!f || !l || !p) { setErr('Ad, soyad ve telefon zorunludur.'); return; }
+      if (!f || !l || !p) { setErr(t('agency_setup_err_profile')); return; }
       setErr(''); setBusy(true);
       try { const u = await updateMyProfile({ firstName: f, lastName: l, phone: p }); onDone?.(u); }
-      catch (e2) { setErr(e2?.message || 'Kaydedilemedi'); }
+      catch (e2) { setErr(e2?.message || t('agency_setup_err_save')); }
       finally { setBusy(false); }
       return;
     }
 
     const f = firstName.trim(), l = lastName.trim(), p1 = phoneAuth.trim(), p2 = phoneRep.trim();
-    if (!f || !l) { setErr('Yetkili ad ve soyad zorunludur.'); return; }
-    if (p1.replace(/\D/g, '').length < 10) { setErr('Geçerli yetkili telefon girin.'); return; }
-    if (p2.replace(/\D/g, '').length < 10) { setErr('Geçerli temsilci telefon girin.'); return; }
-    if (!taxPath) { setErr('Vergi levhasını PDF olarak yükleyin.'); return; }
+    if (!f || !l) { setErr(t('agency_setup_err_name')); return; }
+    if (p1.replace(/\D/g, '').length < 10) { setErr(t('agency_setup_err_phone_auth')); return; }
+    if (p2.replace(/\D/g, '').length < 10) { setErr(t('agency_setup_err_phone_rep')); return; }
+    if (!taxPath) { setErr(t('agency_setup_err_tax')); return; }
     setErr(''); setBusy(true);
     try {
       const u = await completeAgencySetup(uid, {
@@ -73,7 +75,7 @@ export default function AgencySetup({ user, onDone, onCancel }) {
       });
       onDone?.(u);
     } catch (e2) {
-      setErr(e2?.message === 'incomplete' ? 'Tüm zorunlu alanları doldurun.' : (e2?.message || 'Kaydedilemedi'));
+      setErr(e2?.message === 'incomplete' ? t('agency_setup_err_incomplete') : (e2?.message || t('agency_setup_err_save')));
     } finally { setBusy(false); }
   };
 
@@ -81,39 +83,39 @@ export default function AgencySetup({ user, onDone, onCancel }) {
     <div className={editMode ? 'modalOverlay' : 'center full loginBg'}>
       <div className="loginCard" style={editMode ? undefined : { maxWidth: 440 }}>
         <img src="/turquz-logo.png" alt="Turquz" className="loginLogo" onError={(ev) => { ev.target.style.display = 'none'; }} />
-        <div className="loginKicker">{editMode ? 'BİLGİLERİ GÜNCELLE' : 'ACENTE KAYIT'}</div>
-        <h1 className="loginTitle">{editMode ? 'Bilgilerinizi güncelleyin' : 'Kurulumu tamamlayın'}</h1>
+        <div className="loginKicker">{editMode ? t('agency_setup_update_kicker') : t('agency_setup_kicker')}</div>
+        <h1 className="loginTitle">{editMode ? t('agency_setup_update_title') : t('agency_setup_title')}</h1>
         {!editMode ? (
-          <p className="setupNote">CV havuzu için vergi levhası (PDF), yetkili ad/soyad ve iki telefon zorunludur.</p>
+          <p className="setupNote">{t('agency_setup_note')}</p>
         ) : null}
         <form onSubmit={submit} className="loginForm">
           {!editMode ? (
             <>
-              <label className="fieldLbl">Şirket / işletme adı (isteğe bağlı)</label>
-              <input className="input" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="ABC Turizm Ltd." />
+              <label className="fieldLbl">{t('agency_company_name')} ({t('doc_optional')})</label>
+              <input className="input" value={company} onChange={(e) => setCompany(e.target.value)} placeholder={t('agency_company_ph')} />
             </>
           ) : null}
-          <label className="fieldLbl">Yetkili ad *</label>
-          <input className="input" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Ad" required />
-          <label className="fieldLbl">Yetkili soyad *</label>
-          <input className="input" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Soyad" required />
-          <label className="fieldLbl">{editMode ? 'Telefon *' : 'Yetkili telefon *'}</label>
+          <label className="fieldLbl">{editMode ? `${t('f_firstName')} *` : `${t('agency_setup_auth_first')} *`}</label>
+          <input className="input" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder={t('f_firstName')} required />
+          <label className="fieldLbl">{editMode ? `${t('f_lastName')} *` : `${t('agency_setup_auth_last')} *`}</label>
+          <input className="input" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder={t('f_lastName')} required />
+          <label className="fieldLbl">{editMode ? `${t('f_phone')} *` : `${t('agency_setup_auth_phone')} *`}</label>
           <input className="input" type="tel" value={phoneAuth} onChange={(e) => setPhoneAuth(e.target.value)} placeholder="+90 5xx…" required />
           {!editMode ? (
             <>
-              <label className="fieldLbl">Temsilci telefon *</label>
+              <label className="fieldLbl">{t('agency_setup_rep_phone')} *</label>
               <input className="input" type="tel" value={phoneRep} onChange={(e) => setPhoneRep(e.target.value)} placeholder="+90 5xx…" required />
-              <label className="fieldLbl">Vergi levhası (PDF) *</label>
+              <label className="fieldLbl">{t('agency_setup_tax_lbl')} *</label>
               <input className="input" type="file" accept="application/pdf" onChange={onTaxFile} />
-              {taxPath ? <p className="setupNote">✓ {taxName || 'PDF yüklendi'}</p> : null}
+              {taxPath ? <p className="setupNote">✓ {taxName || t('agency_setup_pdf_ok')}</p> : null}
             </>
           ) : null}
           {err ? <p className="loginErr">{err}</p> : null}
-          <button className="goldBtn" type="submit" disabled={busy}>{busy ? '…' : (editMode ? 'Kaydet' : 'Kaydet ve Devam Et')}</button>
+          <button className="goldBtn" type="submit" disabled={busy}>{busy ? '…' : (editMode ? t('save') : t('agency_setup_save'))}</button>
         </form>
         {editMode
-          ? <button className="setupLogout" onClick={onCancel}>İptal</button>
-          : <button className="setupLogout" onClick={() => signOut()}>Çıkış</button>}
+          ? <button className="setupLogout" onClick={onCancel}>{t('agency_cancel')}</button>
+          : <button className="setupLogout" onClick={() => signOut()}>{t('set_logout')}</button>}
       </div>
     </div>
   );

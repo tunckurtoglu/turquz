@@ -89,7 +89,7 @@ export default function ContractForm({ visible, initial, data, onSaveData, onCha
 
         <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
           <TouchableOpacity style={[styles.previewFull, !infoOk && { opacity: 0.5 }]} onPress={saveAndClose} disabled={!infoOk} activeOpacity={0.9}>
-            <Text style={styles.previewText}>{t('esign_save')}</Text>
+            <Text style={styles.previewText}>{t('save')}</Text>
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -109,10 +109,11 @@ const styles = StyleSheet.create({
   sec: { fontSize: 13, fontWeight: '800', color: '#9a7b1f', letterSpacing: 0.6, textTransform: 'uppercase', marginTop: 30, marginBottom: 14, paddingTop: 18, borderTopWidth: 1, borderTopColor: '#eceef1' },
   secFirst: { marginTop: 4, paddingTop: 0, borderTopWidth: 0 },
   reselectBtn: {
-    alignSelf: 'flex-start', marginBottom: 14, paddingVertical: 8, paddingHorizontal: 12,
+    alignSelf: 'stretch', marginBottom: 14, paddingVertical: 12, paddingHorizontal: 14, minHeight: 44,
     borderRadius: 10, backgroundColor: '#f3ecdc', borderWidth: 1, borderColor: 'rgba(194,162,90,.35)',
+    alignItems: 'center', justifyContent: 'center',
   },
-  reselectText: { fontSize: 13.5, fontWeight: '800', color: '#9a7b1f' },
+  reselectText: { fontSize: 14, fontWeight: '800', color: '#9a7b1f', textAlign: 'center' },
   field: { marginBottom: 18 },
   label: { fontSize: 13, fontWeight: '700', color: INK, marginBottom: 8 },
   input: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e6e8ec', borderRadius: 11, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: INK },
@@ -120,7 +121,7 @@ const styles = StyleSheet.create({
   req: { color: '#a32d2d', fontSize: 12.5, fontWeight: '600', marginTop: 14 },
 
   footer: { paddingHorizontal: 16, paddingTop: 12, backgroundColor: '#fff', borderTopWidth: 0.5, borderTopColor: '#e6e8ec' },
-  previewFull: { backgroundColor: GOLD, borderRadius: 14, paddingVertical: 16, alignItems: 'center', justifyContent: 'center' },
-  previewText: { color: INK, fontWeight: '800', fontSize: 16 },
+  previewFull: { backgroundColor: GOLD, borderRadius: 14, paddingVertical: 14, minHeight: 48, alignItems: 'center', justifyContent: 'center' },
+  previewText: { color: INK, fontWeight: '800', fontSize: 15 },
   footHint: { color: '#737373', fontSize: 12, textAlign: 'center', lineHeight: 17, marginTop: 10 },
 });

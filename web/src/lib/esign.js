@@ -7,7 +7,7 @@ export function buildAuditLine(log) {
   const w = log.signed_at ? new Date(log.signed_at) : new Date();
   const dateStr = `${p(w.getDate())}/${p(w.getMonth() + 1)}/${w.getFullYear()} ${p(w.getHours())}:${p(w.getMinutes())}`;
   const ref = (log.id || '').slice(0, 8).toUpperCase();
-  return `E-imza / E-signed · ${dateStr} · Ref: ${ref} · SHA-256: ${log.doc_hash || ''}`;
+  return `Kaşe · ${dateStr} · Ref: ${ref}`;
 }
 
 export async function sha256Hex(str) { return sha256(utf8Bytes(str)); }

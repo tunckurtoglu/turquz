@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { getSession, onAuthChange, getRole, signOut, listPool, categoryOf, scanDocsDeadline, scanInterviewReminders, scanInterviewSla, isAgencySetupComplete, getCandidate, getCandidateStatus, scanEmploymentLifecycle, isEmploymentNotif, candidateIdFromNotif, getAgencyProfile, saveAgencyTaxPlate, getAgencyTaxPlateUrl } from './lib/api';
+import { getSession, onAuthChange, getRole, signOut, listPool, categoryOf, scanOps, isAgencySetupComplete, getCandidate, getCandidateStatus, isEmploymentNotif, candidateIdFromNotif, getAgencyProfile, saveAgencyTaxPlate, getAgencyTaxPlateUrl } from './lib/api';
 import { unreadChatCount } from './lib/ops';
 import { agencyCode } from '../../lib/agencyCode';
 import { useLang } from './i18n.jsx';
@@ -12,16 +12,29 @@ import ChatInbox from './screens/ChatInbox.jsx';
 import Candidate from './screens/Candidate.jsx';
 import { Icon } from './components/Icon.jsx';
 import NotifBell from './components/NotifBell.jsx';
+import AgencyAnnouncementsHub from './components/AgencyAnnouncementsHub.jsx';
+import AgencyNoticeModal from './components/AgencyNoticeModal.jsx';
+import { supabase } from './lib/supabase';
 import { getAgencyNotifPrefs, setAgencyNotifPrefs, syncChatLang } from './lib/processChat';
+import EmployerStampList from './screens/EmployerStampList.jsx';
+import Hotels from './screens/Hotels.jsx';
+import {
+  PIPELINE_STAGES_PRIMARY, PIPELINE_STAGES_MORE, isPipelineMoreStage,
+} from '../../../lib/agencyHomeUi';
 
-const CATS = [
-  { id: 'ops', label: 'Bugün' },
-  { id: 'pool', label: 'Havuz' },
-  { id: 'process', label: 'Süreç' },
-  { id: 'hired', label: 'Personel' },
-  { id: 'messages', label: 'Mesajlar' },
+const CAT_KEYS = [
+  { id: 'ops', key: 'nav_today' },
+  { id: 'pipeline', key: 'nav_candidates' },
+  { id: 'pool', key: 'nav_pool' },
+  { id: 'hotels', key: 'nav_hotels' },
+  { id: 'messages', key: 'nav_messages' },
 ];
-const normalizeCat = (c) => (['ops', 'pool', 'process', 'hired', 'messages'].includes(c) ? c : 'ops');
+const STAFF_PIPELINE = new Set(['arrivals', 'transit', 'staff', 'former', 'cards']);
+const PROCESS_PIPELINE = new Set(['interviews', 'concluded', 'offered', 'inprocess']);
+const normalizeCat = (c) => {
+  if (c === 'process' || c === 'hired' || c === 'staff') return 'pipeline';
+  return ['ops', 'pool', 'pipeline', 'hotels', 'messages'].includes(c) ? c : 'ops';
+};
 
 const readHash = () => {
   const h = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
@@ -54,9 +67,19 @@ export default function App() {
   const [generalPush, setGeneralPush] = useState(true);
   const [chatPush, setChatPush] = useState(true);
   const [chatBadge, setChatBadge] = useState(0);
+  const [annHubOpen, setAnnHubOpen] = useState(false);
+  const [hubCompose, setHubCompose] = useState(false);
+  const [hubNotice, setHubNotice] = useState(null);
+  const [hubIds, setHubIds] = useState([]);
+  const [hubPeople, setHubPeople] = useState([]);
+  const [hubNonce, setHubNonce] = useState(0);
+  const [annUnread, setAnnUnread] = useState(0);
   const [agencyProfile, setAgencyProfile] = useState(null);
   const [taxBusy, setTaxBusy] = useState(false);
-  const [processJump, setProcessJump] = useState(null); // offered | inprocess | interviews
+  const [stampOpen, setStampOpen] = useState(false);
+  const [processJump, setProcessJump] = useState(null); // offered | inprocess | interviews | arrivals...
+  const [pipelineStage, setPipelineStage] = useState('interviews');
+  const [pipelineMoreOpen, setPipelineMoreOpen] = useState(false);
   const scrollRef = useRef(0);
   const restoredRef = useRef(false);
   const pendingCandidateRef = useRef(readHash().c);
@@ -70,7 +93,9 @@ export default function App() {
 
   const onNotifNavigate = async (n) => {
     const emp = isEmploymentNotif(n?.type);
-    if (n?.type !== 'chat_message' && !emp) return;
+    const arrival = n?.type === 'arrival_today' || n?.type === 'arrival_tomorrow';
+    const boarding = n?.type === 'boarding_no_response' || n?.type === 'boarding_missed' || n?.type === 'boarding_confirmed';
+    if (n?.type !== 'chat_message' && !emp && !arrival && !boarding) return;
     const id = emp
       ? await candidateIdFromNotif(n)
       : (n.payload?.candidateId || n.ref_user);
@@ -83,7 +108,14 @@ export default function App() {
         row = { ...c, st };
       }
       scrollRef.current = window.scrollY;
-      setSelected({ c: row, st: { ...(row.st || {}), ...(n.type === 'chat_message' ? { _openChat: true } : {}), ...((n.type === 'work_start_confirm' || n.type === 'work_start_remind' || n.payload?.openHireConfirm) ? { _openHireConfirm: true, status: row.st?.status || 'in_transit' } : {}) } });
+      setSelected({ c: row, st: {
+        ...(row.st || {}),
+        ...(n.type === 'chat_message' ? { _openChat: true } : {}),
+        ...((n.type === 'work_start_confirm' || n.type === 'work_start_remind' || n.type === 'transit_stalled' || n.payload?.openHireConfirm) ? { _openHireConfirm: true, status: row.st?.status || 'in_transit' } : {}),
+        ...(n.type === 'boarding_no_response' || n.payload?.openBoardingResolve ? { status: 'in_transit' } : {}),
+        ...(n.type === 'boarding_missed' ? { status: 'in_transit' } : {}),
+        ...((n.type === 'rating_required' || n.type === 'rating_remind' || n.payload?.openRate) ? { _openRate: true } : {}),
+      } });
     } catch (e) { /* yoksay */ }
   };
 
@@ -150,10 +182,7 @@ export default function App() {
 
   useEffect(() => {
     if (!session || !isStaff) return;
-    scanDocsDeadline();
-    scanInterviewReminders();
-    scanInterviewSla();
-    scanEmploymentLifecycle();
+    scanOps();
     getAgencyNotifPrefs().then((p) => {
       setGeneralPush(p.generalPush);
       setChatPush(p.chatPush);
@@ -191,9 +220,42 @@ export default function App() {
     let alive = true;
     const tick = () => unreadChatCount(session.user.id).then((n) => { if (alive) setChatBadge(n); }).catch(() => {});
     tick();
-    const t = setInterval(tick, 25000);
-    return () => { alive = false; clearInterval(t); };
+    const t = setInterval(tick, 20000);
+    const ch = supabase
+      .channel(`agency-chat-badge-${session.user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${session.user.id}` },
+        (payload) => {
+          const row = payload.new || payload.old;
+          if (row?.type === 'chat_message') tick();
+        },
+      )
+      .subscribe();
+    return () => { alive = false; clearInterval(t); supabase.removeChannel(ch); };
   }, [session?.user?.id, isStaff, selected, cat]);
+
+  const refreshChatBadge = () => {
+    if (!session?.user?.id) return;
+    unreadChatCount(session.user.id).then(setChatBadge).catch(() => {});
+  };
+
+  useEffect(() => {
+    if (!session?.user?.id || !isStaff) return undefined;
+    let alive = true;
+    const tick = async () => {
+      const { count } = await supabase
+        .from('notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', session.user.id)
+        .eq('type', 'announcement')
+        .is('read_at', null);
+      if (alive) setAnnUnread(count || 0);
+    };
+    tick().catch(() => {});
+    const iv = setInterval(() => { tick().catch(() => {}); }, 30000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [session?.user?.id, isStaff, hubNonce, annHubOpen, hubCompose]);
 
   const counts = useMemo(() => {
     const c = { pool: 0, process: 0, hired: 0, offered: 0, transit: 0 };
@@ -218,9 +280,19 @@ export default function App() {
 
   const navigateCat = (next, sub) => {
     setSelected(null);
-    setCat(next === 'staff' ? 'hired' : next);
-    if ((next === 'process' || next === 'hired' || next === 'staff') && sub) setProcessJump(sub);
-    else setProcessJump(null);
+    if (next === 'pool' || next === 'ops' || next === 'hotels' || next === 'messages') {
+      setCat(next);
+      setProcessJump(null);
+      return;
+    }
+    setCat('pipeline');
+    let stage = 'inprocess';
+    if (typeof sub === 'string' && sub.startsWith('pipe_')) stage = 'inprocess';
+    else if (sub && (PROCESS_PIPELINE.has(sub) || STAFF_PIPELINE.has(sub))) stage = sub === 'cards' ? 'staff' : sub;
+    else if (next === 'hired' || next === 'staff') stage = 'staff';
+    else if (next === 'process') stage = 'inprocess';
+    setPipelineStage(stage);
+    setProcessJump(typeof sub === 'string' && sub.startsWith('pipe_') ? sub : stage);
   };
 
   if (!ready) return <div className="center full"><div className="spinner" /></div>;
@@ -256,7 +328,7 @@ export default function App() {
   const agencyName = agencyProfile?.companyName
     || meta.full_name || meta.name
     || [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim()
-    || (session.user.email ? session.user.email.split('@')[0] : 'Acente');
+    || (session.user.email ? session.user.email.split('@')[0] : (t('role_agency') || 'Acente'));
   const agencyIdCode = agencyCode(agencyProfile?.regNo);
 
   const onTaxPick = async (e) => {
@@ -273,7 +345,7 @@ export default function App() {
       const p = await getAgencyProfile(session.user.id);
       setAgencyProfile(p);
     } catch (err) {
-      window.alert(err?.message || 'PDF yüklenemedi');
+      window.alert(err?.message || t('agency_setup_err_pdf') || '');
     } finally {
       setTaxBusy(false);
     }
@@ -283,10 +355,10 @@ export default function App() {
     try {
       setTaxBusy(true);
       const url = await getAgencyTaxPlateUrl(session.user.id);
-      if (!url) { window.alert(t('agency_tax_missing') || 'Vergi levhası yok.'); return; }
+      if (!url) { window.alert(t('agency_tax_missing') || ''); return; }
       window.open(url, '_blank', 'noopener,noreferrer');
     } catch (err) {
-      window.alert(err?.message || 'Açılamadı');
+      window.alert(err?.message || t('open_failed') || '');
     } finally {
       setTaxBusy(false);
     }
@@ -296,8 +368,7 @@ export default function App() {
     if (id === 'ops') return null;
     if (id === 'messages') return chatBadge || null;
     if (id === 'pool') return counts.pool;
-    if (id === 'process') return counts.process + counts.offered;
-    if (id === 'hired') return counts.hired;
+    if (id === 'pipeline') return counts.process + counts.offered + counts.hired;
     return null;
   };
 
@@ -305,15 +376,15 @@ export default function App() {
     <div className="ec">
       <div className="ecTop">
         <header className="ecHeader">
-          <button className="ecLogo" onClick={goHome} title="Ana sayfa" aria-label="Ana sayfa"><img src="/turquz-logo.png" alt="Turquz" /></button>
+          <button className="ecLogo" onClick={goHome} title={t('agency_home') || ''} aria-label={t('agency_home') || ''}><img src="/turquz-logo.png" alt="Turquz" /></button>
           <div className="ecBrandBlock">
             <span className="ecBrandName">Turquz</span>
-            <span className="ecBrandSub">Acente Operasyon</span>
+            <span className="ecBrandSub">{t('agency_ops_sub') || ''}</span>
           </div>
           <div className="ecSearch">
             <Icon name="search" size={18} />
             <input
-              placeholder="Aday ara — kod, isim, pozisyon…"
+              placeholder={t('agency_search') || ''}
               value={q}
               onChange={(e) => {
                 setQ(e.target.value);
@@ -321,12 +392,24 @@ export default function App() {
                 if (e.target.value) setCat('pool');
               }}
             />
-            {q ? <button className="ecSearchClear" onClick={() => setQ('')} title="Temizle">✕</button> : null}
+            {q ? <button className="ecSearchClear" onClick={() => setQ('')} title={t('agency_clear') || ''}>✕</button> : null}
           </div>
           <div className="ecRight">
-            <div className="ecWho clickable" onClick={() => setEditProfile(true)} title="Bilgileri düzenle">
+            <div className="ecWho clickable" onClick={() => setEditProfile(true)} title={t('set_edit_profile') || ''}>
               <span className="ecWhoLabel">{agencyIdCode}</span>
               <span className="ecWhoName">{agencyName}</span>
+            </div>
+            <div className="bellWrap">
+              <button
+                type="button"
+                className={`ecSettingsBtn ${annHubOpen || hubCompose ? 'on' : ''}`}
+                onClick={() => setAnnHubOpen(true)}
+                title={t('home_announcements')}
+              >
+                <Icon name="announce" size={16} />
+                <span>{t('home_announcements')}</span>
+              </button>
+              {annUnread > 0 ? <span className="bellDot">{annUnread > 9 ? '9+' : annUnread}</span> : null}
             </div>
             <NotifBell userId={session.user.id} onNavigate={onNotifNavigate} />
             <div className="ecSettings">
@@ -402,6 +485,18 @@ export default function App() {
                   </div>
 
                   <div className="ecSettingsBlock">
+                    <div className="ecSettingsLabel">{t('stamp_menu') || 'İmza & kaşe'}</div>
+                    <p className="ecTaxStatus">{t('stamp_list_hint_short') || 'Her işletme için ayrı kaşe'}</p>
+                    <button
+                      type="button"
+                      className="ecTaxGhost"
+                      onClick={() => { setNotifOpen(false); setStampOpen(true); }}
+                    >
+                      {t('stamp_menu') || 'İşletme kaşeleri'}
+                    </button>
+                  </div>
+
+                  <div className="ecSettingsBlock">
                     <div className="ecSettingsLabel">{t('agency_tax_section') || 'Vergi levhası'}</div>
                     <p className="ecTaxStatus">
                       {agencyProfile?.taxPlatePath
@@ -435,18 +530,23 @@ export default function App() {
           </div>
         </header>
 
-        <nav className="ecCatsBar" aria-label="Ana menü">
+        <nav className="ecCatsBar" aria-label={t('agency_main_menu') || ''}>
           <div className="segTrack">
-            {CATS.map((c) => {
+            {CAT_KEYS.map((c) => {
               const n = catCount(c.id);
               return (
                 <button
                   key={c.id}
                   type="button"
                   className={`segItem ${cat === c.id ? 'on' : ''}`}
-                  onClick={() => { setCat(c.id); setSelected(null); setProcessJump(null); }}
+                  onClick={() => {
+                    setSelected(null);
+                    setCat(c.id);
+                    if (c.id === 'pipeline') setProcessJump(pipelineStage);
+                    else setProcessJump(null);
+                  }}
                 >
-                  {c.label}
+                  {t(c.key) || c.id}
                   {n != null && n > 0 ? <span className="segCount">{n > 99 ? '99+' : n}</span> : null}
                 </button>
               );
@@ -465,12 +565,64 @@ export default function App() {
               onNavigateCat={navigateCat}
             />
           ) : null}
+          {cat === 'hotels' ? (
+            <Hotels agencyId={session.user.id} />
+          ) : null}
           {cat === 'messages' ? (
             <ChatInbox agencyId={session.user.id} onOpen={openCandidate} />
           ) : null}
-          {cat === 'pool' || cat === 'process' || cat === 'hired' ? (
+          {cat === 'pipeline' ? (
+            <div className="arrToggle processSubs pipelineStages" style={{ margin: '0 0 12px', flexWrap: 'wrap', alignItems: 'center' }}>
+              {PIPELINE_STAGES_PRIMARY.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={`arrTab ${pipelineStage === s.id ? 'on' : ''}`}
+                  onClick={() => {
+                    setPipelineMoreOpen(false);
+                    setPipelineStage(s.id);
+                    setProcessJump(s.id);
+                  }}
+                >
+                  {s.id === 'arrivals' ? `🛬 ${t(s.labelKey)}` : t(s.labelKey)}
+                </button>
+              ))}
+              <div className="pipelineMoreWrap">
+                <button
+                  type="button"
+                  className={`arrTab ${isPipelineMoreStage(pipelineStage) ? 'on' : ''}`}
+                  onClick={() => setPipelineMoreOpen((v) => !v)}
+                >
+                  {isPipelineMoreStage(pipelineStage)
+                    ? t(PIPELINE_STAGES_MORE.find((s) => s.id === pipelineStage)?.labelKey || 'pipeline_more')
+                    : `${t('pipeline_more')} ▾`}
+                </button>
+                {pipelineMoreOpen ? (
+                  <div className="pipelineMoreMenu">
+                    {PIPELINE_STAGES_MORE.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        className={`pipelineMoreItem ${pipelineStage === s.id ? 'on' : ''}`}
+                        onClick={() => {
+                          setPipelineStage(s.id);
+                          setProcessJump(s.id);
+                          setPipelineMoreOpen(false);
+                        }}
+                      >
+                        {t(s.labelKey)}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          {cat === 'pool' || cat === 'pipeline' ? (
             <Pool
-              category={cat}
+              category={cat === 'pipeline'
+                ? (STAFF_PIPELINE.has(pipelineStage) ? 'hired' : 'process')
+                : cat}
               query={q}
               rows={rows}
               onOpen={openCandidate}
@@ -478,17 +630,63 @@ export default function App() {
               onRefresh={() => listPool().then(setRows).catch(() => {})}
               processJump={processJump}
               onProcessJumpConsumed={() => setProcessJump(null)}
+              hideStageTabs={cat === 'pipeline'}
             />
           ) : null}
         </div>
-        {selected ? <Candidate sel={selected} onBack={() => setSelected(null)} agencyUserId={session.user.id} /> : null}
+        {selected ? (
+          <Candidate
+            sel={selected}
+            onBack={() => { setSelected(null); refreshChatBadge(); }}
+            agencyUserId={session.user.id}
+            onChatRead={refreshChatBadge}
+          />
+        ) : null}
       </main>
+
+      <AgencyAnnouncementsHub
+        open={annHubOpen && !hubCompose}
+        onClose={() => setAnnHubOpen(false)}
+        userId={session.user.id}
+        reloadAt={hubNonce}
+        onCompose={() => { setHubNotice(null); setHubIds([]); setHubPeople([]); setHubCompose(true); }}
+        onComposeGroup={(b) => {
+          setHubNotice(null);
+          setHubIds((b.people || []).map((p) => p.userId));
+          setHubPeople(b.people || []);
+          setHubCompose(true);
+        }}
+        onOpenSent={(row) => { setHubNotice(row); setHubIds([]); setHubPeople([]); setHubCompose(true); }}
+      />
+      <AgencyNoticeModal
+        open={hubCompose}
+        onClose={() => {
+          setHubCompose(false);
+          setHubNotice(null);
+          setHubIds([]);
+          setHubPeople([]);
+          setHubNonce((n) => n + 1);
+        }}
+        userIds={hubIds}
+        previewPeople={hubPeople}
+        allowAudience={!hubIds.length}
+        agencyId={session.user.id}
+        startNotice={hubNotice}
+        hideHistory
+      />
 
       {editProfile ? (
         <AgencySetup
           user={session.user}
           onDone={(u) => { setSession((s) => ({ ...s, user: u })); setEditProfile(false); }}
           onCancel={() => setEditProfile(false)}
+        />
+      ) : null}
+
+      {stampOpen ? (
+        <EmployerStampList
+          agencyId={session.user.id}
+          onClose={() => setStampOpen(false)}
         />
       ) : null}
     </div>

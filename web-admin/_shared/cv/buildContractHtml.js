@@ -107,8 +107,12 @@ export function buildContractHtml(data = {}, contract = {}, opts = {}) {
   .signbox .head { font-weight: bold; }
   .signbox .sub { font-size: 9.5pt; }
   .signbox .area { height: 110px; border: 1px dashed #bbb; border-radius: 4px; margin-top: 8px; }
-  .signbox .area.filled { border: 1px solid #cfcfcf; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 4px; }
-  .signbox .area.filled .sigimg { max-width: 100%; max-height: 102px; object-fit: contain; }
+  .signbox .area.filled { border: 1px solid #cfcfcf; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 4px; background: #fff; }
+  .signbox .area.filled .sigimg {
+    max-width: 100%; max-height: 102px; object-fit: contain;
+    mix-blend-mode: multiply;
+    -webkit-mix-blend-mode: multiply;
+  }
   .signbox .esign { margin-top: 5px; font-size: 8.5pt; font-weight: bold; color: #1a5c2a; }
   .signbox .esignmeta { font-size: 7pt; color: #555; line-height: 1.2; margin-top: 2px; word-break: break-word; }
   .datecenter { text-align: center; margin-top: 18px; text-decoration: underline; }

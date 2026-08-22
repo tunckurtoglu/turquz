@@ -34,8 +34,66 @@ export function categoryOf(st) {
   return 'pool';
 }
 
+export async function adminListInterventions() {
+  const { data, error } = await supabase.rpc('admin_list_interventions');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function adminInterventionAct(queueId, action, note = null, payload = {}) {
+  const { error } = await supabase.rpc('admin_intervention_act', {
+    p_queue_id: queueId,
+    p_action: action,
+    p_note: note,
+    p_payload: payload,
+  });
+  if (error) throw error;
+}
+
+export async function adminListInterventionLog(limit = 50) {
+  const { data, error } = await supabase.rpc('admin_list_intervention_log', { p_limit: limit });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function adminAnswerBoardingForCandidate(candidateId, answer, note = null) {
+  const { error } = await supabase.rpc('admin_answer_boarding_for_candidate', {
+    p_candidate: candidateId,
+    p_answer: answer,
+    p_note: note,
+  });
+  if (error) throw error;
+}
+
+export async function agencyConfirmHire(candidateId) {
+  const { error } = await supabase.rpc('agency_confirm_hire', { p_candidate: candidateId });
+  if (error) throw error;
+}
+
+export async function agencyDeferWorkStart(candidateId, startDate) {
+  const { error } = await supabase.rpc('agency_defer_work_start', {
+    p_candidate: candidateId,
+    p_start: startDate,
+  });
+  if (error) throw error;
+}
+
+export async function agencyAnswerBoarding(candidateId, answer) {
+  const { error } = await supabase.rpc('agency_answer_boarding', {
+    p_candidate: candidateId,
+    p_answer: answer,
+  });
+  if (error) throw error;
+}
+
 export async function adminListEmploymentDisputes() {
   const { data, error } = await supabase.rpc('admin_list_employment_disputes');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function adminListEmploymentClosed(days = 90) {
+  const { data, error } = await supabase.rpc('admin_list_employment_closed', { p_days: days });
   if (error) throw error;
   return data || [];
 }
@@ -46,6 +104,23 @@ export async function adminResolveEmployment(episodeId, decision, note = null) {
     p_decision: decision,
     p_note: note,
   });
+  if (error) throw error;
+}
+
+export async function adminListProcessChats(limit = 200) {
+  const { data, error } = await supabase.rpc('admin_list_process_chats', { p_limit: limit });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function adminListProcessChatMessages(chatId) {
+  const { data, error } = await supabase.rpc('admin_list_process_chat_messages', { p_chat: chatId });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function adminDeleteProcessChat(chatId) {
+  const { error } = await supabase.rpc('admin_delete_process_chat', { p_chat: chatId });
   if (error) throw error;
 }
 

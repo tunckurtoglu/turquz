@@ -27,13 +27,14 @@ import PhotoWatermark from '../components/PhotoWatermark';
 import PhotoGalleryModal from '../components/PhotoGalleryModal';
 import { getCandidateStatus, docsUnlocked, reactivateCandidate, workInfo } from '../lib/candidate';
 import {
-  requestEmploymentEnd, undoEmploymentEnd, contestEmploymentEnd, acceptEmploymentEnd, getMyEmploymentEpisode,
+  undoEmploymentEnd, contestEmploymentEnd, acceptEmploymentEnd, answerEmploymentTerm, getMyEmploymentEpisode,
   listCandidateWorkHistory, scanEmploymentLifecycle, answerBoarding, isEmploymentNotif,
 } from '../lib/employment';
 import { acceptOffer, rejectOffer } from '../lib/roles';
 import { notifyOffer } from '../lib/push';
 import { candidatePendingCount, journeyStep, journeyTitleKey, JOURNEY_COUNT } from '../lib/pipeline';
-import { getFlight } from '../lib/flights';
+import { getFlight, msUntilArrival, msUntilYmdGate } from '../lib/flights';
+import CountdownBanner from '../components/CountdownBanner';
 import { touchLastSeen } from '../lib/lastSeen';
 import { APP_SHARE_URL } from '../lib/config';
 import { unreadAnnouncementCount } from '../lib/notifications';
@@ -263,6 +264,9 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
   const [certified, setCertified] = useState(false);
   const [certEpisode, setCertEpisode] = useState(null);
   const [boardingStatus, setBoardingStatus] = useState(null);
+  const [boardingGateYmd, setBoardingGateYmd] = useState(null); // kalkış günü YYYY-MM-DD
+  const [flightArriveAt, setFlightArriveAt] = useState('');
+  const [workStartYmd, setWorkStartYmd] = useState(null);
   const [boardingBusy, setBoardingBusy] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(null); // 'photo' | 'photoClose' | 'photoFull' | null
   const blink = useRef(new Animated.Value(1)).current;
@@ -285,6 +289,11 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       ]);
       setEpisode(ep);
       setBoardingStatus(status?.boarding_status || null);
+      {
+        const gate = status?.flight_depart_on || status?.work_start_at || null;
+        setBoardingGateYmd(gate ? String(gate).slice(0, 10) : null);
+      }
+      setWorkStartYmd(status?.work_start_at ? String(status.work_start_at).slice(0, 10) : null);
       setWorkHistory((hist || []).filter((h) => h.outcome === 'completed'));
       setCertified((hist || []).some((h) => h.outcome === 'completed'));
       setOfferPending(status?.status === 'offered');
@@ -306,6 +315,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       }
 
       const [rows, flight] = await Promise.all([listDocuments(userId), getFlight(userId)]);
+      setFlightArriveAt(flight?.arriveAt || '');
       const has = (k) => rows.some((r) => r.kind === k && r.submitted_at);
       setMissingDocs(candidatePendingCount(has));
       setJourneyN(journeyStep(has, !!flight?.pickupSent));
@@ -381,7 +391,6 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
 
   const openAnnouncements = useCallback(() => {
     setAnnouncementsOpen(true);
-    setAnnounceUnread(0);
   }, []);
 
   // Teklifi KABUL et -> belgeler açılır, acenteye bildirim.
@@ -415,20 +424,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     ]);
   };
 
-  // İşyerinden ayrıl (erken) → pending; süre dolduysa reaktive / tarama.
-  const doLeaveWorkplace = () => {
-    if (episode?.outcome === 'early_exit_pending' || episode?.outcome === 'disputed') {
-      Alert.alert(t('emp_leave'), episode.outcome === 'disputed' ? t('emp_disputed') : t('emp_pending_candidate'));
-      return;
-    }
-    Alert.alert(t('emp_leave'), t('emp_leave_confirm'), [
-      { text: t('consent_cancel'), style: 'cancel' },
-      { text: t('emp_leave'), style: 'destructive', onPress: async () => {
-          try { await requestEmploymentEnd(userId); await loadStatus(); }
-          catch (e) { Alert.alert(t('emp_leave'), e?.message || 'error'); }
-        } },
-    ]);
-  };
+  // İşyerinden ayrıl (şimdilik UI gizli).
 
   const doUndoLeave = () => {
     if (!episode?.id) return;
@@ -458,7 +454,19 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     catch (e) { Alert.alert(t('emp_contest'), e?.message || 'error'); }
   };
 
-  // Süre dolmuş eski yol: tarama + gerekirse reaktive
+  const doTermAnswer = (answer) => {
+    if (!episode?.id) return;
+    const title = answer === 'ok' ? t('emp_term_ok') : t('emp_term_problem');
+    const body = answer === 'ok' ? t('emp_term_ok_confirm') : t('emp_term_problem_confirm');
+    Alert.alert(title, body, [
+      { text: t('consent_cancel'), style: 'cancel' },
+      { text: title, style: answer === 'ok' ? 'default' : 'destructive', onPress: async () => {
+          try { await answerEmploymentTerm(episode.id, answer); await loadStatus(); }
+          catch (e) { Alert.alert(title, e?.message || 'error'); }
+        } },
+    ]);
+  };
+
   const doReactivate = () => {
     Alert.alert(t('work_title'), t('work_reactivate_confirm'), [
       { text: t('consent_cancel'), style: 'cancel' },
@@ -488,6 +496,8 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
   }, [missingDocs, blink]);
 
   const careerPulse = offerPending || ((inProcess || work.hired) && journeyN > 0);
+  const showStaffSummary = work.hired && episode?.outcome === 'active' && journeyN >= 7;
+
   useEffect(() => {
     if (careerPulse) {
       const loop = Animated.loop(Animated.sequence([
@@ -532,12 +542,15 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     const id = setInterval(() => { loadInterview(); }, 15000);
     return () => clearInterval(id);
   }, [loadInterview]);
-  // Geri sayım saniyesi (planlı mülakat varken).
+  // Geri sayım saniyesi (planlı mülakat veya uçuş günü beklerken).
   useEffect(() => {
-    if (interview?.status !== 'scheduled' || !interview?.selectedSlot) return undefined;
+    const needTick = (interview?.status === 'scheduled' && interview?.selectedSlot)
+      || ((boardingStatus === 'pending' || boardingStatus === 'no_response') && boardingGateYmd)
+      || (work.inTransit && (msUntilArrival(flightArriveAt) > 0 || msUntilYmdGate(workStartYmd) > 0));
+    if (!needTick) return undefined;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [interview?.status, interview?.selectedSlot]);
+  }, [interview?.status, interview?.selectedSlot, boardingStatus, boardingGateYmd, work.inTransit, flightArriveAt, workStartYmd]);
   // Mülakat daveti / katıl penceresi: kutuyu yanıp söndür.
   useEffect(() => {
     if (ivPending || ivJoinable) {
@@ -562,6 +575,26 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
   const ivCountdownLeft = ivWin?.base ? ivWin.base - nowTick : 0;
   // Anlık joinable (saniyelik tick ile)
   const ivCanJoin = !!(ivWin && (ivWin.joinable || (nowTick >= ivWin.start && nowTick <= ivWin.end + 120000)));
+
+  // Uçuş teyidi: kalkış günü gelene kadar geri sayım (bildirim taramasıyla aynı kapı).
+  const boardingPending = boardingStatus === 'pending' || boardingStatus === 'no_response';
+  const todayYmd = (() => {
+    const x = new Date(nowTick);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`;
+  })();
+  const boardingDue = !boardingGateYmd || boardingGateYmd <= todayYmd;
+  const boardingCountdownLeft = (() => {
+    if (!boardingGateYmd || boardingDue) return 0;
+    const [y, m, day] = boardingGateYmd.split('-').map(Number);
+    if (!y || !m || !day) return 0;
+    return Math.max(0, new Date(y, m - 1, day, 0, 0, 0, 0).getTime() - nowTick);
+  })();
+  const showBoardingAsk = boardingPending && boardingDue;
+  const showBoardingCountdown = boardingPending && !boardingDue;
+  const arriveCountdownLeft = msUntilArrival(flightArriveAt, nowTick);
+  const workStartCountdownLeft = work.inTransit ? msUntilYmdGate(workStartYmd, nowTick) : 0;
+  const workStartDue = work.inTransit && workStartYmd && workStartCountdownLeft === 0;
 
   const savedVideo = data?.introVideo || '';
   const showVideo = pendingVideo || savedVideo;   // önizlenecek yol (bekleyen öncelikli)
@@ -722,15 +755,24 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                 }
                 if (
                   type === 'reupload'
+                  || type === 'agency_doc_retracted'
+                  || type === 'agency_doc_updated'
+                  || type === 'flight_ticket_updated'
                   || type === 'document'
                   || type === 'accepted'
                   || type === 'docs_extra'
                   || type === 'flight_ticket_ready'
                   || type === 'flight_ticket_sent'
                   || type === 'pickup'
-                  || type.startsWith('boarding_')
                 ) {
-                  onOpenDocs?.();
+                  const scrollToStep = type === 'pickup'
+                    ? 6
+                    : (type === 'flight_ticket_ready' || type === 'flight_ticket_sent' || type === 'flight_ticket_updated' || type === 'agency_doc_updated' ? 5 : undefined);
+                  onOpenDocs?.(scrollToStep ? { scrollToStep } : undefined);
+                  return;
+                }
+                if (type === 'boarding_check' || type.startsWith('boarding_')) {
+                  homeScroll.current?.scrollTo({ y: 0, animated: true });
                   return;
                 }
                 if (
@@ -940,20 +982,43 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
             </>
           )}
 
-          {work.hired && work.end ? (
+          {showStaffSummary && work.end ? (
             <Text style={styles.workSub}>{t('work_until', { date: `${String(work.end.getDate()).padStart(2, '0')}.${String(work.end.getMonth() + 1).padStart(2, '0')}.${work.end.getFullYear()}` })}</Text>
           ) : null}
-          {work.hired && episode?.employer_title ? (
+          {showStaffSummary && episode?.employer_title ? (
             <Text style={styles.workSub}>{episode.employer_title}</Text>
           ) : null}
 
-          {work.inTransit ? (
-            <Text style={styles.workSub}>Yolda — işe başlama onayı bekleniyor</Text>
+          {work.inTransit && workStartDue ? (
+            <Text style={styles.workSub}>{t('home_transit_wait')}</Text>
           ) : null}
 
           {(work.hired || work.inTransit) ? (
             <>
-              {(boardingStatus === 'pending' || boardingStatus === 'no_response') ? (
+              {showBoardingCountdown ? (
+                <View style={styles.workNote}>
+                  <Text style={styles.workNoteText}>⏱ {t('boarding_countdown_title')}: {formatCountdown(boardingCountdownLeft)}</Text>
+                  <Text style={[styles.workSub, { marginTop: 6 }]}>{t('boarding_countdown_sub')}</Text>
+                </View>
+              ) : null}
+
+              {arriveCountdownLeft > 0 ? (
+                <CountdownBanner
+                  titleKey="arrive_countdown_title"
+                  subKey="arrive_countdown_sub"
+                  leftMs={arriveCountdownLeft}
+                />
+              ) : null}
+
+              {workStartCountdownLeft > 0 ? (
+                <CountdownBanner
+                  titleKey="work_start_countdown_title"
+                  subKey="work_start_countdown_sub"
+                  leftMs={workStartCountdownLeft}
+                />
+              ) : null}
+
+              {showBoardingAsk ? (
                 <View style={styles.workAlert}>
                   <Text style={styles.workAlertText}>{t('boarding_check_prompt')}</Text>
                   <TouchableOpacity
@@ -962,7 +1027,10 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                     onPress={async () => {
                       setBoardingBusy(true);
                       try { await answerBoarding('confirmed'); await loadStatus(); }
-                      catch (e) { Alert.alert(t('boarding_check_title'), e?.message || 'error'); }
+                      catch (e) {
+                        const msg = e?.message === 'boarding_too_early' ? t('boarding_too_early') : (e?.message || 'error');
+                        Alert.alert(t('boarding_check_title'), msg);
+                      }
                       finally { setBoardingBusy(false); }
                     }}
                     activeOpacity={0.9}
@@ -975,7 +1043,10 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                     onPress={async () => {
                       setBoardingBusy(true);
                       try { await answerBoarding('missed'); await loadStatus(); }
-                      catch (e) { Alert.alert(t('boarding_check_title'), e?.message || 'error'); }
+                      catch (e) {
+                        const msg = e?.message === 'boarding_too_early' ? t('boarding_too_early') : (e?.message || 'error');
+                        Alert.alert(t('boarding_check_title'), msg);
+                      }
                       finally { setBoardingBusy(false); }
                     }}
                     activeOpacity={0.9}
@@ -1013,22 +1084,37 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                     </>
                   )}
                 </View>
+              ) : work.hired && episode?.outcome === 'completion_pending' ? (
+                <View style={styles.workAlert}>
+                  <Text style={styles.workAlertText}>{t('emp_term_body')}</Text>
+                  {episode.term_vote_candidate === 'ok' ? (
+                    <Text style={styles.workNoteText}>{t('emp_term_waiting')}</Text>
+                  ) : (
+                    <>
+                      <TouchableOpacity style={styles.workBtnPrimary} onPress={() => doTermAnswer('ok')} activeOpacity={0.9}>
+                        <Text style={styles.workBtnPrimaryText}>{t('emp_term_ok')}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.workBtnGhost, { marginTop: 8 }]} onPress={() => doTermAnswer('problem')} activeOpacity={0.9}>
+                        <Text style={styles.workBtnGhostText}>{t('emp_term_problem')}</Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                </View>
               ) : work.hired && episode?.outcome === 'disputed' ? (
                 <View style={styles.workNote}>
                   <Text style={styles.workAlertText}>{t('emp_disputed')}</Text>
                 </View>
               ) : work.hired && work.expired ? (
                 <View style={styles.workAlert}>
-                  <Text style={styles.workAlertText}>{t('work_expired')}</Text>
-                  <TouchableOpacity style={styles.workBtnPrimary} onPress={doReactivate} activeOpacity={0.9}>
-                    <Text style={styles.workBtnPrimaryText}>{t('work_reactivate')}  →</Text>
+                  <Text style={styles.workAlertText}>{t('emp_term_body')}</Text>
+                  <TouchableOpacity style={styles.workBtnPrimary} onPress={async () => {
+                    try { await scanEmploymentLifecycle(); await loadStatus(); }
+                    catch (e) { Alert.alert(t('work_title'), e?.message || 'error'); }
+                  }} activeOpacity={0.9}>
+                    <Text style={styles.workBtnPrimaryText}>{t('emp_term_ok')}</Text>
                   </TouchableOpacity>
                 </View>
-              ) : (
-                <TouchableOpacity style={styles.workBtnGhost} onPress={doLeaveWorkplace} activeOpacity={0.9}>
-                  <Text style={styles.workBtnGhostText}>{t('emp_leave')}</Text>
-                </TouchableOpacity>
-              )}
+              ) : null}
             </>
           ) : null}
         </View>

@@ -4,13 +4,10 @@
 // body: { scan: true } — acentenin süreçteki adaylarını tara (panel açılışında)
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { docsDeadlinePushText, sendExpoPush, recipientAllowsPush, type PushTokenRow } from '../_shared/pushTexts.ts';
+import { authorizeOpsScan, SCAN_CORS, scanJson } from '../_shared/scanAuth.ts';
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
+const CORS = SCAN_CORS;
+const json = scanJson;
 
 const STEP1_KINDS = ['passport', 'diploma', 'criminal', 'health_report'];
 const DEADLINE_DAYS = 10;
@@ -116,31 +113,29 @@ async function notifyOne(
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   try {
+    const auth = await authorizeOpsScan(req);
+    if (auth instanceof Response) return auth;
+
     const url = Deno.env.get('SUPABASE_URL')!;
-    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-
-    const authHeader = req.headers.get('Authorization') ?? '';
-    const userClient = createClient(url, anonKey, { global: { headers: { Authorization: authHeader } } });
-    const { data: { user }, error: userErr } = await userClient.auth.getUser();
-    if (userErr || !user) return json({ error: 'unauthorized' }, 401);
-
     const admin = createClient(url, serviceKey);
-    const staff = await isStaff(admin, user.id);
+    const staff = auth.cron || (auth.userId ? await isStaff(admin, auth.userId) : false);
     const body = await req.json().catch(() => ({}));
     const { candidateUserId, scan } = body as { candidateUserId?: string; scan?: boolean };
 
     if (scan) {
-      if (!staff) return json({ error: 'forbidden' }, 403);
-      const { data: roleRow } = await admin.from('user_roles').select('role').eq('user_id', user.id).maybeSingle();
-      const isAdmin = roleRow?.role === 'admin';
+      if (!staff && !auth.cron) return json({ error: 'forbidden' }, 403);
+      const { data: roleRow } = auth.userId && !auth.cron
+        ? await admin.from('user_roles').select('role').eq('user_id', auth.userId).maybeSingle()
+        : { data: { role: 'admin' } };
+      const isAdmin = auth.cron || roleRow?.role === 'admin';
       let q = admin
         .from('candidate_status')
         .select('user_id')
         .eq('status', 'accepted')
         .not('accepted_at', 'is', null)
         .is('docs_deadline_notified_at', null);
-      if (!isAdmin) q = q.eq('accepted_by', user.id);
+      if (!isAdmin && auth.userId) q = q.eq('accepted_by', auth.userId);
       const { data: rows } = await q;
       let sent = 0;
       for (const row of rows ?? []) {
@@ -152,18 +147,19 @@ Deno.serve(async (req) => {
 
     if (!candidateUserId) return json({ error: 'bad_request' }, 400);
 
-    const isCandidate = user.id === candidateUserId;
-    if (!isCandidate && !staff) return json({ error: 'forbidden' }, 403);
+    const uid = auth.userId || '';
+    const isCandidate = uid === candidateUserId;
+    if (!auth.cron && !isCandidate && !staff) return json({ error: 'forbidden' }, 403);
 
-    if (staff && !isCandidate) {
+    if (!auth.cron && staff && !isCandidate) {
       const { data: st } = await admin
         .from('candidate_status')
         .select('accepted_by')
         .eq('user_id', candidateUserId)
         .maybeSingle();
-      const { data: roleRow } = await admin.from('user_roles').select('role').eq('user_id', user.id).maybeSingle();
+      const { data: roleRow } = await admin.from('user_roles').select('role').eq('user_id', uid).maybeSingle();
       const isAdmin = roleRow?.role === 'admin';
-      if (!isAdmin && st?.accepted_by !== user.id) return json({ error: 'forbidden' }, 403);
+      if (!isAdmin && st?.accepted_by !== uid) return json({ error: 'forbidden' }, 403);
     }
 
     const result = await notifyOne(admin, candidateUserId);

@@ -332,7 +332,7 @@ export default function CallRoom({ candidateUserId, candidateLabel, slotISO, onC
         <div className="callCenter">
           <div className="spinner" />
           <div className="callConnecting">{status === 'reconnecting' ? (t('call_reconnecting') || 'Yeniden bağlanıyor…') : (t('call_connecting') || 'Bağlanıyor…')}</div>
-          <button className="ghostBtn" onClick={hangup} style={{ marginTop: 20 }}>Vazgeç</button>
+          <button className="ghostBtn" onClick={hangup} style={{ marginTop: 20 }}>{t('intro_video_cancel') || t('auth_cancel') || ''}</button>
         </div>
       ) : (
         <div className={`callStage ${chatOpen ? 'split' : ''}`}>
@@ -396,10 +396,10 @@ export default function CallRoom({ candidateUserId, candidateLabel, slotISO, onC
                   ))}
                 </div>
               )}
-              <button type="button" className={`callPip ${pipBig ? 'big' : ''}`} onClick={() => setPipBig((v) => !v)} title="Büyüt / küçült">
+              <button type="button" className={`callPip ${pipBig ? 'big' : ''}`} onClick={() => setPipBig((v) => !v)} title={t('call_pip_toggle') || ''}>
                 {room?.localParticipant && cam ? <VideoTile participant={room.localParticipant} sig={camSig(room.localParticipant)} label={t('call_you') || 'Siz'} mirror /> : <div className="callPipOff">📷</div>}
               </button>
-              <button type="button" className="callChatFab" onClick={() => setChatOpen(true)} title="Çeviri">💬</button>
+              <button type="button" className="callChatFab" onClick={() => setChatOpen(true)} title={t('call_captions') || ''}>💬</button>
             </>
           )}
 

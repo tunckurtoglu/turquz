@@ -260,33 +260,91 @@ Deno.serve(async (req) => {
     const viewLang = resolveLang(body?.lang);
     if (!candidateId) return json({ error: 'bad_request' }, 400);
 
-    // open / ensure
-    if (action === 'open') {
-      const { data: chatId, error } = await userClient.rpc('ensure_process_chat', { p_candidate: candidateId });
-      if (error) {
-        const msg = error.message || '';
-        if (msg.includes('chat_locked')) return json({ error: 'chat_locked' }, 403);
-        if (msg.includes('not_allowed')) return json({ error: 'forbidden' }, 403);
-        return json({ error: msg }, 400);
+    /** Aktif sohbet (ensure) veya taraf olduğu geçmiş sohbet (salt okunur). */
+    const resolveChat = async (): Promise<{
+      chatId: string | null;
+      chat: Record<string, unknown> | null;
+      readOnly: boolean;
+      closed: boolean;
+    }> => {
+      const { data: ensured, error } = await userClient.rpc('ensure_process_chat', { p_candidate: candidateId });
+      if (!error && ensured) {
+        const { data: chat } = await admin.from('process_chats').select('*').eq('id', ensured).maybeSingle();
+        const closed = !!(chat as { closed_at?: string } | null)?.closed_at;
+        return { chatId: ensured as string, chat: chat || null, readOnly: closed, closed };
       }
-      const { data: chat } = await admin.from('process_chats').select('*').eq('id', chatId).maybeSingle();
-      return json({ chatId, chat, unlocked: true });
+
+      // Geçmiş: sözleşme/ödeme yoksa ensure başarısız; mevcut thread'i tarafa göre bul.
+      let q = admin
+        .from('process_chats')
+        .select('*')
+        .eq('candidate_id', candidateId)
+        .order('last_message_at', { ascending: false, nullsFirst: false })
+        .limit(1);
+      if (user.id === candidateId) {
+        q = q.eq('candidate_id', user.id);
+      } else {
+        q = q.eq('agency_id', user.id);
+      }
+      const { data: existing } = await q.maybeSingle();
+      if (!existing) {
+        return { chatId: null, chat: null, readOnly: true, closed: true };
+      }
+      if (user.id !== existing.candidate_id && user.id !== existing.agency_id) {
+        return { chatId: null, chat: null, readOnly: true, closed: true };
+      }
+      return {
+        chatId: existing.id as string,
+        chat: existing,
+        readOnly: true,
+        closed: !!existing.closed_at,
+      };
+    };
+
+    // open / ensure (+ geçmiş salt okunur)
+    if (action === 'open') {
+      const resolved = await resolveChat();
+      if (!resolved.chatId) {
+        return json({ error: 'chat_locked', unlocked: false, closed: true, readOnly: true }, 200);
+      }
+      return json({
+        chatId: resolved.chatId,
+        chat: resolved.chat,
+        unlocked: !resolved.readOnly,
+        closed: resolved.closed,
+        readOnly: resolved.readOnly,
+      });
     }
 
     if (action === 'list') {
-      const { data: chatId, error } = await userClient.rpc('ensure_process_chat', { p_candidate: candidateId });
-      if (error) {
-        const msg = error.message || '';
-        if (msg.includes('chat_locked')) return json({ error: 'chat_locked', messages: [] }, 403);
-        return json({ error: msg }, 400);
+      const resolved = await resolveChat();
+      if (!resolved.chatId) {
+        return json({ chatId: null, messages: [], closed: true, readOnly: true });
       }
+      const chatId = resolved.chatId;
       const { data: rows, error: mErr } = await admin
         .from('process_chat_messages')
-        .select('id, sender_id, body, source_lang, translations, created_at')
+        .select('id, sender_id, body, source_lang, translations, created_at, read_at')
         .eq('chat_id', chatId)
         .order('created_at', { ascending: true })
         .limit(200);
       if (mErr) return json({ error: mErr.message }, 500);
+
+      const readAt = new Date().toISOString();
+      await admin.from('process_chat_messages')
+        .update({ read_at: readAt })
+        .eq('chat_id', chatId)
+        .neq('sender_id', user.id)
+        .is('read_at', null);
+
+      // Rozet / zil: sohbet açılınca chat_message bildirimlerini de okundu yap
+      // (mesaj satırı ile bildirim ayrı tablolarda; sadece message read_at yetmez).
+      await admin.from('notifications')
+        .update({ read_at: readAt })
+        .eq('user_id', user.id)
+        .eq('type', 'chat_message')
+        .is('read_at', null)
+        .or(`ref_user.eq.${candidateId},payload->>candidateId.eq.${candidateId}`);
 
       const list = rows || [];
       const messages = list.map((r) => {
@@ -294,16 +352,15 @@ Deno.serve(async (req) => {
         return {
           id: r.id,
           senderId: r.sender_id,
-          // Kendi yazdığın orijinal kalsın; karşı tarafın mesajı senin app dilinde.
           body: mine ? r.body : displayBody(r, viewLang),
           original: r.body,
           sourceLang: r.source_lang,
           createdAt: r.created_at,
+          readAt: r.read_at || null,
           mine,
         };
       });
 
-      // Eski çevirileri ekranı BLOKE ETMEDEN tamamla (önceden 12 Gemini çağrısı ~1 dk bekletiyordu).
       const toHeal = geminiKey
         ? list.filter((r) => (
           r.sender_id !== user.id
@@ -329,10 +386,16 @@ Deno.serve(async (req) => {
         if (rt?.waitUntil) rt.waitUntil(healJob());
       }
 
-      return json({ chatId, messages });
+      return json({
+        chatId,
+        messages,
+        closed: resolved.closed,
+        readOnly: resolved.readOnly,
+      });
     }
 
     if (action === 'send') {
+
       const text = String(body?.text || '').trim().slice(0, MAX_BODY);
       if (!text) return json({ error: 'empty' }, 400);
       const sourceLang = resolveLang(body?.lang);
@@ -358,10 +421,18 @@ Deno.serve(async (req) => {
         body: text,
         source_lang: sourceLang,
         translations: { [sourceLang]: text },
-      }).select('id, sender_id, body, source_lang, translations, created_at').single();
+      }).select('id, sender_id, body, source_lang, translations, created_at, read_at').single();
       if (iErr) return json({ error: iErr.message }, 500);
 
       await admin.from('process_chats').update({ last_message_at: new Date().toISOString() }).eq('id', chatId);
+
+      // Bildirim mesajla aynı anda — çeviri gecikince rozet/sohbet tutarsız kalmasın.
+      await admin.from('notifications').insert({
+        user_id: peerId,
+        type: 'chat_message',
+        ref_user: user.id,
+        payload: { candidateId, chatId },
+      });
 
       const finishTranslateNotify = async () => {
         try {
@@ -378,13 +449,6 @@ Deno.serve(async (req) => {
             source_lang: detectedSource || sourceLang,
             translations: finalTr,
           }).eq('id', inserted.id);
-
-          await admin.from('notifications').insert({
-            user_id: peerId,
-            type: 'chat_message',
-            ref_user: user.id,
-            payload: { candidateId, chatId },
-          });
 
           const allow = await recipientAllowsPush(admin, peerId, 'chat');
           if (allow) {
@@ -408,15 +472,6 @@ Deno.serve(async (req) => {
           }
         } catch (e) {
           console.warn('chat send bg translate/push', String((e as Error)?.message ?? e));
-          // Çeviri başarısız olsa bile in-app bildirim gitsin.
-          try {
-            await admin.from('notifications').insert({
-              user_id: peerId,
-              type: 'chat_message',
-              ref_user: user.id,
-              payload: { candidateId, chatId },
-            });
-          } catch { /* yoksay */ }
         }
       };
 
@@ -432,6 +487,7 @@ Deno.serve(async (req) => {
           original: inserted.body,
           sourceLang: inserted.source_lang,
           createdAt: inserted.created_at,
+          readAt: inserted.read_at || null,
           mine: true,
         },
         translated: false,

@@ -274,6 +274,15 @@ export async function withdrawCandidate(userId) {
   await deleteContract(userId).catch(() => {});
   await deleteFlight(userId).catch(() => {});
   await cancelInterview(userId).catch(() => {});
+  try {
+    await supabase.rpc('close_process_chat', { p_candidate: userId });
+  } catch {
+    await supabase
+      .from('process_chats')
+      .update({ closed_at: new Date().toISOString() })
+      .eq('candidate_id', userId)
+      .is('closed_at', null);
+  }
   const { error } = await supabase
     .from('candidate_status')
     .update({
@@ -296,7 +305,9 @@ export function isEmploymentNotif(type) {
   const t = String(type || '');
   return t.startsWith('employment_')
     || t === 'work_start_confirm'
-    || t === 'work_start_remind';
+    || t === 'transit_stalled'
+    || t === 'rating_required'
+    || t === 'rating_remind';
 }
 
 export async function candidateIdFromNotif(n) {
@@ -338,6 +349,14 @@ export async function contestEmploymentEnd(episodeId, note = null) {
 
 export async function acceptEmploymentEnd(episodeId) {
   const { error } = await supabase.rpc('accept_employment_end', { p_episode: episodeId });
+  if (error) throw error;
+}
+
+export async function answerEmploymentTerm(episodeId, answer) {
+  const { error } = await supabase.rpc('answer_employment_term', {
+    p_episode: episodeId,
+    p_answer: answer,
+  });
   if (error) throw error;
 }
 
@@ -388,6 +407,14 @@ export async function deferWorkStart(candidateId, startDate) {
   if (error) throw error;
 }
 
+export async function agencyAnswerBoarding(candidateId, answer) {
+  const { error } = await supabase.rpc('agency_answer_boarding', {
+    p_candidate: candidateId,
+    p_answer: answer,
+  });
+  if (error) throw error;
+}
+
 export async function listInTransit(agencyId) {
   if (!agencyId) return [];
   const { data, error } = await supabase
@@ -402,10 +429,28 @@ export async function scanEmploymentLifecycle() {
   try {
     const { data, error } = await supabase.rpc('scan_employment_lifecycle');
     if (error) throw error;
+    try {
+      await supabase.rpc('scan_boarding_missed_remind');
+    } catch (e) {
+      console.warn('boarding missed remind:', e?.message || e);
+    }
+    try {
+      await supabase.functions.invoke('scan-ops', { body: { scan: true, jobs: ['lifecycle_push'] } });
+    } catch (e) {
+      console.warn('İstihdam push:', e?.message || e);
+    }
     return data;
   } catch (e) {
     console.warn('İstihdam taraması:', e?.message || e);
     return null;
+  }
+}
+
+export async function scanOps() {
+  try {
+    await supabase.functions.invoke('scan-ops', { body: { scan: true } });
+  } catch (e) {
+    console.warn('Operasyon taraması:', e?.message);
   }
 }
 
@@ -424,6 +469,34 @@ export async function requestReupload(candidateUserId, kind) {
   const { error } = await supabase.rpc('request_reupload', { p_candidate: candidateUserId, p_kind: kind });
   if (error) throw error;
 }
+export async function retractAgencyDoc(candidateUserId, kind) {
+  const { error } = await supabase.rpc('retract_agency_doc', { p_candidate: candidateUserId, p_kind: kind });
+  if (error) throw error;
+}
+export async function replaceSubmittedDocument(userId, kind, base64, mimeType) {
+  if (kind !== 'flight_ticket') throw new Error('invalid_kind');
+  const { data: prev, error: prevErr } = await supabase
+    .from('user_documents')
+    .select('storage_path, submitted_at')
+    .eq('user_id', userId)
+    .eq('kind', kind)
+    .maybeSingle();
+  if (prevErr) throw prevErr;
+  if (!prev?.submitted_at) throw new Error('not_submitted');
+  const ext = mimeType === 'application/pdf' ? 'pdf' : mimeType === 'image/png' ? 'png' : 'jpg';
+  const path = `${userId}/${kind}_${Date.now()}.${ext}`;
+  const { error: upErr } = await supabase.storage.from('documents').upload(path, b64decode(base64), { contentType: mimeType, upsert: true });
+  if (upErr) throw upErr;
+  const { data, error } = await supabase.from('user_documents')
+    .upsert({
+      user_id: userId, kind, storage_path: path, mime_type: mimeType, status: 'uploaded',
+      submitted_at: prev.submitted_at, updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,kind' })
+    .select().single();
+  if (error) throw error;
+  if (prev.storage_path && prev.storage_path !== path) supabase.storage.from('documents').remove([prev.storage_path]).catch(() => {});
+  return data;
+}
 export async function notifyDocument(candidateUserId, kind) {
   try { await supabase.functions.invoke('notify-document', { body: { candidateUserId, kind } }); } catch (e) { console.warn('bildirim:', e?.message); }
 }
@@ -437,6 +510,9 @@ export async function scanDocsDeadline() {
 }
 export async function scanInterviewReminders() {
   try { await supabase.functions.invoke('notify-interview-reminders', { body: { scan: true } }); } catch (e) { console.warn('mülakat hatırlatma taraması:', e?.message); }
+}
+export async function scanArrivalsReminders() {
+  try { await supabase.functions.invoke('notify-arrivals', { body: { scan: true } }); } catch (e) { console.warn('varış hatırlatma taraması:', e?.message); }
 }
 export async function scanInterviewSla() {
   try { await supabase.functions.invoke('notify-interview-sla', { body: { scan: true } }); } catch (e) { console.warn('mülakat SLA taraması:', e?.message); }
@@ -499,6 +575,7 @@ function contractToRow(f, agencyId) {
   return { title: f.title || null, address: f.address || null, phone: f.phone || null, email: f.email || null,
     contact_phone: f.contactPhone || null, contact_email: f.contactEmail || null, position: f.position || null,
     salary: f.salary || null, consulate: f.consulate || null, issue_date: f.issueDate || null,
+    employer_id: f.employerId || null,
     created_by: agencyId || null, updated_at: new Date().toISOString() };
 }
 function contractFromRow(r) {
@@ -508,6 +585,7 @@ function contractFromRow(r) {
     title: r.title || '', address: r.address || '', phone: r.phone || '', email: r.email || '',
     contactPhone: r.contact_phone || '', contactEmail: r.contact_email || '', position: r.position || '',
     salary: r.salary || '', consulate: r.consulate || '', issueDate: r.issue_date || '',
+    employerId: r.employer_id || null,
     paymentStatus,
     paidAt: r.paid_at || null,
     isPaid: paymentStatus === 'paid' || paymentStatus === 'waived',
@@ -580,10 +658,21 @@ export async function markAllRead(userId) {
   await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('user_id', userId).is('read_at', null);
 }
 
+export async function markChatMessagesReadForCandidate(userId, candidateId) {
+  if (!userId || !candidateId) return;
+  await supabase
+    .from('notifications')
+    .update({ read_at: new Date().toISOString() })
+    .eq('user_id', userId)
+    .eq('type', 'chat_message')
+    .is('read_at', null)
+    .or(`ref_user.eq.${candidateId},payload->>candidateId.eq.${candidateId}`);
+}
+
 // ---- Uçuşlar (karşılama/varış raporu) ----
 export async function listFlights() {
   const { data } = await supabase.from('flights')
-    .select('user_id, from_city, from_airport, to_city, to_airport, depart_at, arrive_at, flight_no, terminal, airline');
+    .select('user_id, from_city, from_airport, to_city, to_airport, depart_at, arrive_at, flight_no, terminal, airline, pickup_name, pickup_phone, pickup_sent_at');
   return data || [];
 }
 

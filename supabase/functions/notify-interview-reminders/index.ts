@@ -4,13 +4,10 @@
 // body: { candidateUserId } — yalnızca o adayın mülakatını kontrol et.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { interviewReminderPushText, sendExpoPush, type PushTokenRow } from '../_shared/pushTexts.ts';
+import { authorizeOpsScan, SCAN_CORS, scanJson } from '../_shared/scanAuth.ts';
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
+const CORS = SCAN_CORS;
+const json = scanJson;
 
 type RemKind = '24h' | '15m' | '5m';
 type AdminClient = ReturnType<typeof createClient>;
@@ -22,7 +19,11 @@ const REMINDERS: { kind: RemKind; offsetMs: number; col: string }[] = [
 ];
 // Fire penceresi: yalnızca bu süre içinde push at. Daha eski vade sessizce "sent" işaretlenir
 // (yakın saatli mülakatta 24sa+15dk+5dk patlamasını engeller).
-const FIRE_GRACE_MS = 3 * 60 * 1000;
+const FIRE_GRACE: Record<RemKind, number> = {
+  '24h': 12 * 3600 * 1000,
+  '15m': 12 * 60 * 1000,
+  '5m': 5 * 60 * 1000,
+};
 
 function parseSlot(iso: string): number | null {
   const old = /^(\d{2})\.(\d{2})\.(\d{4})[ ](\d{2}):(\d{2})/.exec(String(iso));
@@ -112,7 +113,7 @@ async function processInterview(admin: AdminClient, row: Record<string, unknown>
     if (row[col]) continue;
     const fireAt = slotMs - offsetMs;
     if (now < fireAt) continue;
-    if (now <= fireAt + FIRE_GRACE_MS) {
+    if (now <= fireAt + FIRE_GRACE[kind]) {
       const ok = await sendReminder(admin, candidateUserId, agencyUserId, kind, col);
       if (ok) sent += 1;
     } else {
@@ -126,15 +127,11 @@ async function processInterview(admin: AdminClient, row: Record<string, unknown>
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   try {
+    const auth = await authorizeOpsScan(req);
+    if (auth instanceof Response) return auth;
+
     const url = Deno.env.get('SUPABASE_URL')!;
-    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-
-    const authHeader = req.headers.get('Authorization') ?? '';
-    const userClient = createClient(url, anonKey, { global: { headers: { Authorization: authHeader } } });
-    const { data: { user }, error: userErr } = await userClient.auth.getUser();
-    if (userErr || !user) return json({ error: 'unauthorized' }, 401);
-
     const admin = createClient(url, serviceKey);
     const body = await req.json().catch(() => ({}));
     const { candidateUserId, scan } = body as { candidateUserId?: string; scan?: boolean };
@@ -154,9 +151,9 @@ Deno.serve(async (req) => {
 
     if (!candidateUserId) return json({ error: 'bad_request' }, 400);
 
-    const isSelf = user.id === candidateUserId;
-    if (!isSelf) {
-      const { data: roleRow } = await admin.from('user_roles').select('role').eq('user_id', user.id).maybeSingle();
+    const isSelf = auth.userId === candidateUserId;
+    if (!auth.cron && !isSelf) {
+      const { data: roleRow } = await admin.from('user_roles').select('role').eq('user_id', auth.userId).maybeSingle();
       const staff = roleRow?.role === 'agency' || roleRow?.role === 'admin';
       if (!staff) return json({ error: 'forbidden' }, 403);
     }

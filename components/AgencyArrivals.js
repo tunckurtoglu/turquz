@@ -3,20 +3,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import * as Print from 'expo-print';
 import { useLanguage } from '../i18n/LanguageContext';
-import { listFlights } from '../lib/flights';
+import { listFlights, parseArriveAt } from '../lib/flights';
 import { candidateCode } from '../lib/candidateCode';
 import { withLatinName } from '../lib/translit';
 import { buildArrivalsHtml } from '../cv/buildArrivalsHtml';
-
-function parseDT(s) {
-  if (!s) return null;
-  const m = /^(\d{1,2})[./](\d{1,2})[./](\d{4})(?:[ T](\d{1,2}):(\d{2}))?/.exec(String(s).trim());
-  if (!m) return null;
-  const [, d, mo, y, h = '0', mi = '0'] = m;
-  const dt = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi));
-  if (isNaN(dt)) return null;
-  return { dt, date: `${String(d).padStart(2, '0')}.${String(mo).padStart(2, '0')}.${y}`, time: (m[4] != null) ? `${String(h).padStart(2, '0')}:${mi}` : '' };
-}
 
 const FILTERS = [
   { id: 'upcoming', key: 'arr_upcoming' },
@@ -60,9 +50,10 @@ export default function AgencyArrivals({ candidates, onOpen, contentPadBottom = 
       .map((f) => {
         const c = byId[f.user_id];
         if (!c) return null;
-        const p = parseDT(f.arrive_at);
+        const p = parseArriveAt(f.arrive_at);
         const data = withLatinName(c.data || {});
         const name = [data.firstName, data.lastName].filter(Boolean).join(' ').trim();
+        const pickupName = String(f.pickup_name || '').trim();
         return {
           user_id: f.user_id,
           candidate: c,
@@ -73,6 +64,10 @@ export default function AgencyArrivals({ candidates, onOpen, contentPadBottom = 
           terminal: f.terminal ? `T${String(f.terminal).replace(/^t/i, '')}` : '',
           flightNo: f.flight_no || '—',
           airline: f.airline || '',
+          pickupName,
+          pickupPhone: String(f.pickup_phone || '').trim(),
+          pickupSent: !!f.pickup_sent_at,
+          transit: c.arrivalStatus === 'transit' || c.status === 'in_transit',
           dt: p?.dt || null,
           date: p?.date || '—',
           time: p?.time || '—',
@@ -106,6 +101,7 @@ export default function AgencyArrivals({ candidates, onOpen, contentPadBottom = 
         no: i + 1, code: r.code, name: r.name, nationality: r.nationality,
         arrival: r.arrival, terminal: r.terminal, date: r.date, time: r.time,
         flightNo: r.flightNo, airline: r.airline,
+        driver: r.pickupName || t('arr_no_driver'),
       }));
       const sub = t(FILTERS.find((f) => f.id === filter)?.key || 'arr_all');
       const html = buildArrivalsHtml(rows, {
@@ -159,27 +155,40 @@ export default function AgencyArrivals({ candidates, onOpen, contentPadBottom = 
         <ScrollView contentContainerStyle={[styles.list, { paddingBottom: contentPadBottom }]}>
           {list.map((r) => {
             const s = soonLabel(r.dt, t);
+            const missing = !r.pickupName;
             return (
               <TouchableOpacity
                 key={r.user_id}
-                style={styles.card}
+                style={[styles.card, missing && styles.cardMissing]}
                 onPress={() => onOpen?.(r.candidate)}
                 activeOpacity={0.9}
               >
                 <View style={styles.cardTop}>
                   <Text style={styles.code}>{r.code}</Text>
-                  {s ? (
-                    <View style={[styles.tag, styles[`tag_${s.c}`]]}>
-                      <Text style={[styles.tagText, styles[`tagText_${s.c}`]]}>{s.txt}</Text>
-                    </View>
-                  ) : null}
+                  <View style={styles.tags}>
+                    {r.transit ? (
+                      <View style={[styles.tag, styles.tag_gold]}>
+                        <Text style={[styles.tagText, styles.tagText_gold]}>{t('arr_in_transit')}</Text>
+                      </View>
+                    ) : null}
+                    {s ? (
+                      <View style={[styles.tag, styles[`tag_${s.c}`]]}>
+                        <Text style={[styles.tagText, styles[`tagText_${s.c}`]]}>{s.txt}</Text>
+                      </View>
+                    ) : null}
+                  </View>
                 </View>
                 <Text style={styles.name} numberOfLines={1}>{r.name}</Text>
                 <Text style={styles.meta} numberOfLines={1}>{r.nationality} · {r.arrival}{r.terminal ? ` / ${r.terminal}` : ''}</Text>
                 <View style={styles.flightRow}>
-                  <Text style={styles.when}>{r.date}{r.time !== '—' ? `  ·  ${r.time}` : ''}</Text>
+                  <Text style={styles.when}>{r.date}{r.time && r.time !== '—' ? `  ·  ${r.time}` : ''}</Text>
                   <Text style={styles.flight} numberOfLines={1}>{r.flightNo}{r.airline ? ` · ${r.airline}` : ''}</Text>
                 </View>
+                <Text style={[styles.driver, missing && styles.driverMissing]} numberOfLines={2}>
+                  {missing
+                    ? t('arr_no_driver')
+                    : `${t('arr_driver')}: ${r.pickupName}${r.pickupPhone ? ` · ${r.pickupPhone}` : ''}${r.pickupSent ? ` · ${t('arr_driver_sent')}` : ''}`}
+                </Text>
               </TouchableOpacity>
             );
           })}
@@ -215,7 +224,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff', borderRadius: 14, borderWidth: 0.5, borderColor: '#e6e8ec',
     padding: 14, shadowColor: '#0c1320', shadowOpacity: 0.06, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 2,
   },
+  cardMissing: { borderColor: 'rgba(210,75,64,0.45)', backgroundColor: '#fff8f6' },
   cardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  tags: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 },
   code: { fontSize: 15, fontWeight: '900', color: INK, letterSpacing: 0.3 },
   tag: { borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3 },
   tag_red: { backgroundColor: '#fde8e8' },
@@ -230,4 +241,6 @@ const styles = StyleSheet.create({
   flightRow: { marginTop: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   when: { fontSize: 13, fontWeight: '800', color: '#9a7b1f' },
   flight: { fontSize: 12.5, fontWeight: '700', color: '#5c6675', flexShrink: 1, textAlign: 'right' },
+  driver: { marginTop: 8, fontSize: 12.5, fontWeight: '700', color: '#3d4a5c' },
+  driverMissing: { color: '#a32d2d' },
 });
