@@ -2,7 +2,8 @@
 
 > ⚠️ **UYARI — Bu bir taslaktır, hukuki tavsiye değildir.**
 > Bu metni yayına almadan önce KVKK alanında deneyimli bir **avukata onaylatın**.
-> `[köşeli parantez]` içindeki yerleri kendi şirket/işletme bilgilerinle doldur.
+> Veri sorumlusu kimlik bilgileri vergi levhasından doldurulmuştur; kalan
+> `[köşeli parantez]` alanlar (saklama süreleri vb.) avukat onayıyla tamamlanmalıdır.
 > Metin değiştikçe uygulamadaki `CONSENT_VERSION` (bkz. `lib/consent.js`) artırılmalı ki
 > kullanıcıya güncel metin yeniden onaylatılsın.
 
@@ -11,10 +12,10 @@
 ## BÖLÜM A — AYDINLATMA METNİ (KVKK md. 10)
 
 ### 1. Veri Sorumlusu
-- **Unvan:** [Şirket/işletme tam unvanı]
-- **Adres:** [Açık adres]
-- **MERSİS/VKN:** [varsa]
-- **İletişim / Başvuru:** [e-posta], [KEP adresi (varsa)], [telefon]
+- **Unvan:** TURQUZ ULUSLARARASI DANIŞMANLIK TİCARET LİMİTED ŞİRKETİ
+- **Adres:** Liman Mah. Boğaçayı Cad. No: 30 İç Kapı No: 14 Konyaaltı / Antalya
+- **Vergi dairesi / VKN:** Antalya Kurumlar — 8711330554
+- **İletişim / Başvuru:** info@turquz.com, +7 919 011 55 66
 
 ### 2. İşlenen Kişisel Veriler
 Turquz uygulaması üzerinden, işe yerleştirme amacıyla aşağıdaki veriler işlenir:
@@ -61,7 +62,7 @@ hâlinde yapay zeka sağlayıcısı) işlenebilir/saklanabilir. Bu aktarım **a�
 ### 8. İlgili Kişinin Hakları (KVKK md. 11)
 İlgili kişi; verilerinin işlenip işlenmediğini öğrenme, bilgi talep etme, düzeltme, silme,
 işlemeye itiraz ve zararın giderilmesini talep etme haklarına sahiptir. Başvurular
-**[başvuru kanalı / e-posta / KEP]** üzerinden yapılır.
+**info@turquz.com** üzerinden yapılır.
 
 ---
 
@@ -87,6 +88,8 @@ işlemeye itiraz ve zararın giderilmesini talep etme haklarına sahiptir. Başv
 ---
 
 ## Uygulama–metin eşleşmesi (geliştirici notu)
+- Kayıt (aday): zorunlu genel + yurt dışı kutuları → `screens/AuthScreen.js`; oturum açılırsa `consents` yazılır
+- Hesap/CV kapısı (rıza yoksa ana ekran/CV öncesi): `App.js` + `ConsentSheet`
 - Belge yükleme rızası (genel + yurt dışı + adli sicil): `components/ConsentSheet.js`, `lib/consent.js`, tablo: `consents`
 - Kan grubu rızası: `wizard/steps/Step1Personal.js` (`f_blood_consent`)
 - Belge yükleme kapısı (otel/acenta kabulü): `candidate_status` tablosu

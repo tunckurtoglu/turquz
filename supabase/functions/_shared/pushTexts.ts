@@ -131,8 +131,17 @@ const DOC_AGENCY_UPDATED: Partial<Record<Lang, Txt>> = {
   fa: { title: '📄 مدرک به‌روز شد', body: 'آژانس یک مدرک را به‌روز کرد. لطفاً بررسی کنید.' },
 };
 
+const DOC_CERT: Partial<Record<Lang, Txt>> = {
+  tr: { title: '🏅 Başarı sertifikanız hazır', body: 'Turquz başarı sertifikanız e-posta adresinize gönderildi.' },
+  en: { title: '🏅 Your success certificate is ready', body: 'Your Turquz success certificate was sent to your email.' },
+  ru: { title: '🏅 Сертификат готов', body: 'Сертификат успеха Turquz отправлен на ваш e-mail.' },
+  kk: { title: '🏅 Сертификат дайын', body: 'Turquz жетістік сертификаты e-mail поштаңызға жіберілді.' },
+  de: { title: '🏅 Erfolgszertifikat bereit', body: 'Ihr Turquz-Zertifikat wurde per E-Mail gesendet.' },
+};
+
 export function docPushText(kind: string, byAgency: boolean, locale?: string | null, opts?: { when?: string | null }): Txt {
   const lang = resolveLang(locale);
+  if (kind === 'success_certificate') return pick(DOC_CERT, lang);
   if (kind === 'flight_ticket') {
     const when = (opts?.when || '').trim();
     if (when) return applyVars(pick(DOC_FLIGHT, lang), { when });
@@ -490,6 +499,22 @@ export function arrivalPushText(
 }
 
 const LIFECYCLE_PUSH: Record<string, Partial<Record<Lang, Txt>>> = {
+  airport_check: {
+    tr: { title: '🛫 Havaalanına geldiniz mi?', body: 'Uçuşunuza yaklaşık bir saat kaldı. Ana sayfadan cevaplayın.' },
+    en: { title: '🛫 Are you at the airport?', body: 'Your flight is about one hour away. Answer on the home screen.' },
+  },
+  airport_check_confirmed: {
+    tr: { title: '✓ Aday havaalanına geldi', body: 'Aday havaalanına geldiğini teyit etti. Transfer planını kontrol edin.' },
+    en: { title: '✓ Candidate reached the airport', body: 'The candidate confirmed they reached the airport. Check the pickup plan.' },
+  },
+  airport_check_warning: {
+    tr: { title: '⚠️ Aday henüz havaalanına gelmedi', body: 'Aday henüz havaalanına gelemediğini bildirdi. Bir sonraki teyidi bekleyin.' },
+    en: { title: '⚠️ Candidate has not reached the airport yet', body: 'The candidate said they have not reached the airport yet. Wait for the next confirmation.' },
+  },
+  airport_check_late: {
+    tr: { title: '⚠️ Aday uçuşa geç kaldı', body: 'Havaalanı teyidi alınamadı veya aday gelemedi. Araç göndermeden önce adayı arayın.' },
+    en: { title: '⚠️ Candidate may miss the flight', body: 'No airport confirmation was received or the candidate could not arrive. Call before sending pickup.' },
+  },
   boarding_check: {
     tr: { title: '🛫 Uçağa bindiniz mi?', body: 'Uçuş günündesiniz. Ana sayfadan evet / hayır cevaplayın.' },
     en: { title: '🛫 Did you board?', body: 'It is flight day. Answer yes / no on the home screen.' },
@@ -584,6 +609,42 @@ const LIFECYCLE_PUSH: Record<string, Partial<Record<Lang, Txt>>> = {
     tr: { title: 'Yolda takıldı', body: 'Aday ve acente cevap vermedi. Personeli arayıp geldi / gelmedi işaretleyin. Otomatik kayıt yok.' },
     en: { title: 'Stuck in transit', body: 'Neither candidate nor agency replied. Call them and mark arrived or not. No automatic hire.' },
   },
+  employment_end_requested: {
+    tr: { title: 'Ayrılış talebi', body: 'Onaylarsanız hemen biter; 7 gün içinde itiraz da edebilirsiniz.' },
+    en: { title: 'Exit requested', body: 'Approve to end now, or contest within 7 days.' },
+  },
+  employment_end_requested_ack: {
+    tr: { title: 'Ayrılış talebiniz alındı', body: 'Karşı taraf onaylarsa biter; bu sürede iptal edebilirsiniz.' },
+    en: { title: 'Exit request recorded', body: 'Ends if the other party approves; you can cancel until then.' },
+  },
+  employment_end_undone: {
+    tr: { title: 'Ayrılış iptal edildi', body: 'İstihdam ilişkisi devam ediyor.' },
+    en: { title: 'Exit cancelled', body: 'Employment continues.' },
+  },
+  employment_completed: {
+    tr: { title: 'Çalışma dönemi tamamlandı', body: 'Sezon başarıyla sona erdi.' },
+    en: { title: 'Work term completed', body: 'The season ended successfully.' },
+  },
+  employment_early_exit: {
+    tr: { title: 'Erken ayrılış', body: 'İstihdam ilişkisi erken sona erdi.' },
+    en: { title: 'Early exit', body: 'Employment ended early.' },
+  },
+  employment_disputed: {
+    tr: { title: 'Ayrılışa itiraz', body: 'Ayrılış talebine itiraz edildi. Turquz inceler.' },
+    en: { title: 'Exit contested', body: 'The exit was contested. Turquz will review.' },
+  },
+  employment_continued: {
+    tr: { title: 'İlişki devam', body: 'Ayrılış iptal / red edildi — çalışma sürüyor.' },
+    en: { title: 'Employment continues', body: 'Exit was cancelled or rejected — work continues.' },
+  },
+  process_ended: {
+    tr: { title: 'Süreç sonlandı', body: 'Acente sürecinizi sonlandırdı. Profiliniz havuza döndü.' },
+    en: { title: 'Process ended', body: 'The agency ended your process. You’re back in the pool.' },
+  },
+  reupload: {
+    tr: { title: 'Belge yeniden istendi', body: 'Bir belgeniz yeniden istendi. Lütfen tekrar yükleyin.' },
+    en: { title: 'Re-upload requested', body: 'A document was requested again. Please re-upload.' },
+  },
 };
 
 const LIFECYCLE_PUSH_TYPES = new Set(Object.keys(LIFECYCLE_PUSH));
@@ -602,10 +663,17 @@ export function lifecyclePushText(type: string, locale?: string | null, vars?: R
   return applyVars(txt, vars);
 }
 
-/** Acenteye giden istihdam/boarding türleri (tercih kapısı). */
+/** Acenteye giden istihdam/boarding türleri (tercih kapısı). Aday türleri hariç. */
 export function lifecyclePushIsAgency(type: string): boolean {
-  return type !== 'boarding_check' && type !== 'employment_started' && type !== 'flight_ticket_ready';
-  // rating_required / rating_remind acenteye gider (agency tercihi geçerli).
+  return ![
+    'airport_check',
+    'boarding_check',
+    'employment_started',
+    'flight_ticket_ready',
+    'process_ended',
+    'reupload',
+    'employment_end_requested_ack',
+  ].includes(type);
 }
 
 export type PushTokenRow = { token: string; locale?: string | null };

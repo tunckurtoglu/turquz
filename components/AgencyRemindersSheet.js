@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
 import { loadAgencyOps } from '../lib/ops';
 import { PENDING_ACTIONS, urgentTotal } from '../lib/opsUi';
+import { C } from '../lib/theme';
 
 const NAVY = '#000b18';
 const GOLD = '#c2a25a';
@@ -25,7 +26,7 @@ function StopwatchIcon({ color = GOLD, size = 22 }) {
   );
 }
 
-export default function AgencyRemindersSheet({ visible, onClose, agencyId, onPick }) {
+export default function AgencyRemindersSheet({ visible, onClose, agencyId, onPick, light = false }) {
   const { t } = useLanguage();
   const insets = useSafeAreaInsets();
   const [metrics, setMetrics] = useState({});
@@ -55,50 +56,50 @@ export default function AgencyRemindersSheet({ visible, onClose, agencyId, onPic
 
   return (
     <Modal visible={!!visible} animationType="slide" onRequestClose={onClose}>
-      <View style={[styles.wrap, { paddingTop: insets.top + 6 }]}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.header}>
+      <View style={[styles.wrap, light && lightStyles.wrap, { paddingTop: insets.top + 6 }]}>
+        <StatusBar barStyle={light ? 'dark-content' : 'light-content'} />
+        <View style={[styles.header, light && lightStyles.header]}>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-            <Text style={styles.back}>‹</Text>
+            <Text style={[styles.back, light && lightStyles.back]}>‹</Text>
           </TouchableOpacity>
           <View style={{ flex: 1 }}>
-            <Text style={styles.headTitle}>{t('home_remind_short')}</Text>
-            <Text style={styles.headSub}>
+            <Text style={[styles.headTitle, light && lightStyles.headTitle]}>{t('home_remind_short')}</Text>
+            <Text style={[styles.headSub, light && lightStyles.headSub]}>
               {urgent > 0
                 ? t('ops_pending_urgent', { n: String(urgent) })
                 : t('ops_pending_none')}
             </Text>
           </View>
-          <StopwatchIcon />
+          <StopwatchIcon color={light ? C.goldText : GOLD} />
         </View>
 
         <ScrollView
-          contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 28 }]}
+          contentContainerStyle={[styles.body, light && lightStyles.body, { paddingBottom: insets.bottom + 28 }]}
           showsVerticalScrollIndicator={false}
         >
           {busy && !rows.length ? (
-            <ActivityIndicator color={GOLD} style={{ marginTop: 40 }} />
+            <ActivityIndicator color={light ? C.goldText : GOLD} style={{ marginTop: 40 }} />
           ) : rows.length === 0 ? (
-            <View style={styles.empty}>
-              <Text style={styles.emptyTitle}>{t('ops_all_good')}</Text>
-              <Text style={styles.emptyHint}>{t('ops_all_good_hint')}</Text>
+            <View style={[styles.empty, light && lightStyles.empty]}>
+              <Text style={[styles.emptyTitle, light && lightStyles.emptyTitle]}>{t('ops_all_good')}</Text>
+              <Text style={[styles.emptyHint, light && lightStyles.emptyHint]}>{t('ops_all_good_hint')}</Text>
             </View>
           ) : (
             rows.map((a) => (
               <TouchableOpacity
                 key={a.key}
-                style={[styles.card, a.urgent && styles.cardUrgent]}
+                style={[styles.card, light && lightStyles.card, a.urgent && styles.cardUrgent]}
                 onPress={() => {
                   onClose?.();
                   onPick?.(a);
                 }}
                 activeOpacity={0.88}
               >
-                <Text style={styles.count}>{a.count}</Text>
-                <Text style={styles.title}>{t(a.titleKey)}</Text>
-                <Text style={styles.hint}>{t(a.hintKey)}</Text>
+                <Text style={[styles.count, light && lightStyles.count]}>{a.count}</Text>
+                <Text style={[styles.title, light && lightStyles.title]}>{t(a.titleKey)}</Text>
+                <Text style={[styles.hint, light && lightStyles.hint]}>{t(a.hintKey)}</Text>
                 <View style={styles.cta}>
-                  <Text style={styles.ctaText}>{t('ops_focus_cta')}</Text>
+                  <Text style={[styles.ctaText, light && lightStyles.ctaText]}>{t('ops_focus_cta')}</Text>
                 </View>
               </TouchableOpacity>
             ))
@@ -139,4 +140,21 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 17, fontWeight: '800', color: '#f5ecda' },
   emptyHint: { marginTop: 6, fontSize: 13, fontWeight: '600', color: 'rgba(231,220,196,0.5)', lineHeight: 19 },
+});
+
+const lightStyles = StyleSheet.create({
+  wrap: { backgroundColor: C.bg },
+  header: { borderBottomColor: C.hair },
+  back: { color: C.goldText },
+  headTitle: { color: C.ink },
+  headSub: { color: C.ink2 },
+  body: { backgroundColor: C.bg },
+  card: { backgroundColor: C.card, borderColor: C.hair },
+  count: { color: C.ink },
+  title: { color: C.ink },
+  hint: { color: C.ink2 },
+  ctaText: { color: '#f7f2e8' },
+  empty: { borderColor: C.hair },
+  emptyTitle: { color: C.ink },
+  emptyHint: { color: C.ink2 },
 });

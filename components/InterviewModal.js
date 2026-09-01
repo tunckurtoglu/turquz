@@ -48,7 +48,7 @@ function slotsToForm(slots) {
   return { d, m, y, t0: pick(0), t1: pick(1), t2: pick(2) };
 }
 
-export default function InterviewModal({ visible, onClose, role, userId, agencyId, fontsReady, candidateLabel, autoJoin }) {
+export default function InterviewModal({ visible, onClose, role, userId, agencyId, employerId, fontsReady, candidateLabel, autoJoin }) {
   const { t, lang, dir } = useLanguage();
   const insets = useSafeAreaInsets();
   const backChevron = dir === 'rtl' ? '›' : '‹';
@@ -100,7 +100,7 @@ export default function InterviewModal({ visible, onClose, role, userId, agencyI
       checkInterviewReminders(userId);
     } else cancelInterviewReminders(remPrefix);
     setLoading(false);
-  }, [userId, isAgency, agencyId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userId, isAgency, agencyId, employerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (visible) { setLoading(true); setReplan(false); autoJoinedRef.current = false; load(); }
@@ -188,7 +188,7 @@ export default function InterviewModal({ visible, onClose, role, userId, agencyI
   const doPropose = async (slots) => {
     setBusy(true);
     try {
-      await proposeInterview(userId, slots, agencyId);
+      await proposeInterview(userId, slots, agencyId, employerId);
       notifyInterview(userId, 'proposed');
       setReplan(false);
       await load();
@@ -196,7 +196,10 @@ export default function InterviewModal({ visible, onClose, role, userId, agencyI
       const msg = String(e?.message || e || '');
       Alert.alert(
         t('iv_propose_title'),
-        msg.includes('candidate_passive') ? t('iv_candidate_passive') : (msg || 'error'),
+        msg.includes('candidate_passive') ? t('iv_candidate_passive')
+          : msg.includes('favorite_required') ? (t('offer_fav_required_body') || 'Adayı önce bir otel favorisine ekleyin.')
+            : msg.includes('employer_incomplete') ? (t('employer_need_details') || 'Otel bilgilerini tamamlayın.')
+              : (msg || 'error'),
       );
     }
     finally { setBusy(false); }

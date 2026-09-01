@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { getSession, onAuthChange, getRole, signOut, listPool, categoryOf, scanOps, isAgencySetupComplete, getCandidate, getCandidateStatus, isEmploymentNotif, candidateIdFromNotif, getAgencyProfile, saveAgencyTaxPlate, getAgencyTaxPlateUrl } from './lib/api';
+import { getSession, onAuthChange, resolveRole, signOut, listPool, categoryOf, scanOps, isAgencySetupComplete, getCandidate, getCandidateStatus, isEmploymentNotif, candidateIdFromNotif, getAgencyProfile } from './lib/api';
 import { unreadChatCount } from './lib/ops';
 import { agencyCode } from '../../lib/agencyCode';
 import { useLang } from './i18n.jsx';
@@ -16,10 +16,10 @@ import AgencyAnnouncementsHub from './components/AgencyAnnouncementsHub.jsx';
 import AgencyNoticeModal from './components/AgencyNoticeModal.jsx';
 import { supabase } from './lib/supabase';
 import { getAgencyNotifPrefs, setAgencyNotifPrefs, syncChatLang } from './lib/processChat';
-import EmployerStampList from './screens/EmployerStampList.jsx';
 import Hotels from './screens/Hotels.jsx';
+import { readHash, writeHash, writeEmployerPipelineFilter } from './lib/navHash';
 import {
-  PIPELINE_STAGES_PRIMARY, PIPELINE_STAGES_MORE, isPipelineMoreStage,
+  PIPELINE_PHASES, phaseOfPipelineStage, pipelinePhaseById,
 } from '../../../lib/agencyHomeUi';
 
 const CAT_KEYS = [
@@ -36,21 +36,6 @@ const normalizeCat = (c) => {
   return ['ops', 'pool', 'pipeline', 'hotels', 'messages'].includes(c) ? c : 'ops';
 };
 
-const readHash = () => {
-  const h = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
-  return { cat: normalizeCat(h.get('cat')), c: h.get('c') };
-};
-const writeHash = (catVal, cId) => {
-  const p = new URLSearchParams();
-  if (catVal && catVal !== 'ops') p.set('cat', catVal);
-  if (cId) p.set('c', cId);
-  const s = p.toString();
-  const next = s ? `#${s}` : '';
-  if ((window.location.hash || '') !== next) {
-    window.history.replaceState(null, '', window.location.pathname + window.location.search + next);
-  }
-};
-
 export default function App() {
   const { lang, setLang, languages, t } = useLang();
   const [ready, setReady] = useState(false);
@@ -58,7 +43,8 @@ export default function App() {
   const [role, setRole] = useState(null);
   const [agencySetupOk, setAgencySetupOk] = useState(null);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
-  const [cat, setCat] = useState(() => normalizeCat(readHash().cat));
+  const [cat, setCat] = useState(() => readHash().cat);
+  const [detailTab, setDetailTab] = useState(() => readHash().tab);
   const [q, setQ] = useState('');
   const [selected, setSelected] = useState(null);
   const [rows, setRows] = useState(null);
@@ -75,21 +61,30 @@ export default function App() {
   const [hubNonce, setHubNonce] = useState(0);
   const [annUnread, setAnnUnread] = useState(0);
   const [agencyProfile, setAgencyProfile] = useState(null);
-  const [taxBusy, setTaxBusy] = useState(false);
-  const [stampOpen, setStampOpen] = useState(false);
   const [processJump, setProcessJump] = useState(null); // offered | inprocess | interviews | arrivals...
   const [pipelineStage, setPipelineStage] = useState('interviews');
-  const [pipelineMoreOpen, setPipelineMoreOpen] = useState(false);
+  const [pipelineEmployerFilter, setPipelineEmployerFilter] = useState(() => {
+    const h = readHash();
+    return h.emp ? { id: h.emp, name: h.empName || '' } : null;
+  });
   const scrollRef = useRef(0);
   const restoredRef = useRef(false);
   const pendingCandidateRef = useRef(readHash().c);
+  const fromPopRef = useRef(false);
+  const hashSyncedRef = useRef(false);
+  const prevDetailTabRef = useRef('cv');
+  const selectedId = selected?.c?.user_id || selected?.user_id || null;
 
   useLayoutEffect(() => {
     if (selected) window.scrollTo(0, 0);
     else window.scrollTo(0, scrollRef.current);
   }, [selected]);
-  const openCandidate = (c) => { scrollRef.current = window.scrollY; setSelected(c); };
-  const goHome = () => { setSelected(null); setCat('ops'); setQ(''); };
+  const openCandidate = (c) => {
+    scrollRef.current = window.scrollY;
+    setDetailTab('cv');
+    setSelected(c);
+  };
+  const goHome = () => { setSelected(null); setDetailTab('cv'); setCat('ops'); setQ(''); };
 
   const onNotifNavigate = async (n) => {
     const emp = isEmploymentNotif(n?.type);
@@ -128,8 +123,44 @@ export default function App() {
       || raw.includes('type=recovery')
       || /(^|&)code=/.test(raw)
     ) return;
-    writeHash(cat, selected?.c?.user_id);
-  }, [cat, selected, ready, passwordRecovery]);
+    if (fromPopRef.current) {
+      fromPopRef.current = false;
+      prevDetailTabRef.current = detailTab;
+      return;
+    }
+    let mode = hashSyncedRef.current ? 'replace' : 'replace';
+    if (hashSyncedRef.current && selectedId && detailTab !== prevDetailTabRef.current) {
+      mode = detailTab !== 'cv' ? 'push' : 'replace';
+    }
+    prevDetailTabRef.current = detailTab;
+    hashSyncedRef.current = true;
+    writeHash(cat, selectedId, detailTab, mode, cat === 'pipeline' ? pipelineEmployerFilter : null);
+  }, [cat, selectedId, detailTab, pipelineEmployerFilter, ready, passwordRecovery]);
+
+  useEffect(() => {
+    if (!ready || passwordRecovery) return undefined;
+    const onPop = async () => {
+      fromPopRef.current = true;
+      const { cat: hCat, c: hC, tab: hTab, emp, empName } = readHash();
+      setCat(hCat);
+      setDetailTab(hTab);
+      setPipelineEmployerFilter(emp ? { id: emp, name: empName || '' } : null);
+      if (!hC) {
+        setSelected(null);
+        return;
+      }
+      if (selectedId === hC) return;
+      try {
+        const [c, st] = await Promise.all([getCandidate(hC), getCandidateStatus(hC)]);
+        if (c) setSelected({ c, st: st || {} });
+        else setSelected(null);
+      } catch {
+        setSelected(null);
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [ready, passwordRecovery, selectedId]);
 
   useEffect(() => {
     if (restoredRef.current || !rows) return;
@@ -137,7 +168,10 @@ export default function App() {
     const cId = pendingCandidateRef.current;
     if (cId) {
       const row = rows.find((r) => r.user_id === cId);
-      if (row) setSelected({ c: row, st: row.st });
+      if (row) {
+        setDetailTab(readHash().tab);
+        setSelected({ c: row, st: row.st });
+      }
     }
   }, [rows]);
 
@@ -146,7 +180,10 @@ export default function App() {
     (async () => {
       const s = await getSession();
       setSession(s);
-      if (s) setRole(await getRole(s.user.id));
+      if (s) {
+        const r = await resolveRole(s.user.id);
+        setRole(r.uncertain ? null : r.role);
+      }
       setReady(true);
       sub = onAuthChange(async (ns, event) => {
         setSession(ns);
@@ -154,12 +191,19 @@ export default function App() {
           setPasswordRecovery(true);
           return;
         }
-        setRole(ns ? await getRole(ns.user.id) : null);
         if (!ns) {
+          setRole(null);
           setSelected(null);
           setRows(null);
           setPasswordRecovery(false);
+          return;
         }
+        const r = await resolveRole(ns.user.id);
+        setRole((prev) => {
+          // Geçici ağ hatasında staff oturumunu düşürme
+          if (r.uncertain) return prev;
+          return r.role;
+        });
       });
     })();
     return () => sub?.unsubscribe?.();
@@ -288,7 +332,9 @@ export default function App() {
     setCat('pipeline');
     let stage = 'inprocess';
     if (typeof sub === 'string' && sub.startsWith('pipe_')) stage = 'inprocess';
-    else if (sub && (PROCESS_PIPELINE.has(sub) || STAFF_PIPELINE.has(sub))) stage = sub === 'cards' ? 'staff' : sub;
+    else if (sub && (PROCESS_PIPELINE.has(sub) || STAFF_PIPELINE.has(sub))) {
+      stage = sub === 'cards' ? 'staff' : (sub === 'concluded' ? 'interviews' : sub);
+    }
     else if (next === 'hired' || next === 'staff') stage = 'staff';
     else if (next === 'process') stage = 'inprocess';
     setPipelineStage(stage);
@@ -302,7 +348,8 @@ export default function App() {
       <ResetPassword
         onDone={async () => {
           setPasswordRecovery(false);
-          setRole(await getRole(session.user.id));
+          const r = await resolveRole(session.user.id);
+          if (!r.uncertain) setRole(r.role);
         }}
       />
     );
@@ -331,39 +378,6 @@ export default function App() {
     || (session.user.email ? session.user.email.split('@')[0] : (t('role_agency') || 'Acente'));
   const agencyIdCode = agencyCode(agencyProfile?.regNo);
 
-  const onTaxPick = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || !session?.user?.id) return;
-    if (!(file.type || '').includes('pdf') && !String(file.name || '').toLowerCase().endsWith('.pdf')) {
-      window.alert(t('agency_tax_pdf_only') || 'Yalnızca PDF yükleyin.');
-      return;
-    }
-    setTaxBusy(true);
-    try {
-      await saveAgencyTaxPlate(session.user.id, file);
-      const p = await getAgencyProfile(session.user.id);
-      setAgencyProfile(p);
-    } catch (err) {
-      window.alert(err?.message || t('agency_setup_err_pdf') || '');
-    } finally {
-      setTaxBusy(false);
-    }
-  };
-
-  const onTaxView = async () => {
-    try {
-      setTaxBusy(true);
-      const url = await getAgencyTaxPlateUrl(session.user.id);
-      if (!url) { window.alert(t('agency_tax_missing') || ''); return; }
-      window.open(url, '_blank', 'noopener,noreferrer');
-    } catch (err) {
-      window.alert(err?.message || t('open_failed') || '');
-    } finally {
-      setTaxBusy(false);
-    }
-  };
-
   const catCount = (id) => {
     if (id === 'ops') return null;
     if (id === 'messages') return chatBadge || null;
@@ -376,23 +390,9 @@ export default function App() {
     <div className="ec">
       <div className="ecTop">
         <header className="ecHeader">
-          <button className="ecLogo" onClick={goHome} title={t('agency_home') || ''} aria-label={t('agency_home') || ''}><img src="/turquz-logo.png" alt="Turquz" /></button>
           <div className="ecBrandBlock">
             <span className="ecBrandName">Turquz</span>
             <span className="ecBrandSub">{t('agency_ops_sub') || ''}</span>
-          </div>
-          <div className="ecSearch">
-            <Icon name="search" size={18} />
-            <input
-              placeholder={t('agency_search') || ''}
-              value={q}
-              onChange={(e) => {
-                setQ(e.target.value);
-                setSelected(null);
-                if (e.target.value) setCat('pool');
-              }}
-            />
-            {q ? <button className="ecSearchClear" onClick={() => setQ('')} title={t('agency_clear') || ''}>✕</button> : null}
           </div>
           <div className="ecRight">
             <div className="ecWho clickable" onClick={() => setEditProfile(true)} title={t('set_edit_profile') || ''}>
@@ -407,7 +407,7 @@ export default function App() {
                 title={t('home_announcements')}
               >
                 <Icon name="announce" size={16} />
-                <span>{t('home_announcements')}</span>
+                <span>{t('home_announce_short')}</span>
               </button>
               {annUnread > 0 ? <span className="bellDot">{annUnread > 9 ? '9+' : annUnread}</span> : null}
             </div>
@@ -485,40 +485,6 @@ export default function App() {
                   </div>
 
                   <div className="ecSettingsBlock">
-                    <div className="ecSettingsLabel">{t('stamp_menu') || 'İmza & kaşe'}</div>
-                    <p className="ecTaxStatus">{t('stamp_list_hint_short') || 'Her işletme için ayrı kaşe'}</p>
-                    <button
-                      type="button"
-                      className="ecTaxGhost"
-                      onClick={() => { setNotifOpen(false); setStampOpen(true); }}
-                    >
-                      {t('stamp_menu') || 'İşletme kaşeleri'}
-                    </button>
-                  </div>
-
-                  <div className="ecSettingsBlock">
-                    <div className="ecSettingsLabel">{t('agency_tax_section') || 'Vergi levhası'}</div>
-                    <p className="ecTaxStatus">
-                      {agencyProfile?.taxPlatePath
-                        ? (t('agency_tax_ready') || 'PDF yüklü')
-                        : (t('agency_tax_missing') || 'Henüz yüklenmedi')}
-                    </p>
-                    <div className="ecTaxActions">
-                      {agencyProfile?.taxPlatePath ? (
-                        <button type="button" className="ecTaxGhost" onClick={onTaxView} disabled={taxBusy}>
-                          {t('agency_tax_view') || 'Görüntüle'}
-                        </button>
-                      ) : null}
-                      <label className={`ecTaxUpload ${taxBusy ? 'busy' : ''}`}>
-                        {taxBusy ? '…' : (agencyProfile?.taxPlatePath
-                          ? (t('agency_tax_replace') || 'Yeniden yükle')
-                          : (t('agency_tax_upload') || 'PDF yükle'))}
-                        <input type="file" accept="application/pdf,.pdf" hidden onChange={onTaxPick} disabled={taxBusy} />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="ecSettingsBlock">
                     <button type="button" className="ecSettingsAccount" onClick={() => { setNotifOpen(false); setEditProfile(true); }}>
                       {t('set_edit_profile') || 'Bilgilerimi düzenle'}
                     </button>
@@ -558,6 +524,22 @@ export default function App() {
 
       <main className="ecMain">
         <div style={{ display: selected ? 'none' : 'block' }}>
+          {(cat === 'pool' || cat === 'pipeline') ? (
+            <div className="ecSearchBar">
+              <Icon name="search" size={18} />
+              <input
+                placeholder={t('agency_code_ph') || t('agency_search') || ''}
+                value={q}
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  setSelected(null);
+                }}
+              />
+              {q ? (
+                <button type="button" className="ecSearchClear" onClick={() => setQ('')} title={t('agency_clear') || ''}>✕</button>
+              ) : null}
+            </div>
+          ) : null}
           {cat === 'ops' ? (
             <OpsDesk
               agencyId={session.user.id}
@@ -566,58 +548,65 @@ export default function App() {
             />
           ) : null}
           {cat === 'hotels' ? (
-            <Hotels agencyId={session.user.id} />
+            <Hotels
+              agencyId={session.user.id}
+              onOpen={openCandidate}
+              onOpenPipeline={(emp) => {
+                setSelected(null);
+                setCat('pipeline');
+                setPipelineStage('staff');
+                setProcessJump('staff');
+                setPipelineEmployerFilter({ id: emp.id, name: emp.name || '' });
+                writeEmployerPipelineFilter(emp.id, emp.name || '');
+              }}
+            />
           ) : null}
           {cat === 'messages' ? (
             <ChatInbox agencyId={session.user.id} onOpen={openCandidate} />
           ) : null}
-          {cat === 'pipeline' ? (
-            <div className="arrToggle processSubs pipelineStages" style={{ margin: '0 0 12px', flexWrap: 'wrap', alignItems: 'center' }}>
-              {PIPELINE_STAGES_PRIMARY.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={`arrTab ${pipelineStage === s.id ? 'on' : ''}`}
-                  onClick={() => {
-                    setPipelineMoreOpen(false);
-                    setPipelineStage(s.id);
-                    setProcessJump(s.id);
-                  }}
-                >
-                  {s.id === 'arrivals' ? `🛬 ${t(s.labelKey)}` : t(s.labelKey)}
-                </button>
-              ))}
-              <div className="pipelineMoreWrap">
-                <button
-                  type="button"
-                  className={`arrTab ${isPipelineMoreStage(pipelineStage) ? 'on' : ''}`}
-                  onClick={() => setPipelineMoreOpen((v) => !v)}
-                >
-                  {isPipelineMoreStage(pipelineStage)
-                    ? t(PIPELINE_STAGES_MORE.find((s) => s.id === pipelineStage)?.labelKey || 'pipeline_more')
-                    : `${t('pipeline_more')} ▾`}
-                </button>
-                {pipelineMoreOpen ? (
-                  <div className="pipelineMoreMenu">
-                    {PIPELINE_STAGES_MORE.map((s) => (
+          {cat === 'pipeline' ? (() => {
+            const phaseId = phaseOfPipelineStage(pipelineStage);
+            const phaseDef = pipelinePhaseById(phaseId);
+            const archive = phaseDef.archive;
+            return (
+              <div className="pipeNav">
+                <div className="pipePhaseTrack">
+                  {PIPELINE_PHASES.map((ph) => {
+                    const on = phaseId === ph.id;
+                    return (
                       <button
-                        key={s.id}
+                        key={ph.id}
                         type="button"
-                        className={`pipelineMoreItem ${pipelineStage === s.id ? 'on' : ''}`}
+                        className={`pipePhase ${on ? 'on' : ''}`}
                         onClick={() => {
-                          setPipelineStage(s.id);
-                          setProcessJump(s.id);
-                          setPipelineMoreOpen(false);
+                          if (on) return;
+                          setPipelineStage(ph.defaultStage);
+                          setProcessJump(ph.defaultStage);
                         }}
                       >
-                        {t(s.labelKey)}
+                        {t(ph.labelKey)}
                       </button>
-                    ))}
-                  </div>
-                ) : null}
+                    );
+                  })}
+                </div>
+                <div className="pipeStageRow">
+                  {[...phaseDef.stages, ...(archive ? [archive] : [])].map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className={`pipeStage ${pipelineStage === s.id ? 'on' : ''}`}
+                      onClick={() => {
+                        setPipelineStage(s.id);
+                        setProcessJump(s.id);
+                      }}
+                    >
+                      {t(s.labelKey)}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null}
+            );
+          })() : null}
           {cat === 'pool' || cat === 'pipeline' ? (
             <Pool
               category={cat === 'pipeline'
@@ -631,13 +620,20 @@ export default function App() {
               processJump={processJump}
               onProcessJumpConsumed={() => setProcessJump(null)}
               hideStageTabs={cat === 'pipeline'}
+              employerFilter={cat === 'pipeline' ? pipelineEmployerFilter : null}
+              onClearEmployerFilter={() => {
+                setPipelineEmployerFilter(null);
+                writeEmployerPipelineFilter(null);
+              }}
             />
           ) : null}
         </div>
         {selected ? (
           <Candidate
             sel={selected}
-            onBack={() => { setSelected(null); refreshChatBadge(); }}
+            detailTab={detailTab}
+            onDetailTabChange={setDetailTab}
+            onBack={() => { setSelected(null); setDetailTab('cv'); refreshChatBadge(); }}
             agencyUserId={session.user.id}
             onChatRead={refreshChatBadge}
           />
@@ -678,15 +674,12 @@ export default function App() {
       {editProfile ? (
         <AgencySetup
           user={session.user}
-          onDone={(u) => { setSession((s) => ({ ...s, user: u })); setEditProfile(false); }}
+          onDone={async (u) => {
+            setSession((s) => ({ ...s, user: u }));
+            setAgencyProfile(await getAgencyProfile(session.user.id));
+            setEditProfile(false);
+          }}
           onCancel={() => setEditProfile(false)}
-        />
-      ) : null}
-
-      {stampOpen ? (
-        <EmployerStampList
-          agencyId={session.user.id}
-          onClose={() => setStampOpen(false)}
         />
       ) : null}
     </div>

@@ -6,12 +6,13 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PENDING_ACTIONS, urgentTotal, pickFocusFilter } from '../lib/opsUi';
 import { useLanguage } from '../i18n/LanguageContext';
+import { C } from '../lib/theme';
 
 const NAVY = '#0e141c';
 const GOLD = '#c2a25a';
 const HOT = '#b42318';
 
-function PulseDot({ active }) {
+function PulseDot({ active, light = false }) {
   const anim = useRef(new Animated.Value(1)).current;
   useEffect(() => {
     if (!active) {
@@ -27,12 +28,12 @@ function PulseDot({ active }) {
     loop.start();
     return () => loop.stop();
   }, [active, anim]);
-  if (!active) return <View style={styles.dotIdle} />;
+  if (!active) return <View style={[styles.dotIdle, light && lightStyles.dotIdle]} />;
   return <Animated.View style={[styles.dotHot, { opacity: anim }]} />;
 }
 
 export default function AgencyPendingSheet({
-  visible, onClose, metrics = {}, onPick,
+  visible, onClose, metrics = {}, onPick, light = false,
 }) {
   const { t } = useLanguage();
   const insets = useSafeAreaInsets();
@@ -43,19 +44,18 @@ export default function AgencyPendingSheet({
     count: Number(metrics[a.key]) || 0,
   }));
   const active = rows.filter((r) => r.count > 0);
-  const clear = rows.filter((r) => r.count === 0);
 
   return (
     <Modal visible={!!visible} animationType="slide" onRequestClose={onClose}>
-      <View style={[styles.wrap, { paddingTop: insets.top + 6 }]}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.header}>
+      <View style={[styles.wrap, light && lightStyles.wrap, { paddingTop: insets.top + 6 }]}>
+        <StatusBar barStyle={light ? 'dark-content' : 'light-content'} />
+        <View style={[styles.header, light && lightStyles.header]}>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-            <Text style={styles.back}>‹</Text>
+            <Text style={[styles.back, light && lightStyles.back]}>‹</Text>
           </TouchableOpacity>
           <View style={{ flex: 1 }}>
-            <Text style={styles.headTitle}>{t('ops_pending_title')}</Text>
-            <Text style={styles.headSub}>
+            <Text style={[styles.headTitle, light && lightStyles.headTitle]}>{t('ops_pending_title')}</Text>
+            <Text style={[styles.headSub, light && lightStyles.headSub]}>
               {urgent > 0
                 ? t('ops_pending_urgent', { n: String(urgent) })
                 : active.length
@@ -71,44 +71,39 @@ export default function AgencyPendingSheet({
           showsVerticalScrollIndicator={false}
         >
           {active.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyTitle}>{t('ops_all_good')}</Text>
-              <Text style={styles.emptyHint}>{t('ops_all_good_hint')}</Text>
+            <View style={[styles.emptyCard, light && lightStyles.emptyCard]}>
+              <Text style={[styles.emptyTitle, light && lightStyles.emptyTitle]}>{t('ops_all_good')}</Text>
+              <Text style={[styles.emptyHint, light && lightStyles.emptyHint]}>{t('ops_all_good_hint')}</Text>
             </View>
           ) : null}
 
           {active.map((a) => (
             <TouchableOpacity
               key={a.key}
-              style={[styles.card, a.urgent && styles.cardUrgent, a.filter === topFilter && styles.cardFocus]}
+              style={[
+                styles.card,
+                light && lightStyles.card,
+                a.urgent && (light ? lightStyles.cardUrgent : styles.cardUrgent),
+                a.filter === topFilter && (light ? lightStyles.cardFocus : styles.cardFocus),
+              ]}
               onPress={() => onPick?.(a)}
               activeOpacity={0.88}
             >
               <View style={styles.cardTop}>
-                <PulseDot active={a.filter === topFilter} />
-                <Text style={styles.count}>{a.count}</Text>
+                <PulseDot active={a.filter === topFilter} light={light} />
+                <Text style={[styles.count, light && lightStyles.count]}>{a.count}</Text>
                 {a.filter === topFilter ? (
                   <View style={styles.badge}><Text style={styles.badgeText}>{t('ops_first_this')}</Text></View>
                 ) : null}
               </View>
-              <Text style={styles.title}>{t(a.titleKey)}</Text>
-              <Text style={styles.hint}>{t(a.hintKey)}</Text>
-              <View style={styles.cta}>
-                <Text style={styles.ctaText}>{t('ops_focus_cta')}</Text>
+              <Text style={[styles.title, light && lightStyles.title]}>{t(a.titleKey)}</Text>
+              <Text style={[styles.hint, light && lightStyles.hint]}>{t(a.hintKey)}</Text>
+              <View style={[styles.cta, light && lightStyles.cta]}>
+                <Text style={[styles.ctaText, light && lightStyles.ctaText]}>{t('ops_focus_cta')}</Text>
               </View>
             </TouchableOpacity>
           ))}
 
-          {clear.length > 0 && active.length > 0 ? (
-            <Text style={styles.section}>{t('ops_section_clear')}</Text>
-          ) : null}
-          {clear.map((a) => (
-            <View key={a.key} style={[styles.card, styles.cardIdle]}>
-              <Text style={styles.countIdle}>0</Text>
-              <Text style={styles.titleIdle}>{t(a.titleKey)}</Text>
-              <Text style={styles.hintIdle}>{t(a.hintKey)}</Text>
-            </View>
-          ))}
         </ScrollView>
       </View>
     </Modal>
@@ -166,6 +161,30 @@ const styles = StyleSheet.create({
     padding: 20, borderRadius: 16, borderWidth: 1, borderStyle: 'dashed',
     borderColor: 'rgba(231,220,196,0.2)', marginBottom: 8,
   },
-  emptyTitle: { fontSize: 17, fontWeight: '800', color: '#f5ecda' },
-  emptyHint: { marginTop: 6, fontSize: 13, fontWeight: '600', color: 'rgba(231,220,196,0.5)', lineHeight: 19 },
+  emptyTitle: { fontSize: 17, fontWeight: '800', color: '#f5ecda', textAlign: 'center' },
+  emptyHint: { marginTop: 6, fontSize: 13, fontWeight: '600', color: 'rgba(231,220,196,0.5)', lineHeight: 19, textAlign: 'center' },
+});
+
+const lightStyles = StyleSheet.create({
+  wrap: { backgroundColor: C.bg },
+  header: { backgroundColor: C.card, borderBottomColor: C.hair },
+  back: { color: C.goldText },
+  headTitle: { color: C.ink },
+  headSub: { color: C.ink2 },
+  card: { backgroundColor: C.card, borderColor: C.hair },
+  cardUrgent: { borderColor: 'rgba(181,65,58,0.42)', backgroundColor: C.dangerSoft },
+  cardFocus: { borderColor: 'rgba(194,162,90,0.65)' },
+  count: { color: C.ink },
+  dotIdle: { backgroundColor: C.muted },
+  title: { color: C.ink },
+  hint: { color: C.ink2 },
+  cta: { backgroundColor: C.gold },
+  ctaText: { color: C.ink },
+  section: { color: C.ink2 },
+  emptyCard: { borderColor: C.hair, backgroundColor: C.cardAlt },
+  emptyTitle: { color: C.ink },
+  emptyHint: { color: C.ink2 },
+  countIdle: { color: C.muted },
+  titleIdle: { color: C.ink2 },
+  hintIdle: { color: C.muted },
 });

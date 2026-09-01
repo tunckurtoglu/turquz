@@ -29,7 +29,7 @@ function cvContentFingerprint(d = {}, lang = '') {
 }
 
 const CVPreview = forwardRef(function CVPreview({
-  data, langOverride, masked = false, candidateNo, contentKey, hidePdfBtn = false,
+  data, langOverride, masked = false, candidateNo, contentKey, hidePdfBtn = false, downloadFileName = 'Turquz-CV.pdf',
 }, ref) {
   const { lang, t } = useLanguage();
   const activeLang = langOverride || lang;
@@ -52,11 +52,15 @@ const CVPreview = forwardRef(function CVPreview({
     setBusy(true);
     try {
       const { uri } = await Print.printToFileAsync({ html: htmlPdf, base64: false, width: 595, height: 842 });
+      const FS = await import('expo-file-system');
+      const named = new FS.File(FS.Paths.cache, downloadFileName);
+      try { named.delete(); } catch (_) { /* yoksa sorun değil */ }
+      new FS.File(uri).copy(named);
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Turquz CV', UTI: 'com.adobe.pdf' });
+        await Sharing.shareAsync(named.uri, { mimeType: 'application/pdf', dialogTitle: 'Turquz CV', UTI: 'com.adobe.pdf' });
       } else {
-        await Print.printAsync({ uri });
+        await Print.printAsync({ uri: named.uri });
       }
     } catch (e) {
       Alert.alert('Turquz', t('pdf_error'));
@@ -109,9 +113,9 @@ const styles = StyleSheet.create({
     width: '100%',
     borderRadius: 10,
     overflow: 'hidden',
-    backgroundColor: '#e9ebee',
+    backgroundColor: '#fff',
     borderWidth: 1,
-    borderColor: '#dfe2e7',
+    borderColor: '#e5dfd3',
   },
   web: { flex: 1, backgroundColor: 'transparent' },
   pdfBtn: {
@@ -123,5 +127,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pdfBtnBusy: { opacity: 0.6 },
-  pdfText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  pdfText: { color: '#1b2533', fontSize: 16, fontWeight: '800' },
 });

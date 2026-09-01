@@ -287,10 +287,6 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
         </>
       ) : null}
 
-      {groups.length === 1 && topFocus ? (
-        <p className="opsOneNote">{t('ops_one_group')}</p>
-      ) : null}
-
       <p className="opsSection">{t('ops_funnel_section')}</p>
       <p className="opsFunnelHint">{t('ops_funnel_hint')}</p>
       <div className="opsFunnel">
@@ -337,7 +333,7 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
             {shownRows.map((q) => {
               const p = q.profile;
               const code = candidateCode(p.nationality, p.reg_no);
-              const photo = p.data?.photoClose || p.data?.photo || p.data?.photoFull;
+              const photo = p.data?.photo || p.data?.photoClose || p.data?.photoFull;
               const flag = flagUrl(p.nationality);
               const stepTitle = q.detail && String(q.detail).startsWith('pipe_')
                 ? (t(q.detail) || q.detail)
@@ -372,7 +368,7 @@ export default function OpsDesk({ agencyId, onOpen, onNavigateCat }) {
                 <button type="button" onClick={() => onNavigateCat?.('process', 'inprocess')}>{t('ops_go_process')}</button>
               ) : null}
               {(filter === 'transit' || filter === 'start_confirm') ? (
-                <button type="button" onClick={() => onNavigateCat?.('hired', 'transit')}>{t('ops_go_transit')}</button>
+                <button type="button" onClick={() => onNavigateCat?.('hired', 'arrivals')}>{t('ops_go_arrivals')}</button>
               ) : null}
               {filter === 'arrival' ? (
                 <button type="button" onClick={() => onNavigateCat?.('hired', 'arrivals')}>{t('ops_go_arrivals')}</button>

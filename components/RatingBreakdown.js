@@ -13,7 +13,7 @@ function Stars({ value }) {
   );
 }
 
-export default function RatingBreakdown({ stats }) {
+export default function RatingBreakdown({ stats, dark }) {
   const { t } = useLanguage();
   if (!stats?.count || !(stats.avg > 0)) return null;
   const rows = [
@@ -22,16 +22,16 @@ export default function RatingBreakdown({ stats }) {
     { key: 'r', label: t('rate_rehire'), value: stats.rehire },
   ];
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, dark && styles.cardDark]}>
       <View style={styles.head}>
-        <Text style={styles.headTitle}>{t('rate_breakdown_title')}</Text>
+        <Text style={[styles.headTitle, dark && styles.headTitleDark]}>{t('rate_breakdown_title')}</Text>
         <RatingBadge avg={stats.avg} count={stats.count} compact />
       </View>
       {rows.map((row) => (
-        <View key={row.key} style={styles.row}>
-          <Text style={styles.label} numberOfLines={1}>{row.label}</Text>
+        <View key={row.key} style={[styles.row, dark && styles.rowDark]}>
+          <Text style={[styles.label, dark && styles.labelDark]} numberOfLines={1}>{row.label}</Text>
           <Stars value={row.value} />
-          <Text style={styles.num}>{Number(row.value || 0).toFixed(1)}</Text>
+          <Text style={[styles.num, dark && styles.numDark]}>{Number(row.value || 0).toFixed(1)}</Text>
         </View>
       ))}
     </View>
@@ -67,4 +67,9 @@ const styles = StyleSheet.create({
   label: { flex: 1, fontSize: 13, fontWeight: '700', color: '#3a4554' },
   stars: { color: '#c2a25a', fontSize: 13, letterSpacing: 1, fontWeight: '700' },
   num: { minWidth: 28, textAlign: 'right', fontSize: 13, fontWeight: '900', color: '#8a6a1f' },
+  cardDark: { backgroundColor: '#121B2E', borderColor: 'rgba(168,148,104,0.28)' },
+  headTitleDark: { color: '#f0ece4' },
+  rowDark: { borderTopColor: 'rgba(168,148,104,0.18)' },
+  labelDark: { color: '#b8c0cc' },
+  numDark: { color: '#C8B88E' },
 });

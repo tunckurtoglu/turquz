@@ -11,6 +11,7 @@ import { markAgencyNoticeRead, listAgencyNotices, listNoticeAudienceBuckets, age
 import NoticeAudienceBuckets from './NoticeAudienceBuckets';
 import { supabase } from '../lib/supabase';
 import { announcementText } from '../lib/announcementI18n';
+import { C } from '../lib/theme';
 
 const NAVY = '#000b18';
 const GOLD = '#c2a25a';
@@ -31,7 +32,7 @@ const fmt = (iso) => {
   return `${p(dt.getDate())}.${p(dt.getMonth() + 1)}.${dt.getFullYear()} ${p(dt.getHours())}:${p(dt.getMinutes())}`;
 };
 
-export default function AnnouncementsListSheet({ visible, onClose, userId, agencyId, onCompose, onOpenSent, onComposeGroup, reloadAt }) {
+export default function AnnouncementsListSheet({ visible, onClose, userId, agencyId, onCompose, onOpenSent, onComposeGroup, reloadAt, embedded = false, contentPadBottom, onRead }) {
   const { t, lang } = useLanguage();
   const insets = useSafeAreaInsets();
   const isHub = !!agencyId;
@@ -57,10 +58,11 @@ export default function AnnouncementsListSheet({ visible, onClose, userId, agenc
         setSent(hist);
         setBuckets(b);
       }
+      onRead?.();
     } finally {
       setLoading(false);
     }
-  }, [userId, isHub, agencyId]);
+  }, [userId, isHub, agencyId, onRead]);
 
   useEffect(() => {
     if (visible) {
@@ -94,39 +96,49 @@ export default function AnnouncementsListSheet({ visible, onClose, userId, agenc
   const detailBody = pack?.body || '';
   const detailWhen = detail?.createdAt ? fmt(detail.createdAt) : '';
   const detailTone = detail?.payload?.tone;
+  const scrollPad = contentPadBottom ?? (insets.bottom + 28);
 
-  return (
-    <Modal visible={!!visible} animationType="slide" onRequestClose={detail ? () => setDetail(null) : handleClose}>
-      <View style={[styles.wrap, { paddingTop: insets.top + 6 }]}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.header}>
+  if (!embedded && !visible) return null;
+
+  const shell = (
+      <View style={[styles.wrap, embedded && styles.wrapEmbedded, embedded && lightStyles.wrap, !embedded && { paddingTop: insets.top + 6 }]}>
+      {!embedded ? <StatusBar barStyle="light-content" /> : null}
+      <View style={[styles.header, embedded && styles.headerEmbedded, embedded && lightStyles.header]}>
+        {!embedded || detail ? (
           <TouchableOpacity
             onPress={detail ? () => setDetail(null) : handleClose}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <Text style={styles.back}>‹</Text>
+            <Text style={[styles.back, embedded && lightStyles.back]}>‹</Text>
           </TouchableOpacity>
-          <Text style={styles.headTitle}>
+        ) : (
+          <View style={{ width: 28 }} />
+        )}
+        {embedded && !detail ? (
+          <View style={{ width: 28 }} />
+        ) : (
+          <Text style={[styles.headTitle, embedded && lightStyles.headTitle]}>
             {detail ? (isAgency ? fromLabel : t('notif_announcement_read')) : t('home_announcements')}
           </Text>
-          <View style={{ width: 28 }} />
-        </View>
+        )}
+        <View style={{ width: 28 }} />
+      </View>
 
         {isHub && !detail ? (
-          <View style={styles.tabs}>
+          <View style={[styles.tabs, embedded && lightStyles.tabs]}>
             <TouchableOpacity
-              style={[styles.tab, tab === 'brief' && styles.tabOn]}
+              style={[styles.tab, embedded && lightStyles.tab, tab === 'brief' && styles.tabOn]}
               onPress={() => setTab('brief')}
               activeOpacity={0.85}
             >
-              <Text style={[styles.tabText, tab === 'brief' && styles.tabTextOn]}>{t('agency_notice_hub')}</Text>
+              <Text style={[styles.tabText, embedded && lightStyles.tabText, tab === 'brief' && styles.tabTextOn, tab === 'brief' && embedded && lightStyles.tabTextOn]}>{t('agency_notice_hub')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.tab, tab === 'turquz' && styles.tabOn]}
+              style={[styles.tab, embedded && lightStyles.tab, tab === 'turquz' && styles.tabOn]}
               onPress={() => setTab('turquz')}
               activeOpacity={0.85}
             >
-              <Text style={[styles.tabText, tab === 'turquz' && styles.tabTextOn]}>{t('agency_notice_turquz')}</Text>
+              <Text style={[styles.tabText, embedded && lightStyles.tabText, tab === 'turquz' && styles.tabTextOn, tab === 'turquz' && embedded && lightStyles.tabTextOn]}>{t('agency_notice_turquz')}</Text>
               {items.some((n) => !n.read_at) ? <View style={styles.tabDot} /> : null}
             </TouchableOpacity>
           </View>
@@ -134,38 +146,38 @@ export default function AnnouncementsListSheet({ visible, onClose, userId, agenc
 
         {detail ? (
           <ScrollView
-            contentContainerStyle={[styles.detailBody, { paddingBottom: insets.bottom + 36 }]}
+            contentContainerStyle={[styles.detailBody, embedded && lightStyles.detailBody, { paddingBottom: scrollPad }]}
             showsVerticalScrollIndicator={false}
           >
-            <View style={styles.detailCard}>
+            <View style={[styles.detailCard, embedded && lightStyles.detailCard]}>
               <View style={styles.badgeRow}>
                 <View style={styles.detailBell}><BellIcon size={20} /></View>
                 {detailWhen ? <Text style={styles.when}>{detailWhen}</Text> : null}
               </View>
               {isAgency ? (
-                <Text style={styles.agencyKicker}>
+                <Text style={[styles.agencyKicker, embedded && lightStyles.agencyKicker]}>
                   {fromLabel}
                   {detailTone ? ` · ${t(`agency_notice_tone_${detailTone}`)}` : ''}
                 </Text>
               ) : null}
-              <Text style={styles.detailTitle}>{detailTitle}</Text>
-              {detailBody ? <Text style={styles.detailText}>{detailBody}</Text> : null}
-              {isAgency ? <Text style={styles.noReply}>{t('agency_notice_no_reply')}</Text> : null}
+              <Text style={[styles.detailTitle, embedded && lightStyles.detailTitle]}>{detailTitle}</Text>
+              {detailBody ? <Text style={[styles.detailText, embedded && lightStyles.detailText]}>{detailBody}</Text> : null}
+              {isAgency ? <Text style={[styles.noReply, embedded && lightStyles.noReply]}>{t('agency_notice_no_reply')}</Text> : null}
             </View>
           </ScrollView>
         ) : isHub && tab === 'brief' ? (
           <ScrollView
-            contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 28 }]}
+            contentContainerStyle={[styles.body, embedded && lightStyles.body, { paddingBottom: scrollPad }]}
             showsVerticalScrollIndicator={false}
           >
-            <TouchableOpacity style={styles.compose} onPress={() => onCompose?.()} activeOpacity={0.88}>
-              <Text style={styles.composeText}>{t('agency_notice_new')}</Text>
+            <TouchableOpacity style={[styles.compose, embedded && lightStyles.compose]} onPress={() => onCompose?.()} activeOpacity={0.88}>
+              <Text style={[styles.composeText, embedded && lightStyles.composeText]}>{t('agency_notice_new')}</Text>
             </TouchableOpacity>
-            <Text style={styles.hubHint}>{t('agency_notice_hub_hint')}</Text>
+            <Text style={[styles.hubHint, embedded && lightStyles.hubHint]}>{t('agency_notice_hub_hint')}</Text>
             <NoticeAudienceBuckets
               buckets={buckets}
               mode="send"
-              theme="dark"
+              theme={embedded ? 'light' : 'dark'}
               t={t}
               onSendGroup={(b) => onComposeGroup?.(b)}
             />
@@ -178,38 +190,38 @@ export default function AnnouncementsListSheet({ visible, onClose, userId, agenc
                   return (
                     <TouchableOpacity
                       key={h.id}
-                      style={[styles.row, !last && styles.rowBorder]}
+                      style={[styles.row, embedded && lightStyles.row, !last && styles.rowBorder]}
                       onPress={() => onOpenSent?.(h)}
                       activeOpacity={0.85}
                     >
                       <View style={styles.mid}>
-                        <Text style={styles.agencyKicker}>{t(`agency_notice_tone_${h.tone || 'info'}`)}</Text>
-                        <Text style={styles.title} numberOfLines={2}>{h.title}</Text>
-                        <Text style={styles.when}>
+                        <Text style={[styles.agencyKicker, embedded && lightStyles.agencyKicker]}>{t(`agency_notice_tone_${h.tone || 'info'}`)}</Text>
+                        <Text style={[styles.title, embedded && lightStyles.title]} numberOfLines={2}>{h.title}</Text>
+                        <Text style={[styles.when, embedded && lightStyles.when]}>
                           {fmt(h.created_at)} · {t('agency_notice_read_n', { a: String(h.readN), b: String(h.sentN) })}
                         </Text>
                       </View>
-                      <Text style={styles.chev}>›</Text>
+                      <Text style={[styles.chev, embedded && lightStyles.chev]}>›</Text>
                     </TouchableOpacity>
                   );
                 })}
               </View>
             ) : (
-              <View style={styles.empty}>
+              <View style={[styles.empty, embedded && lightStyles.empty]}>
                 <View style={styles.emptyIcon}><BellIcon size={28} color="#cbb88a" /></View>
-                <Text style={styles.emptyText}>{t('agency_notice_empty_hist')}</Text>
+                <Text style={[styles.emptyText, embedded && lightStyles.emptyText]}>{t('agency_notice_empty_hist')}</Text>
               </View>
             )}
           </ScrollView>
         ) : (
           <ScrollView
-            contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 28 }]}
+            contentContainerStyle={[styles.body, embedded && lightStyles.body, { paddingBottom: scrollPad }]}
             showsVerticalScrollIndicator={false}
           >
             {loading && !items.length ? (
               <ActivityIndicator color={GOLD} style={{ marginTop: 40 }} />
             ) : items.length ? (
-              <View style={styles.panel}>
+                <View style={[styles.panel, embedded && lightStyles.panel]}>
                 {items.map((n, idx) => {
                   const { title, body } = announcementText(n.payload || {}, lang);
                   const last = idx === items.length - 1;
@@ -219,7 +231,7 @@ export default function AnnouncementsListSheet({ visible, onClose, userId, agenc
                   return (
                     <TouchableOpacity
                       key={n.id}
-                      style={[styles.row, !last && styles.rowBorder, unread && styles.rowUnread]}
+                      style={[styles.row, embedded && lightStyles.row, !last && styles.rowBorder, unread && styles.rowUnread]}
                       onPress={async () => {
                         setDetail({
                           id: n.id,
@@ -237,35 +249,47 @@ export default function AnnouncementsListSheet({ visible, onClose, userId, agenc
                     >
                       <View style={styles.iconWrap}><BellIcon size={20} /></View>
                       <View style={styles.mid}>
-                        {agency ? <Text style={styles.agencyKicker}>{fromLabelRow}</Text> : null}
-                        <Text style={styles.title} numberOfLines={2}>{title || (agency ? fromLabelRow : t('notif_announcement'))}</Text>
-                        {body ? <Text style={styles.sub} numberOfLines={2}>{body}</Text> : null}
-                        <Text style={styles.when}>{fmt(n.created_at)}</Text>
+                        {agency ? <Text style={[styles.agencyKicker, embedded && lightStyles.agencyKicker]}>{fromLabelRow}</Text> : null}
+                        <Text style={[styles.title, embedded && lightStyles.title]} numberOfLines={2}>{title || (agency ? fromLabelRow : t('notif_announcement'))}</Text>
+                        {body ? <Text style={[styles.sub, embedded && lightStyles.sub]} numberOfLines={2}>{body}</Text> : null}
+                        <Text style={[styles.when, embedded && lightStyles.when]}>{fmt(n.created_at)}</Text>
                       </View>
-                      <Text style={styles.chev}>›</Text>
+                      <Text style={[styles.chev, embedded && lightStyles.chev]}>›</Text>
                     </TouchableOpacity>
                   );
                 })}
               </View>
             ) : (
-              <View style={styles.empty}>
+              <View style={[styles.empty, embedded && lightStyles.empty]}>
                 <View style={styles.emptyIcon}><BellIcon size={28} color="#cbb88a" /></View>
-                <Text style={styles.emptyText}>{t('notif_empty')}</Text>
+                <Text style={[styles.emptyText, embedded && lightStyles.emptyText]}>{t('notif_empty')}</Text>
               </View>
             )}
           </ScrollView>
         )}
       </View>
+  );
+
+  if (embedded) {
+    if (!visible) return null;
+    return shell;
+  }
+
+  return (
+    <Modal visible={!!visible} animationType="slide" onRequestClose={detail ? () => setDetail(null) : handleClose}>
+      {shell}
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: NAVY },
+  wrapEmbedded: { backgroundColor: 'transparent' },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 14, paddingBottom: 12,
   },
+  headerEmbedded: { paddingTop: 4 },
   back: { color: '#e7dcc4', fontSize: 32, fontWeight: '400', marginTop: -4, width: 28 },
   headTitle: { color: '#fff', fontSize: 18, fontWeight: '800' },
   body: { paddingHorizontal: 18, paddingTop: 8 },
@@ -303,7 +327,7 @@ const styles = StyleSheet.create({
     backgroundColor: GOLD, borderRadius: 14, paddingVertical: 14, alignItems: 'center', marginBottom: 10,
   },
   composeText: { color: '#0e141c', fontSize: 15, fontWeight: '800' },
-  hubHint: { color: '#1b2533', fontSize: 14, fontWeight: '800', lineHeight: 20, marginBottom: 16 },
+  hubHint: { color: '#9fb0c4', fontSize: 13, fontWeight: '600', lineHeight: 20, marginBottom: 16 },
   empty: { alignItems: 'center', paddingTop: 60, gap: 14 },
   emptyIcon: {
     width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(194,162,90,0.12)',
@@ -329,4 +353,34 @@ const styles = StyleSheet.create({
   },
   detailTitle: { fontSize: 22, fontWeight: '800', color: '#fff', lineHeight: 28, marginBottom: 14 },
   detailText: { fontSize: 16, fontWeight: '500', color: '#c5d0dc', lineHeight: 26 },
+});
+
+const lightStyles = StyleSheet.create({
+  wrap: { backgroundColor: C.bg },
+  header: { backgroundColor: C.bg },
+  back: { color: C.goldText },
+  headTitle: { color: C.ink },
+  tabs: { backgroundColor: C.card, borderColor: C.hair },
+  tab: { backgroundColor: C.bg },
+  tabText: { color: C.ink2 },
+  tabTextOn: { color: '#F7F2E8' },
+  body: { backgroundColor: C.bg },
+  detailBody: { backgroundColor: C.bg },
+  panel: { backgroundColor: C.card, borderColor: C.hair },
+  row: { backgroundColor: C.card },
+  title: { color: C.ink },
+  sub: { color: C.ink2 },
+  when: { color: C.muted },
+  chev: { color: C.goldText },
+  agencyKicker: { color: '#8A681E' },
+  rowUnread: { backgroundColor: '#FBF6EA' },
+  noReply: { color: C.ink2 },
+  compose: { backgroundColor: C.ink },
+  composeText: { color: '#F7F2E8' },
+  hubHint: { color: C.ink2 },
+  empty: { backgroundColor: C.bg },
+  emptyText: { color: C.ink2 },
+  detailCard: { backgroundColor: C.card, borderColor: C.hair },
+  detailTitle: { color: C.ink },
+  detailText: { color: '#2D3948' },
 });

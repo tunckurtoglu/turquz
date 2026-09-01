@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
-  completeAgencySetup, getAgencyProfile, signOut, updateMyProfile, uploadAgencyTaxPlate,
+  completeAgencySetup, getAgencyProfile, getAgencyTaxPlateUrl, saveAgencyTaxPlate, signOut,
+  updateAgencyCompanyName, updateMyProfile, uploadAgencyTaxPlate,
 } from '../lib/api';
 import { useLang } from '../i18n.jsx';
 
@@ -21,7 +22,7 @@ export default function AgencySetup({ user, onDone, onCancel }) {
   const [err, setErr] = useState('');
 
   useEffect(() => {
-    if (!uid || editMode) return;
+    if (!uid) return;
     getAgencyProfile(uid).then((p) => {
       if (!p) return;
       if (p.companyName) setCompany(p.companyName);
@@ -39,26 +40,45 @@ export default function AgencySetup({ user, onDone, onCancel }) {
     if (file.type !== 'application/pdf') { setErr(t('agency_tax_pdf_only')); return; }
     setErr(''); setBusy(true);
     try {
-      const path = await uploadAgencyTaxPlate(uid, file);
+      const path = editMode
+        ? await saveAgencyTaxPlate(uid, file)
+        : await uploadAgencyTaxPlate(uid, file);
       setTaxPath(path);
       setTaxName(file.name || 'vergi_levhasi.pdf');
     } catch (e2) { setErr(e2?.message || t('agency_setup_err_pdf')); }
     finally { setBusy(false); }
   };
 
+  const onTaxView = async () => {
+    setErr(''); setBusy(true);
+    try {
+      const url = await getAgencyTaxPlateUrl(uid);
+      if (!url) { setErr(t('agency_tax_missing')); return; }
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (e2) { setErr(e2?.message || t('open_failed')); }
+    finally { setBusy(false); }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     if (editMode) {
-      const f = firstName.trim(), l = lastName.trim(), p = phoneAuth.trim();
-      if (!f || !l || !p) { setErr(t('agency_setup_err_profile')); return; }
+      const f = firstName.trim(), l = lastName.trim(), p = phoneAuth.trim(), c = company.trim();
+      if (!c || !f || !l || !p) { setErr(t('agency_setup_err_incomplete')); return; }
       setErr(''); setBusy(true);
-      try { const u = await updateMyProfile({ firstName: f, lastName: l, phone: p }); onDone?.(u); }
+      try {
+        const [u] = await Promise.all([
+          updateMyProfile({ firstName: f, lastName: l, phone: p }),
+          updateAgencyCompanyName(uid, c),
+        ]);
+        onDone?.(u);
+      }
       catch (e2) { setErr(e2?.message || t('agency_setup_err_save')); }
       finally { setBusy(false); }
       return;
     }
 
-    const f = firstName.trim(), l = lastName.trim(), p1 = phoneAuth.trim(), p2 = phoneRep.trim();
+    const f = firstName.trim(), l = lastName.trim(), p1 = phoneAuth.trim(), p2 = phoneRep.trim(), c = company.trim();
+    if (!c) { setErr(t('agency_setup_err_incomplete')); return; }
     if (!f || !l) { setErr(t('agency_setup_err_name')); return; }
     if (p1.replace(/\D/g, '').length < 10) { setErr(t('agency_setup_err_phone_auth')); return; }
     if (p2.replace(/\D/g, '').length < 10) { setErr(t('agency_setup_err_phone_rep')); return; }
@@ -66,7 +86,7 @@ export default function AgencySetup({ user, onDone, onCancel }) {
     setErr(''); setBusy(true);
     try {
       const u = await completeAgencySetup(uid, {
-        companyName: company,
+        companyName: c,
         contactFirstName: f,
         contactLastName: l,
         phoneAuthorized: p1,
@@ -89,12 +109,8 @@ export default function AgencySetup({ user, onDone, onCancel }) {
           <p className="setupNote">{t('agency_setup_note')}</p>
         ) : null}
         <form onSubmit={submit} className="loginForm">
-          {!editMode ? (
-            <>
-              <label className="fieldLbl">{t('agency_company_name')} ({t('doc_optional')})</label>
-              <input className="input" value={company} onChange={(e) => setCompany(e.target.value)} placeholder={t('agency_company_ph')} />
-            </>
-          ) : null}
+          <label className="fieldLbl">{t('agency_company_name')} *</label>
+          <input className="input" value={company} onChange={(e) => setCompany(e.target.value)} placeholder={t('agency_company_ph')} required />
           <label className="fieldLbl">{editMode ? `${t('f_firstName')} *` : `${t('agency_setup_auth_first')} *`}</label>
           <input className="input" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder={t('f_firstName')} required />
           <label className="fieldLbl">{editMode ? `${t('f_lastName')} *` : `${t('agency_setup_auth_last')} *`}</label>
@@ -105,11 +121,26 @@ export default function AgencySetup({ user, onDone, onCancel }) {
             <>
               <label className="fieldLbl">{t('agency_setup_rep_phone')} *</label>
               <input className="input" type="tel" value={phoneRep} onChange={(e) => setPhoneRep(e.target.value)} placeholder="+90 5xx…" required />
-              <label className="fieldLbl">{t('agency_setup_tax_lbl')} *</label>
-              <input className="input" type="file" accept="application/pdf" onChange={onTaxFile} />
-              {taxPath ? <p className="setupNote">✓ {taxName || t('agency_setup_pdf_ok')}</p> : null}
             </>
           ) : null}
+          <label className="fieldLbl">{t('agency_setup_tax_lbl')} {!editMode ? '*' : ''}</label>
+          <p className="ecTaxStatus">
+            {taxPath ? (t('agency_tax_ready') || 'PDF yüklü') : (t('agency_tax_missing') || 'Henüz yüklenmedi')}
+          </p>
+          <div className="ecTaxActions">
+            {taxPath ? (
+              <button type="button" className="ecTaxGhost" onClick={onTaxView} disabled={busy}>
+                {t('agency_tax_view') || 'Görüntüle'}
+              </button>
+            ) : null}
+            <label className={`ecTaxUpload ${busy ? 'busy' : ''}`}>
+              {busy ? '…' : (taxPath
+                ? (t('agency_tax_replace') || 'Yeniden yükle')
+                : (t('agency_tax_upload') || 'PDF yükle'))}
+              <input className="input" type="file" accept="application/pdf" hidden onChange={onTaxFile} disabled={busy} />
+            </label>
+          </div>
+          {taxPath ? <p className="setupNote">✓ {taxName || t('agency_setup_pdf_ok')}</p> : null}
           {err ? <p className="loginErr">{err}</p> : null}
           <button className="goldBtn" type="submit" disabled={busy}>{busy ? '…' : (editMode ? t('save') : t('agency_setup_save'))}</button>
         </form>

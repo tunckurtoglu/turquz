@@ -1,5 +1,6 @@
-// Minimal çizgi ikonlar (premium görünüm için emoji yerine SVG).
-const P = {
+// Minimal ikonlar (premium görünüm için emoji yerine SVG).
+// Varsayılan: dolu (filled) — announce vb. Outline için filled={false}.
+const STROKE = {
   users: 'M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19 M10 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6 M20 19v-1.5a3.5 3.5 0 0 0-2.6-3.4 M15 5.2a3 3 0 0 1 0 5.6',
   doc: 'M7 3h7l4 4v14H7z M14 3v4h4 M9.5 12h6 M9.5 15.5h6',
   badge: 'M12 3l2.2 1.6 2.7-.2 1 2.5 2.3 1.4-.8 2.6.8 2.6-2.3 1.4-1 2.5-2.7-.2L12 21l-2.2-1.6-2.7.2-1-2.5L3.8 15.7l.8-2.6-.8-2.6 2.3-1.4 1-2.5 2.7.2z M9.5 12l1.8 1.8 3.4-3.6',
@@ -14,8 +15,33 @@ const P = {
   settings: 'M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7 M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.1.7.7 1.2 1.5 1.3H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
 };
 
-export function Icon({ name, size = 18, stroke = 1.8 }) {
-  const d = P[name];
+/** Dolu gövde + ince stroke parçaları (ses dalgası vb.). */
+const FILLED = {
+  announce: {
+    fills: ['M3 11v2a1 1 0 0 0 1 1h2l6 4V6L6 10H4a1 1 0 0 0-1 1z'],
+    strokes: [
+      'M16.5 8.2a5.5 5.5 0 0 1 0 7.6',
+      'M19.2 6a9 9 0 0 1 0 12',
+    ],
+  },
+};
+
+export function Icon({ name, size = 18, stroke = 1.8, filled = true }) {
+  const solid = FILLED[name];
+  if (filled && solid) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        {(solid.fills || []).map((d, i) => (
+          <path key={`f${i}`} d={d} fill="currentColor" />
+        ))}
+        {(solid.strokes || []).map((d, i) => (
+          <path key={`s${i}`} d={d} fill="none" stroke="currentColor" strokeWidth={stroke + 0.2} strokeLinecap="round" strokeLinejoin="round" />
+        ))}
+      </svg>
+    );
+  }
+
+  const d = STROKE[name];
   if (!d) return null;
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"

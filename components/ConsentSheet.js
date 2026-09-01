@@ -1,9 +1,9 @@
 // components/ConsentSheet.js
 // KVKK açık rıza modalı: granüler kutular (genel / özel nitelikli / yurt dışı aktarım).
-// Belge yüklemeden hemen önce gösterilir. Onaylanan izinler çağıran ekrana döner;
-// kaydetme (Supabase 'consents') çağıran ekranda yapılır.
+// Kullanım: hesap/CV kapısı (App.js), belge yükleme (DocumentsScreen).
+// Onaylanan izinler çağıran ekrana döner; kaydetme (Supabase 'consents') çağıranda yapılır.
 //
-// Zorunlu izinler: genel + yurt dışı aktarım (belge saklamak/aktarmak için şart).
+// Zorunlu izinler: genel + yurt dışı aktarım.
 // requireSensitive=true ise özel nitelikli izni de zorunlu olur (adli sicil gibi).
 import React, { useState, useEffect } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Modal, ActivityIndicator } from 'react-native';
@@ -23,7 +23,16 @@ function CheckRow({ checked, onToggle, label, required, requiredLabel }) {
   );
 }
 
-export default function ConsentSheet({ visible, requireSensitive = false, busy = false, onAccept, onCancel, onClosed }) {
+export default function ConsentSheet({
+  visible,
+  requireSensitive = false,
+  busy = false,
+  titleKey = 'consent_title',
+  cancelKey = 'consent_cancel',
+  onAccept,
+  onCancel,
+  onClosed,
+}) {
   const { t } = useLanguage();
   const [general, setGeneral] = useState(false);
   const [sensitive, setSensitive] = useState(false);
@@ -46,9 +55,9 @@ export default function ConsentSheet({ visible, requireSensitive = false, busy =
     <Modal visible={visible} transparent animationType="slide" onRequestClose={() => { if (!busy) onCancel(); }} onDismiss={onClosed}>
       <View style={styles.overlay}>
         <View style={styles.sheet}>
-          <Text style={styles.title}>{t('consent_title')}</Text>
+          <Text style={styles.title}>{t(titleKey)}</Text>
           <TouchableOpacity onPress={openPrivacy} activeOpacity={0.7}>
-            <Text style={styles.readLink}>{t('consent_read')} ↗</Text>
+            <Text style={styles.readLink}>{t('consent_read')}</Text>
           </TouchableOpacity>
 
           <ScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: 6 }}>
@@ -65,7 +74,7 @@ export default function ConsentSheet({ visible, requireSensitive = false, busy =
             {busy ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.acceptText}>{t('consent_accept')}</Text>}
           </TouchableOpacity>
           <TouchableOpacity style={styles.cancel} onPress={onCancel} disabled={busy}>
-            <Text style={styles.cancelText}>{t('consent_cancel')}</Text>
+            <Text style={styles.cancelText}>{t(cancelKey)}</Text>
           </TouchableOpacity>
         </View>
       </View>

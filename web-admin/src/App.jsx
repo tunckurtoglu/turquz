@@ -9,11 +9,17 @@ import Hotels from './screens/Hotels.jsx';
 import Announcements from './screens/Announcements.jsx';
 import Interventions from './screens/Interventions.jsx';
 import ProcessChats from './screens/ProcessChats.jsx';
+import OpsLog from './screens/OpsLog.jsx';
+import AirportChecks from './screens/AirportChecks.jsx';
+import Certificates from './screens/Certificates.jsx';
 
 const TABS = [
   { id: 'overview', label: 'Özet' },
   { id: 'interventions', label: 'Müdahale', badgeKey: 'interventions' },
+  { id: 'airport', label: 'Havaalanı', badgeKey: 'airport_checks' },
+  { id: 'certificates', label: 'Sertifikalar', badgeKey: 'pending_certificates' },
   { id: 'announcements', label: 'Duyurular' },
+  { id: 'ops', label: 'Kayıtlar' },
   { id: 'chats', label: 'Sohbetler' },
   { id: 'agencies', label: 'Acenteler' },
   { id: 'candidates', label: 'Adaylar' },
@@ -127,6 +133,14 @@ export default function App() {
                 <div className="statLabel">Müdahale bekleyen</div>
                 <div className="statVal">{stats?.interventions ?? '—'}</div>
               </div>
+              <div className="statCard">
+                <div className="statLabel">Havaalanı uyarıları</div>
+                <div className="statVal">{stats?.airport_checks ?? '—'}</div>
+              </div>
+              <div className="statCard">
+                <div className="statLabel">Sertifika bekleyen</div>
+                <div className="statVal">{stats?.pending_certificates ?? '—'}</div>
+              </div>
             </div>
             <div className="card">
               <h2>Hızlı erişim</h2>
@@ -134,6 +148,16 @@ export default function App() {
                 {(stats?.interventions ?? 0) > 0 ? (
                   <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('interventions')}>
                     Müdahale kuyruğu ({stats.interventions})
+                  </button>
+                ) : null}
+                {(stats?.airport_checks ?? 0) > 0 ? (
+                  <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('airport')}>
+                    Havaalanı uyarıları ({stats.airport_checks})
+                  </button>
+                ) : null}
+                {(stats?.pending_certificates ?? 0) > 0 ? (
+                  <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('certificates')}>
+                    Sertifika kuyruğu ({stats.pending_certificates})
                   </button>
                 ) : null}
                 <button type="button" className="goldBtn" style={{ width: 'auto' }} onClick={() => goTab('announcements')}>Duyuru gönder</button>
@@ -173,7 +197,24 @@ export default function App() {
             }}
           />
         ) : null}
+        {tab === 'airport' ? (
+          <AirportChecks
+            onOpenCandidate={(id) => {
+              setCandidateId(id);
+              setTab('candidates');
+            }}
+          />
+        ) : null}
+        {tab === 'certificates' ? (
+          <Certificates
+            onOpenCandidate={(id) => {
+              setCandidateId(id);
+              setTab('candidates');
+            }}
+          />
+        ) : null}
         {tab === 'chats' ? <ProcessChats /> : null}
+        {tab === 'ops' ? <OpsLog /> : null}
         {tab === 'hotels' ? <Hotels /> : null}
       </main>
     </div>

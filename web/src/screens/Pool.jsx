@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
-import { categoryOf, listInterviewCandidates, offerCandidate, notifyOffer, listFormerStaff, listInTransit } from '../lib/api';
+import { categoryOf, listInterviewCandidates, listFormerStaff, listInTransit, listFlights } from '../lib/api';
+import { parseArriveAt } from '../../../lib/flights';
 import { enrichProcessProgress } from '../lib/ops';
 import { attachEmployers, groupByEmployer, withFormerEmployerFields } from '../lib/employerAttach';
 import { useLang } from '../i18n.jsx';
-import { candidateCode, NATION_CODE, maskedName } from '../../../lib/candidateCode';
+import { candidateCode, maskedName, NATION_CODE } from '../../../lib/candidateCode';
+import { matchesCandidateQuery } from '../../../lib/candidateSearch';
 import { formatLastSeen, lastSeenTier } from '../../../lib/lastSeenFormat';
 import { POSITION_LABELS, POSITION_SECTOR_LABELS, LANG_LABELS, SKILL_LABELS, EMPLOYMENT_STATUS_LABELS, WORK_AVAILABILITY_LABELS } from '../../../i18n/optionLabels';
-import { POSITIONS_BY_SECTOR, POSITION_SECTORS, LANGUAGES, SKILLS, EMPLOYMENT_STATUS, WORK_AVAILABILITY, normalizeWorkAvailability } from '../../../cv/options';
+import { POSITIONS_BY_SECTOR, POSITION_SECTORS, LANGUAGES, SKILLS, EMPLOYMENT_STATUS, WORK_AVAILABILITY, normalizeWorkAvailability, langOptions } from '../../../cv/options';
 import { Icon } from '../components/Icon.jsx';
 import Arrivals from './Arrivals.jsx';
 import { listRatingStats } from '../lib/ratings';
-import { listFavoriteCandidateIds, removeFavorite } from '../lib/favorites';
+import { listFavoriteCandidateIds, removeFavorite, addFavorite } from '../lib/favorites';
 import AgencyNoticeModal from '../components/AgencyNoticeModal.jsx';
+import EmployerPickModal from '../components/EmployerPickModal.jsx';
 import { JOIN_PERIOD_MIN, slotMs } from '../lib/interviews';
 
 const BADGE = { pool: 'gold', offered: 'navy', process: 'green', hired: 'teal', transit: 'navy' };
@@ -19,7 +22,6 @@ const BADGE_KEYS = { offered: 'agency_filter_offered', process: 'in_process_labe
 const TITLE_KEYS = { pool: 'nav_pool', process: 'nav_candidates', hired: 'nav_candidates' };
 const PROCESS_SUBS = [
   { id: 'interviews', key: 'sub_interviews' },
-  { id: 'concluded', key: 'sub_concluded' },
   { id: 'offered', key: 'sub_offered' },
   { id: 'inprocess', key: 'sub_inprocess' },
 ];
@@ -35,7 +37,7 @@ const isConcludedIv = (c, now = Date.now()) => {
 };
 
 function Facet({ title, items, selected, onToggle, max = 6 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => (selected || []).length > 0);
   const [all, setAll] = useState(false);
   if (!items.length) return null;
   const shown = all ? items : items.slice(0, max);
@@ -123,7 +125,7 @@ function WorkAreaFacet({ groups, selected, onToggle, title }) {
   );
 }
 
-export default function Pool({ category, query, rows, onOpen, agencyId, onRefresh, processJump, onProcessJumpConsumed, hideStageTabs }) {
+export default function Pool({ category, query, rows, onOpen, agencyId, onRefresh, processJump, onProcessJumpConsumed, hideStageTabs, employerFilter, onClearEmployerFilter }) {
   const { t, lang } = useLang();
   const [fPos, setFPos] = useState([]);
   const [fLang, setFLang] = useState([]);
@@ -138,7 +140,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   const [sort, setSort] = useState('online'); // son çevrimiçi (yeniden eskiye)
   const [collapsed, setCollapsed] = useState(false);
   const [ageOpen, setAgeOpen] = useState(false);
-  const [hiredView, setHiredView] = useState('cards'); // cards | transit | arrivals | former
+  const [hiredView, setHiredView] = useState('cards'); // cards | arrivals | former
   const [processSub, setProcessSub] = useState('interviews'); // interviews | concluded | offered | inprocess
   const [pipeStepFilter, setPipeStepFilter] = useState(null); // 1–6 | null
   const [ivRows, setIvRows] = useState([]);
@@ -148,8 +150,16 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   const [formerLoading, setFormerLoading] = useState(false);
   const [transitRows, setTransitRows] = useState([]);
   const [transitLoading, setTransitLoading] = useState(false);
+  const [arrivalFlights, setArrivalFlights] = useState([]);
+  const [arrivalVisibleCount, setArrivalVisibleCount] = useState(null);
   const [ratingMap, setRatingMap] = useState({});
   const [favOn, setFavOn] = useState(false);
+  const [favEmployerId, setFavEmployerId] = useState(null);
+  const [favEmployerName, setFavEmployerName] = useState('');
+  const [favDepartment, setFavDepartment] = useState(null);
+  const [favDepartmentLabel, setFavDepartmentLabel] = useState('');
+  const [favPickOpen, setFavPickOpen] = useState(false);
+  const [favSheetPurpose, setFavSheetPurpose] = useState('filter'); // filter | add
   const [favIds, setFavIds] = useState(null); // string[] | null — favori sırası
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -158,14 +168,23 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   const [empSections, setEmpSections] = useState(null);
 
   useEffect(() => {
+    if (hiredView === 'transit') setHiredView('arrivals');
+  }, [hiredView]);
+
+  useEffect(() => {
     if (!processJump) return;
-    if (['interviews', 'concluded', 'offered', 'inprocess'].includes(processJump)) {
+    if (['interviews', 'offered', 'inprocess'].includes(processJump)) {
       setProcessSub(processJump);
+      setPipeStepFilter(null);
+    } else if (processJump === 'concluded') {
+      setProcessSub('interviews');
       setPipeStepFilter(null);
     } else if (typeof processJump === 'string' && processJump.startsWith('pipe_')) {
       setProcessSub('inprocess');
       setPipeStepFilter(Number(processJump.slice(5)) || null);
-    } else if (processJump === 'transit' || processJump === 'arrivals' || processJump === 'former') {
+    } else if (processJump === 'transit') {
+      setHiredView('arrivals');
+    } else if (processJump === 'arrivals' || processJump === 'former') {
       setHiredView(processJump);
     } else if (processJump === 'staff' || processJump === 'cards') {
       setHiredView('cards');
@@ -226,12 +245,19 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     setFormerLoading(true);
     listFormerStaff(agencyId).then((list) => {
       if (!alive) return;
-      setFormerRows((list || []).map((r) => ({
+      const activeIds = new Set(
+        (rows || [])
+          .filter((r) => ['hired', 'transit'].includes(categoryOf(r.st)))
+          .map((r) => r.user_id)
+          .filter(Boolean),
+      );
+      setFormerRows((list || []).filter((r) => !activeIds.has(r.candidate_id || r.user_id)).map((r) => ({
         user_id: r.candidate_id,
         title: r.title,
         data: r.data || { positions: r.job_position ? [r.job_position] : [] },
         reg_no: r.reg_no,
         nationality: r.nationality,
+        work_end_at: r.work_end_at,
         last_seen_at: null,
         st: { status: 'hired' },
         former: true,
@@ -242,7 +268,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
       if (alive) { setFormerRows([]); setFormerLoading(false); }
     });
     return () => { alive = false; };
-  }, [category, hiredView, agencyId]);
+  }, [category, hiredView, agencyId, rows]);
 
   // Yolda / transit
   useEffect(() => {
@@ -260,17 +286,25 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     return () => { alive = false; };
   }, [category, hiredView, agencyId]);
 
+  useEffect(() => {
+    if (category !== 'hired' || hiredView !== 'arrivals') {
+      setArrivalFlights([]);
+      setArrivalVisibleCount(null);
+      return undefined;
+    }
+    let alive = true;
+    listFlights().then((list) => {
+      if (alive) setArrivalFlights(list || []);
+    }).catch(() => {
+      if (alive) setArrivalFlights([]);
+    });
+    return () => { alive = false; };
+  }, [category, hiredView]);
+
   const base = useMemo(() => {
     if (!rows) return [];
-    const term = (query || '').trim().toLocaleLowerCase('tr');
-    const matchTerm = (r) => {
-      if (!term) return true;
-      const code = candidateCode(r.nationality, r.reg_no) || '';
-      const name = maskedName(r.data) || '';
-      const full = [r.data?.firstName, r.data?.lastName, r.data?.passportFirstName, r.data?.passportLastName].filter(Boolean).join(' ');
-      const pos = (r.data?.positions || []).map(posLabel).join(' ');
-      return (`${code} ${name} ${full} ${pos} ${r.nationality || ''}`).toLocaleLowerCase('tr').includes(term);
-    };
+    const term = (query || '').trim();
+    const matchTerm = (r) => !term || matchesCandidateQuery(r, term);
 
     if (category === 'hired') {
       if (hiredView === 'former') return formerRows.filter(matchTerm);
@@ -278,8 +312,14 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
       if (hiredView === 'arrivals') {
         const seen = new Set();
         const out = [];
+        const arrivalIds = new Set(
+          arrivalFlights
+            .filter((f) => !!parseArriveAt(f.arrive_at))
+            .map((f) => f.user_id)
+            .filter(Boolean),
+        );
         [...transitRows, ...rows.filter((r) => categoryOf(r.st) === 'hired')].forEach((r) => {
-          if (seen.has(r.user_id) || !matchTerm(r)) return;
+          if (seen.has(r.user_id) || !arrivalIds.has(r.user_id) || !matchTerm(r)) return;
           seen.add(r.user_id);
           out.push({ ...r, arrivalStatus: categoryOf(r.st) === 'transit' ? 'transit' : 'hired' });
         });
@@ -300,17 +340,14 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
       if (processSub === 'offered') {
         return rows.filter((r) => categoryOf(r.st) === 'offered' && matchTerm(r));
       }
-      const now = Date.now();
-      return ivRows
-        .filter((r) => (processSub === 'concluded' ? isConcludedIv(r, now) : !isConcludedIv(r, now)))
-        .filter(matchTerm);
+      return ivRows.filter(matchTerm);
     }
     // Havuz: personel + yolda hariç
     return rows.filter((r) => {
       const c = categoryOf(r.st);
       return c !== 'hired' && c !== 'transit' && matchTerm(r);
     });
-  }, [rows, query, category, lang, processSub, ivRows, hiredView, formerRows, transitRows, pipeStepFilter, processMeta]);
+  }, [rows, query, category, lang, processSub, ivRows, hiredView, formerRows, transitRows, arrivalFlights, pipeStepFilter, processMeta]);
 
   const count = (pred) => base.reduce((n, r) => n + (pred(r) ? 1 : 0), 0);
   const byCount = (a, b) => b.count - a.count;
@@ -338,14 +375,14 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   }], [base, lang, t]);
 
   useEffect(() => {
-    if (!agencyId || !favOn) { setFavIds(null); return undefined; }
+    if (!agencyId || !favOn || !favEmployerId || !favDepartment) { setFavIds(null); return undefined; }
     let alive = true;
     setFavIds([]);
-    listFavoriteCandidateIds(agencyId).then((ids) => {
+    listFavoriteCandidateIds(agencyId, favEmployerId, favDepartment).then((ids) => {
       if (alive) setFavIds(ids);
     });
     return () => { alive = false; };
-  }, [agencyId, favOn]);
+  }, [agencyId, favOn, favEmployerId, favDepartment]);
 
   const list = useMemo(() => {
     const aMin = parseInt(ageMin, 10) || 0, aMax = parseInt(ageMax, 10) || 0;
@@ -364,7 +401,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
       if (aMin || aMax) { const a = ageOf(r); if (a == null) return false; if (aMin && a < aMin) return false; if (aMax && a > aMax) return false; }
       return true;
     });
-    if (category === 'process' && (processSub === 'interviews' || processSub === 'concluded')) {
+    if (category === 'process' && processSub === 'interviews') {
       out = out.slice().sort((a, b) => {
         const da = a.ivSortDate || '';
         const db = b.ivSortDate || '';
@@ -414,17 +451,46 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
           employer_title: r.formerMeta?.employer_title || r.employer_title,
           employer_id: r.formerMeta?.employer_id,
         })));
+        if (employerFilter?.id) {
+          attached = attached.filter((r) => r.employerId === employerFilter.id || r.employerKey === employerFilter.id);
+        }
       } else {
         attached = await attachEmployers(agencyId, list);
       }
-      if (alive) setEmpSections(groupByEmployer(attached, { noneLabel: t('employer_group_none') || 'İşletme atanmamış' }));
+      if (employerFilter?.id) {
+        attached = attached.filter((r) => r.employerId === employerFilter.id || r.employerKey === employerFilter.id);
+      }
+      if (!alive) return;
+      if (category === 'process' && processSub === 'interviews') {
+        const now = Date.now();
+        const up = attached.filter((r) => !isConcludedIv(r, now));
+        const done = attached.filter((r) => isConcludedIv(r, now));
+        setEmpSections([
+          up.length ? { key: 'iv-up', title: t('pipe_iv_upcoming'), data: up } : null,
+          done.length ? { key: 'iv-done', title: t('pipe_arch_concluded'), data: done } : null,
+        ].filter(Boolean));
+        return;
+      }
+      setEmpSections(groupByEmployer(attached, { noneLabel: t('employer_group_none') || 'İşletme atanmamış' }));
     })();
     return () => { alive = false; };
-  }, [list, groupByEmp, agencyId, category, hiredView, t]);
+  }, [list, groupByEmp, agencyId, category, hiredView, processSub, t, employerFilter]);
 
   const toggle = (set) => (v) => set((a) => (a.includes(v) ? a.filter((x) => x !== v) : [...a, v]));
   const rmFrom = (set) => (v) => set((a) => a.filter((x) => x !== v));
   const activeCount = fPos.length + fLang.length + fSkill.length + fNat.length + fGender.length + fEmployment.length + fMonths.length + (fCertified ? 1 : 0) + (ageMin || ageMax ? 1 : 0);
+  const poolRowsOnly = useMemo(() => {
+    if (!rows || category !== 'pool') return [];
+    return rows.filter((r) => {
+      const c = categoryOf(r.st);
+      return c !== 'hired' && c !== 'transit';
+    });
+  }, [rows, category]);
+  const poolQueryActive = category === 'pool' && !!(query || '').trim();
+  const poolSidebarFiltered = category === 'pool' && (activeCount > 0 || favOn);
+  const poolCountShown = list.length;
+  const poolCountBase = poolRowsOnly.length;
+  const poolCountRatio = category === 'pool' && poolQueryActive && poolCountShown !== poolCountBase;
   const clearAll = () => { setFPos([]); setFLang([]); setFSkill([]); setFNat([]); setFGender([]); setFEmployment([]); setFMonths([]); setFCertified(false); setAgeMin(''); setAgeMax(''); };
 
   const chips = [
@@ -440,7 +506,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
   ];
 
   const showSort = !(category === 'hired' && hiredView === 'arrivals')
-    && !(category === 'process' && (processSub === 'interviews' || processSub === 'concluded'));
+    && !(category === 'process' && processSub === 'interviews');
   const showFav = category === 'pool';
   const canOfferSelect = category === 'pool';
   const canNoticeSelect =
@@ -476,24 +542,41 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
     const allOn = selectableIds.every((id) => selectedIds.includes(id));
     setSelectedIds(allOn ? [] : selectableIds.slice());
   };
-  const bulkOffer = async () => {
+  const openBulkFav = () => {
     if (!selectedIds.length || bulkBusy) return;
-    const msg = (t('agency_bulk_confirm', { n: selectedIds.length }) || `${selectedIds.length} adaya teklif gönderilecek. Onaylıyor musun?`);
-    if (!window.confirm(msg)) return;
-    setBulkBusy(true);
-    try {
-      for (const id of selectedIds) {
-        // eslint-disable-next-line no-await-in-loop
-        await offerCandidate(id);
-        notifyOffer(id, 'offer', agencyId);
+    setFavSheetPurpose('add');
+    setFavPickOpen(true);
+  };
+
+  const onFavPick = async ({ employer, department }) => {
+    if (!employer?.id || !department) return;
+    if (favSheetPurpose === 'add' && selectMode && selectedIds.length) {
+      const ids = selectedIds.slice();
+      setBulkBusy(true);
+      try {
+        for (const id of ids) {
+          // eslint-disable-next-line no-await-in-loop
+          await addFavorite(agencyId, employer.id, department, id);
+        }
+        setFavPickOpen(false);
+        exitSelect();
+        window.alert(t('fav_bulk_done', { n: String(ids.length) }) || `${ids.length}`);
+      } catch (e) {
+        window.alert(e?.message || t('err_generic') || '');
+      } finally {
+        setBulkBusy(false);
       }
-      await onRefresh?.();
-      exitSelect();
-    } catch (e) {
-      window.alert(e?.message || t('err_generic') || '');
-    } finally {
-      setBulkBusy(false);
+      return;
     }
+    const opts = langOptions(lang);
+    const deptLabel = (opts.POSITIONS_BY_SECTOR?.tourism || [])
+      .find((o) => o.value === department)?.label || department;
+    setFavEmployerId(employer.id);
+    setFavEmployerName(employer.name || employer.title || '');
+    setFavDepartment(department);
+    setFavDepartmentLabel(deptLabel);
+    setFavOn(true);
+    setFavPickOpen(false);
   };
 
   if (rows == null) {
@@ -565,12 +648,13 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
 
       <section className="ecResults">
         <div className="ecResultBar">
-          <h1 className="ecTitle">{t(TITLE_KEYS[category]) || category}</h1>
+          <div className="ecResultHead">
+            <h1 className="ecTitle">{t(TITLE_KEYS[category]) || category}</h1>
+          </div>
           {!hideStageTabs && category === 'hired' ? (
             <div className="arrToggle">
               <button type="button" className={`arrTab ${hiredView === 'cards' ? 'on' : ''}`} onClick={() => setHiredView('cards')}>{t('staff_tab_list') || ''}</button>
-              <button type="button" className={`arrTab ${hiredView === 'transit' ? 'on' : ''}`} onClick={() => setHiredView('transit')}>{t('ops_transit') || ''}</button>
-              <button type="button" className={`arrTab ${hiredView === 'arrivals' ? 'on' : ''}`} onClick={() => setHiredView('arrivals')}>{t('staff_tab_arrivals') || ''}</button>
+              <button type="button" className={`arrTab ${hiredView === 'arrivals' ? 'on' : ''}`} onClick={() => { setArrivalVisibleCount(null); setHiredView('arrivals'); }}>{t('staff_tab_arrivals') || ''}</button>
               <button type="button" className={`arrTab ${hiredView === 'former' ? 'on' : ''}`} onClick={() => setHiredView('former')}>{t('staff_tab_former') || ''}</button>
             </div>
           ) : null}
@@ -586,6 +670,12 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                   {s.id === 'offered' ? (t(s.key) || 'Teklif bekleyen') : t(s.key)}
                 </button>
               ))}
+            </div>
+          ) : null}
+          {employerFilter?.id ? (
+            <div className="opsPipeFilter">
+              <span>{t('employer_hub_pipeline_filter', { name: employerFilter.name || '—' })}</span>
+              <button type="button" onClick={() => onClearEmployerFilter?.()}>{t('ops_pipe_clear')}</button>
             </div>
           ) : null}
           {category === 'process' && processSub === 'inprocess' && pipeStepFilter ? (
@@ -604,38 +694,78 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
             </div>
           ) : null}
           <div className="ecResultMeta">
+            {category === 'pool' ? (
+              <span className="ecCount poolCountMuted">
+                <b>
+                  {poolCountRatio
+                    ? `${poolCountShown} / ${poolCountBase}`
+                    : String(poolCountShown)}
+                </b>
+                <span>{poolCountRatio ? t('pool_count_results') : t('count_candidates')}</span>
+              </span>
+            ) : (
             <span className="ecCount">
               <b>{
-                (category === 'process' && ivLoading && (processSub === 'interviews' || processSub === 'concluded'))
+                (category === 'process' && ivLoading && processSub === 'interviews')
                 || (category === 'hired' && hiredView === 'former' && formerLoading)
                 || (category === 'hired' && hiredView === 'transit' && transitLoading)
+                || (category === 'hired' && hiredView === 'arrivals' && arrivalVisibleCount == null)
                   ? '…'
-                  : list.length
+                  : category === 'hired' && hiredView === 'arrivals' ? arrivalVisibleCount : list.length
               }</b>
               {' '}
               {category === 'hired'
                 ? (hiredView === 'former' ? (t('count_former') || '') : hiredView === 'transit' ? (t('count_transit') || '') : (t('count_staff') || ''))
                 : (t('count_candidates') || '')}
             </span>
+            )}
             {agencyId && showFav ? (
-              <button
-                type="button"
-                className={`favFilterBtn ${favOn ? 'on' : ''}`}
-                onClick={() => setFavOn((v) => !v)}
-              >
-                ★ {t('fav_filter_btn') || 'Favoriler'}
-              </button>
+              <div className={`favFilterBtn ${favOn ? 'on' : ''}`}>
+                <button
+                  type="button"
+                  className="favFilterMain"
+                  onClick={() => { setFavSheetPurpose('filter'); setFavPickOpen(true); }}
+                >
+                  {favOn && favEmployerName
+                    ? (t('fav_filter_for', {
+                      name: favDepartmentLabel
+                        ? `${favEmployerName} · ${favDepartmentLabel}`
+                        : favEmployerName,
+                    }) || `★ ${favEmployerName}`)
+                    : `★ ${t('fav_filter_btn') || 'Favoriler'}`}
+                </button>
+                {favOn ? (
+                  <button
+                    type="button"
+                    className="favFilterX"
+                    title={t('fav_clear') || ''}
+                    aria-label={t('fav_clear') || 'clear'}
+                    onClick={() => {
+                      setFavOn(false);
+                      setFavEmployerId(null);
+                      setFavEmployerName('');
+                      setFavDepartment(null);
+                      setFavDepartmentLabel('');
+                    }}
+                  >
+                    ✕
+                  </button>
+                ) : null}
+              </div>
             ) : null}
             {showSort ? (
-              <div className="ecSortSeg" role="group" aria-label={t('sort_online_label') || 'Görünürlük'}>
-                <button type="button" className={sort === 'online' ? 'on' : ''} onClick={() => setSort('online')}>
-                  <span className="dot" />
-                  {t('sort_newest') || 'Yeni → eski'}
-                </button>
-                <button type="button" className={sort === 'old' ? 'on' : ''} onClick={() => setSort('old')}>
-                  {t('sort_oldest') || 'Eski → yeni'}
-                </button>
-              </div>
+              <label className="ecSortWrap">
+                <span>{t('sort_by') || 'Sırala'}</span>
+                <select
+                  className="ecSortSelect"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value)}
+                  aria-label={t('sort_by') || 'Sırala'}
+                >
+                  <option value="online">{t('sort_online_desc') || t('sort_newest') || ''}</option>
+                  <option value="old">{t('sort_online_asc') || t('sort_oldest') || ''}</option>
+                </select>
+              </label>
             ) : null}
             {canSelectMode ? (
               <button
@@ -666,7 +796,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
         </div>
 
         {category === 'hired' && hiredView === 'arrivals' ? (
-          <Arrivals candidates={list} />
+          <Arrivals candidates={list} flightRows={arrivalFlights} onCountChange={setArrivalVisibleCount} />
         ) : (
         <>
         {list.length === 0 ? (
@@ -675,9 +805,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
               ? (t('fav_empty') || 'Bu işletme için henüz favori aday yok.')
               : category === 'process' && processSub === 'interviews'
                 ? (t('interviews_empty') || 'Mülakat teklif edilen aday yok.')
-                : category === 'process' && processSub === 'concluded'
-                  ? (t('concluded_empty') || 'Sonuçlanan mülakat yok.')
-                  : category === 'process' && processSub === 'offered'
+                : category === 'process' && processSub === 'offered'
                 ? (t('offered_empty') || 'Yanıt bekleyen teklif yok.')
               : category === 'process' && processSub === 'inprocess'
                     ? (t('inprocess_empty') || 'Süreçte aday yok.')
@@ -704,8 +832,9 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
               <div className={`ecGrid ${collapsed ? 'wide' : ''}`}>
                 {sec.data.map((r) => {
             const c = categoryOf(r.st);
-            const code = candidateCode(r.nationality, r.reg_no);
-            const photo = r.data?.photoClose || r.data?.photo || r.data?.photoFull;
+            const code = candidateCode(r.nationality || r.data?.nationality, r.reg_no);
+            const name = maskedName(r.data) || code;
+            const photo = r.data?.photo || r.data?.photoClose || r.data?.photoFull;
             const allPos = r.data?.positions || [];
             const positions = allPos.slice(0, 1);
             const extra = allPos.length - positions.length;
@@ -717,9 +846,9 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
             const onUnfav = async (e) => {
               e.preventDefault();
               e.stopPropagation();
-              if (!agencyId || !favOn) return;
+              if (!agencyId || !favOn || !favEmployerId || !favDepartment) return;
               try {
-                await removeFavorite(agencyId, r.user_id);
+                await removeFavorite(agencyId, r.user_id, favEmployerId, favDepartment);
                 setFavIds((prev) => (prev || []).filter((id) => id !== r.user_id));
               } catch (err) {
                 console.warn('unfav:', err?.message);
@@ -743,6 +872,7 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
               >
                 <div className="pcardImg">
                   {photo ? <img src={photo} alt="" /> : <div className="pcardNoImg"><Icon name="users" size={34} /></div>}
+                  {c === 'pool' && flag ? <img className="pcardPhotoFlag" src={flag} alt="" /> : null}
                   {c !== 'pool' ? (
                     <span className={`badge ${BADGE[c]} pcardBadge`}>{t(BADGE_KEYS[c]) || c}</span>
                   ) : null}
@@ -750,13 +880,6 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                     <span className={`pcardCheck ${isSel ? 'on' : ''} ${!canSelect ? 'disabled' : ''}`} aria-hidden>
                       {isSel ? '✓' : ''}
                     </span>
-                  ) : null}
-                  {ratingMap[r.user_id] ? (
-                    <div className={`pcardRate ${showUnfav || selectMode ? 'withUnfav' : ''}`} title={t('rate_n_count', { n: ratingMap[r.user_id].count }) || String(ratingMap[r.user_id].count)}>
-                      <span className="pcardRateStar">★</span>
-                      <span className="pcardRateAvg">{Number(ratingMap[r.user_id].avg).toFixed(1)}</span>
-                      <span className="pcardRateCount">({ratingMap[r.user_id].count})</span>
-                    </div>
                   ) : null}
                   {showUnfav ? (
                     <button
@@ -771,10 +894,11 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                   ) : null}
                 </div>
                 <div className="pcardBody">
-                  <div className="pcardCode">{code}</div>
+                  <div className="pcardName">{name}</div>
+                  <div className="pcardCode">{code}{r.title ? ` · ${r.title}` : ''}</div>
                   {r.employerLabel ? <div className="pcardEmp">{r.employerLabel}</div> : null}
                   <div className="pcardNat">
-                    {flag ? <img className="flag" src={flag} alt="" /> : null}
+                    {c !== 'pool' && flag ? <img className="flag" src={flag} alt="" /> : null}
                     <span>{r.nationality || '—'}{age ? ` · ${t('age_n', { n: age }) || age}` : ''}</span>
                   </div>
                   {category === 'process' && processSub === 'inprocess' && processMeta[r.user_id] ? (
@@ -806,11 +930,10 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
                       <span className="pcardPipeTurn">{t('staff_confirm_waiting') || ''}</span>
                     </div>
                   ) : null}
-                  {r.former && r.formerMeta?.outcome ? (
-                    <div className={`pcardPipe ${r.formerMeta.needs_rating ? 'turn-agency' : 'turn-none'}`}>
+                  {r.former && r.work_end_at ? (
+                    <div className="pcardPipe turn-none">
                       <span className="pcardPipeTurn">
-                        {r.formerMeta.outcome === 'completed' ? (t('staff_outcome_completed') || 'Tamamladı') : (t('staff_outcome_early') || r.formerMeta.outcome)}
-                        {r.formerMeta.needs_rating ? ` · ★ ${t('rate_required_badge') || 'Puan gerekli'}` : ''}
+                        {t('staff_departed_on', { date: String(r.work_end_at).slice(0, 10) }) || `İşten ayrılış: ${String(r.work_end_at).slice(0, 10)}`}
                       </span>
                     </div>
                   ) : null}
@@ -854,10 +977,10 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
               <button
                 type="button"
                 className="bulkOffer"
-                onClick={bulkOffer}
+                onClick={openBulkFav}
                 disabled={bulkBusy || !selectedIds.length}
               >
-                {bulkBusy ? '…' : (t('agency_offer') || 'Teklif Gönder')}
+                {bulkBusy ? '…' : (t('fav_title_add') || 'Favoriye ekle')}
               </button>
             )}
           </div>
@@ -869,6 +992,16 @@ export default function Pool({ category, query, rows, onOpen, agencyId, onRefres
         onClose={() => setNoticeOpen(false)}
         userIds={selectedIds}
         targetKind="selected"
+      />
+
+      <EmployerPickModal
+        open={favPickOpen}
+        agencyId={agencyId}
+        purpose={favSheetPurpose}
+        initialEmployerId={favSheetPurpose === 'filter' && favOn ? favEmployerId : null}
+        initialEmployerName={favSheetPurpose === 'filter' && favOn ? favEmployerName : ''}
+        onSelect={onFavPick}
+        onClose={() => setFavPickOpen(false)}
       />
     </div>
   );

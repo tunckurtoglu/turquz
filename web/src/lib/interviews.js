@@ -127,6 +127,7 @@ function fromRow(r) {
     status: r.status,
     slots: Array.isArray(r.slots) ? r.slots : [],
     selectedSlot: r.selected_slot || '',
+    employerId: r.employer_id || null,
     createdBy: r.created_by || null,
     createdAt: r.created_at || null,
     respondBy: r.respond_by || null,
@@ -209,14 +210,12 @@ export function conflictNeighborLabels(iso, busyIsos, lang = 'tr') {
   return { conflict: slotLabel(nearest.iso, lang), earlier: slotLabel(earlier, lang), later: slotLabel(later, lang) };
 }
 
-export async function proposeInterview(candidateUserId, slots, agencyId) {
-  const row = {
-    user_id: candidateUserId, created_by: agencyId || null, status: 'proposed',
-    slots: slots || [], selected_slot: null, call_extra_secs: 0,
-    reminder_24h_sent_at: null, reminder_1h_sent_at: null, reminder_15m_sent_at: null, reminder_5m_sent_at: null,
-    updated_at: new Date().toISOString(),
-  };
-  const { error } = await supabase.from('interviews').upsert(row, { onConflict: 'user_id' });
+export async function proposeInterview(candidateUserId, slots, agencyId, employerId = null) {
+  const { error } = await supabase.rpc('agency_propose_interview', {
+    p_candidate: candidateUserId,
+    p_employer: employerId,
+    p_slots: slots || [],
+  });
   if (error) throw error;
 }
 

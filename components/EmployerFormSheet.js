@@ -40,7 +40,8 @@ export default function EmployerFormSheet({ visible, agencyId, initial, onSaved,
   }, [visible, initial]);
 
   const up = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
-  const ok = f.name?.trim() && f.title?.trim() && f.address?.trim();
+  const ok = f.name?.trim() && f.title?.trim() && f.address?.trim()
+    && f.country?.trim() && f.city?.trim() && f.region?.trim() && f.webUrl?.trim();
 
   const save = async () => {
     if (!ok || busy) return;
@@ -74,6 +75,10 @@ export default function EmployerFormSheet({ visible, agencyId, initial, onSaved,
           <Text style={styles.sec}>{t('contract_employer_sec')}</Text>
           <Row label={t('contract_f_title')} value={f.title} onChangeText={up('title')} placeholder="SBN TURİZM... / ABC TEKSTİL A.Ş." multiline required />
           <Row label={t('contract_f_address')} value={f.address} onChangeText={up('address')} placeholder="..." multiline required />
+          <Row label={t('hotels_country')} value={f.country} onChangeText={up('country')} required />
+          <Row label={t('hotels_city')} value={f.city} onChangeText={up('city')} required />
+          <Row label={t('hotels_region')} value={f.region} onChangeText={up('region')} required />
+          <Row label={t('hotels_badge_web')} value={f.webUrl} onChangeText={up('webUrl')} placeholder="https://..." keyboardType="url" required />
           <Row label={t('contract_f_phone')} value={f.phone} onChangeText={up('phone')} keyboardType="phone-pad" />
           <Row label={t('contract_f_email')} value={f.email} onChangeText={up('email')} keyboardType="email-address" />
           <Text style={styles.sec}>{t('contract_contact_sec')}</Text>

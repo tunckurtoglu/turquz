@@ -12,6 +12,8 @@ const parents = {
 };
 const libFiles = [
   'candidateCode.js',
+  'candidateSearch.js',
+  'documentFileName.js',
   'translit.js',
   'pipeline.js',
   'cvDates.js',

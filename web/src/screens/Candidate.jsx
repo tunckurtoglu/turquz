@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { offerCandidate, withdrawCandidate, endEmployment, categoryOf, buildCvPdfServer, translateCvFields, applyCvTranslation, notifyOffer, extractCvFields, hasCvFreeText, getContract, getCandidateEmploymentEpisode, undoEmploymentEnd, contestEmploymentEnd, acceptEmploymentEnd, answerEmploymentTerm, getCandidateStatus, listCandidateWorkHistory, confirmHire, deferWorkStart, agencyAnswerBoarding } from '../lib/api';
+import { offerCandidate, withdrawCandidate, endEmployment, categoryOf, buildCvPdfServer, translateCvFields, applyCvTranslation, notifyOffer, extractCvFields, hasCvFreeText, getContract, getCandidateEmploymentEpisode, undoEmploymentEnd, contestEmploymentEnd, acceptEmploymentEnd, answerEmploymentTerm, getCandidateStatus, listCandidateWorkHistory, confirmHire, deferWorkStart, agencyAnswerBoarding, getCandidateCvReveal, agencyGrantDeadlineExtra, listDocuments } from '../lib/api';
 import { useLang } from '../i18n.jsx';
-import { candidateCode, maskCandidate } from '../../../lib/candidateCode';
+import { agencyDisplayName, candidateCode, maskCandidate } from '../../../lib/candidateCode';
+import { documentDownloadName } from '../../../lib/documentFileName';
+import { withLatinName } from '../../../lib/translit';
 import { buildCvHtml } from '../../../cv/buildCvHtml';
 import { Icon } from '../components/Icon.jsx';
 import Documents from './Documents.jsx';
@@ -12,7 +14,8 @@ import { loadOverride, saveOverride, clearOverride, normalizePoolCvData, applyCv
 import RateCandidateModal from '../components/RateCandidateModal.jsx';
 import AgencyNoticeModal from '../components/AgencyNoticeModal.jsx';
 import { canRateCandidate, getMyRating, listRatingStats } from '../lib/ratings';
-import { isFavorited, toggleFavorite } from '../lib/favorites';
+import { listFavoriteSlots, toggleFavorite } from '../lib/favorites';
+import EmployerPickModal from '../components/EmployerPickModal.jsx';
 import { formatDeadlineRemain } from '../lib/deadline';
 import { getFlight, msUntilArrival, msUntilYmdGate } from '../../../lib/flights';
 import { formatCountdown } from '../lib/interviews';
@@ -20,7 +23,7 @@ import { formatCountdown } from '../lib/interviews';
 const BADGE = { offered: 'navy', process: 'green', hired: 'teal', transit: 'navy' };
 const BADGE_KEYS = { offered: 'agency_filter_offered', process: 'in_process_label', hired: 'nav_staff', transit: 'ops_transit' };
 
-export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
+export default function Candidate({ sel, detailTab = 'cv', onDetailTabChange, onBack, agencyUserId, onChatRead }) {
   const { lang, t } = useLang();
   const badgeTxt = (k) => t(BADGE_KEYS[k]) || k;
   const c = sel.c;
@@ -30,13 +33,27 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
   const [noticeOpen, setNoticeOpen] = useState(false);
   const [contractPaid, setContractPaid] = useState(false);
   const [contractPayStatus, setContractPayStatus] = useState(null);
+  const [contractSigned, setContractSigned] = useState(false);
+  const [cvReveal, setCvReveal] = useState(null);
   const [episode, setEpisode] = useState(null);
   const [workHistory, setWorkHistory] = useState([]);
   const [st, setSt] = useState(sel.st);
   const [nowTick, setNowTick] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
-  const [tab, setTab] = useState('cv');
+  const [tab, setTab] = useState(() => (sel?.st?._openInterview ? 'iv' : detailTab));
+  const pickTab = (next) => {
+    if (next === tab) return;
+    if (next === 'cv' && tab !== 'cv') {
+      window.history.back();
+      return;
+    }
+    onDetailTabChange?.(next);
+  };
+  const handleDetailBack = () => {
+    if (tab !== 'cv') window.history.back();
+    else onBack?.();
+  };
   const [zoomIdx, setZoomIdx] = useState(null); // büyütülen fotoğraf indeksi
   const [zoomScale, setZoomScale] = useState(1);
   const zoomScaleRef = useRef(1);
@@ -52,9 +69,12 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
   const [ratingSummary, setRatingSummary] = useState(null);
   const [isFav, setIsFav] = useState(false);
   const [favBusy, setFavBusy] = useState(false);
+  const [favSlots, setFavSlots] = useState([]);
+  const [favPickOpen, setFavPickOpen] = useState(false);
   const [hireBusy, setHireBusy] = useState(false);
   const [flightRow, setFlightRow] = useState(null);
   const saveTimer = useRef(null);
+  const quickOfferRef = useRef(false);
 
   // Adayın serbest CV metinlerini acentenin diline çevir (Gemini, DB önbellekli).
   const [cvTr, setCvTr] = useState(null);
@@ -69,10 +89,10 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
   }, [c.user_id, lang, baseData]);
 
   useEffect(() => {
-    if (!st?.docs_deadline_at || st?.status !== 'accepted') return undefined;
+    if ((!st?.docs_deadline_at && !st?.consulate_deadline_at) || st?.status !== 'accepted') return undefined;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [st?.docs_deadline_at, st?.status]);
+  }, [st?.docs_deadline_at, st?.consulate_deadline_at, st?.status]);
 
   useEffect(() => {
     if (!c.user_id) { setFlightRow(null); return undefined; }
@@ -91,14 +111,25 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
     return () => clearInterval(id);
   }, [st?.status, st?.work_start_at, flightRow?.arriveAt]);
 
+  useEffect(() => {
+    if (sel?.st?._openInterview) return;
+    setTab(detailTab);
+  }, [detailTab, c.user_id, sel?.st?._openInterview]);
+
   // Override'ları yükle (her yeni aday açılınca)
   useEffect(() => {
     setOverrides({});
     setEditorOpen(false);
     setChatOpen(!!sel?.st?._openChat);
+    setTab(sel?.st?._openInterview ? 'iv' : detailTab);
+    if (sel?.st?._openInterview) onDetailTabChange?.('iv');
+    else onDetailTabChange?.(detailTab);
+    quickOfferRef.current = !!sel?.st?._quickOffer;
     setRateOpen(false);
     setContractPaid(false);
     setContractPayStatus(null);
+    setContractSigned(false);
+    setCvReveal(null);
     setCanRate(false);
     setHasMyRating(false);
     setRatingSummary(null);
@@ -106,15 +137,28 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
     if (!agencyUserId || !c.user_id) return;
     loadOverride(agencyUserId, c.user_id).then(setOverrides);
     getContract(c.user_id).then((con) => {
-      setContractPaid(!!con?.isPaid);
+      const paid = !!con?.isPaid;
+      setContractPaid(paid);
       setContractPayStatus(con?.paymentStatus || null);
+      if (paid) {
+        getCandidateCvReveal(c.user_id).then(setCvReveal);
+      } else {
+        setCvReveal(null);
+      }
+    });
+    listDocuments(c.user_id).then((rows) => {
+      const signed = (rows || []).find((r) => r.kind === 'contract_signed');
+      setContractSigned(!!signed?.submitted_at);
     });
     getCandidateStatus(c.user_id).then((fresh) => {
       if (fresh) setSt((prev) => ({ ...(prev || {}), ...fresh }));
     });
     getCandidateEmploymentEpisode(c.user_id).then(setEpisode);
     listCandidateWorkHistory(c.user_id).then((h) => setWorkHistory((h || []).filter((x) => x.outcome === 'completed')));
-    isFavorited(agencyUserId, c.user_id).then((on) => setIsFav(!!on));
+    listFavoriteSlots(agencyUserId, c.user_id).then((slots) => {
+      setFavSlots(slots || []);
+      setIsFav((slots || []).length > 0);
+    });
     Promise.all([
       listRatingStats([c.user_id]),
       canRateCandidate(c.user_id),
@@ -141,11 +185,18 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
     await clearOverride(agencyUserId, c.user_id);
   };
 
-  const onToggleFav = async () => {
+  const onToggleFav = () => {
     if (!agencyUserId || !c.user_id || favBusy) return;
+    setFavPickOpen(true);
+  };
+
+  const onFavPick = async ({ employer, department }) => {
+    if (!agencyUserId || !c.user_id || !employer?.id || !department || favBusy) return;
     setFavBusy(true);
     try {
-      const nowOn = await toggleFavorite(agencyUserId, c.user_id);
+      const nowOn = await toggleFavorite(agencyUserId, employer.id, department, c.user_id);
+      const next = nowOn ? [{ employerId: employer.id, department }] : [];
+      setFavSlots(next);
       setIsFav(nowOn);
     } catch (e) {
       console.warn('fav toggle:', e?.message);
@@ -156,9 +207,15 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
 
   const translatedData = (!showOriginal && cvTr) ? applyCvTranslation(baseData, cvTr) : baseData;
   // Acente düzenlemeleri en son uygulanır (en yüksek öncelik) — title dahil
-  const data = applyCvOverrides(translatedData, overrides);
+  // Ödeme sonrası PII (iletişim/pasaport/aile) reveal ile birleşir.
+  const data = applyCvOverrides(
+    cvReveal ? { ...translatedData, ...cvReveal } : translatedData,
+    overrides,
+  );
   const cat = categoryOf(st);
   const chatOn = contractPaid;
+  const displayName = agencyDisplayName(data, contractPaid);
+  const cvDownloadName = documentDownloadName({ code, name: displayName, label: t('doc_cv') || 'CV', extension: 'pdf' });
 
   // Yazdırma/PDF için kesin-2-sayfa CSS'i: her .page SABİT A4 (297mm) kutuya sarılır, taşması gizli;
   // 900px tasarım 0.882 ile A4'e ölçeklenir. Sayfa sayısı yalnız kutu sayısına bağlı -> her zaman 2 sayfa.
@@ -211,21 +268,26 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
     if (pdfBusy) return;
     setPdfBusy(true);
     try {
-      const blob = await buildCvPdfServer(buildPrintableHtml(), `Turquz-CV-${code}`);
+      const blob = await buildCvPdfServer(buildPrintableHtml(), cvDownloadName);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = `Turquz-CV-${code}.pdf`;
+      a.href = url; a.download = cvDownloadName;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
     } catch (e) { alert(e?.message || t('pdf_error') || 'PDF'); }
     finally { setPdfBusy(false); }
   };
 
-  const html = useMemo(() => buildCvHtml(maskCandidate(data, code), lang, { withLogo: true, masked: true }), [data, code, lang]);
+  const html = useMemo(() => {
+    if (contractPaid) {
+      return buildCvHtml(withLatinName(data), lang, { withLogo: true, masked: false });
+    }
+    return buildCvHtml(maskCandidate(data, code), lang, { withLogo: true, masked: true });
+  }, [data, code, lang, contractPaid]);
   // title-only override değişiminde iframe kesin yenilensin
   const cvFrameKey = useMemo(
-    () => `${lang}|${data?.title || ''}|${JSON.stringify(overrides)}`,
-    [lang, data?.title, overrides],
+    () => `${lang}|${data?.title || ''}|${contractPaid ? 'open' : 'mask'}|${JSON.stringify(overrides)}`,
+    [lang, data?.title, overrides, contractPaid],
   );
   const photos = [data.photoClose, data.photoFull, data.photo].filter(Boolean);
   const slidePhoto = (dir) => {
@@ -252,6 +314,15 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
     try { await offerCandidate(c.user_id); notifyOffer(c.user_id, 'offer'); setSt({ ...(st || {}), status: 'offered' }); setMsg(t('agency_offer_sent') || 'Teklif gönderildi.'); }
     catch (e) { setMsg(e?.message || t('err_generic') || 'Hata'); } finally { setBusy(false); }
   };
+  useEffect(() => {
+    if (!quickOfferRef.current || !st?.status || busy) return;
+    if (categoryOf(st) !== 'pool') {
+      quickOfferRef.current = false;
+      return;
+    }
+    quickOfferRef.current = false;
+    doOffer();
+  }, [st?.status, busy, c.user_id]);
   const doWithdraw = async () => {
     const inProcess = cat === 'process' || st?.status === 'accepted';
     if (!confirm(inProcess
@@ -266,7 +337,7 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
       setMsg(episode.outcome === 'disputed'
         ? (t('emp_disputed') || '')
         : episode.outcome === 'completion_pending'
-          ? (t('emp_term_body') || '')
+          ? (t('emp_term_body_ag') || '')
           : (t('emp_pending_agency') || ''));
       return;
     }
@@ -384,15 +455,19 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
     missed: t('boarding_short_missed'),
     no_response: t('boarding_short_no_response'),
   };
+  const showContractSignal = contractPayStatus != null && !contractSigned;
+  const boardingNeedsAction = st?.boarding_status && ['pending', 'no_response', 'missed'].includes(st.boarding_status);
 
   return (
     <div className="detail">
-      <button className="crumb" onClick={onBack}><Icon name="back" size={16} /> {t('web_back_candidates') || 'Adaylara dön'}</button>
+      <button className="crumb" onClick={handleDetailBack} type="button">
+        <Icon name="back" size={16} /> {tab !== 'cv' ? (t('agency_tab_cv') || 'Profil') : (t('web_back_candidates') || 'Adaylara dön')}
+      </button>
 
       <div className="detailGrid">
         <aside className="detailSide">
           <div className="detailHead">
-            <div className="detailCode">{code}</div>
+            <div className="detailCode">{contractPaid && displayName ? `${displayName} · ${code}` : code}</div>
             {cat !== 'pool' ? (
               <span className={`badge ${BADGE[cat]}`}>{badgeTxt(cat)}</span>
             ) : null}
@@ -414,15 +489,15 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
                   ) : null}
                 </div>
               ) : null}
-              {contractPayStatus != null ? (
+              {showContractSignal ? (
                 <div className={`detailSignal ${contractPaid ? 'ok' : 'warn'}`}>
                   {contractPaid
                     ? (t('web_contract_open_chat') || '')
                     : (t('web_contract_pay_wait') || '')}
                 </div>
               ) : null}
-              {st?.boarding_status ? (
-                <div className={`detailSignal ${st.boarding_status === 'confirmed' ? 'ok' : st.boarding_status === 'missed' ? 'hot' : 'warn'}`}>
+              {boardingNeedsAction ? (
+                <div className={`detailSignal ${st.boarding_status === 'missed' ? 'hot' : 'warn'}`}>
                   {t('boarding_flight_prefix') || 'Uçuş'}: {
                     boardingShort[st.boarding_status] || st.boarding_status
                   }
@@ -435,6 +510,7 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
                 const when = end.toLocaleString(lang === 'tr' ? 'tr-TR' : 'en-GB', {
                   day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
                 });
+                const agencyExtra = !!st.docs_agency_extra_at;
                 return (
                   <div className={`detailSignal ${left < 0 ? 'hot' : 'muted'} detailSignalStack`}>
                     <strong>{t('docs_deadline_signal') || 'İlk belge paketi süresi'}</strong>
@@ -444,6 +520,107 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
                         : formatDeadlineRemain(left, t)}
                     </span>
                     <small>{t('docs_deadline_until', { when }) || `Son tarih: ${when}`}</small>
+                    {left < 0 ? (
+                      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                        {!agencyExtra ? (
+                          <button
+                            type="button"
+                            className="hireConfirmYes"
+                            disabled={busy}
+                            onClick={async () => {
+                              if (!confirm(t('docs_agency_extra_confirm', { n: '3' }) || '')) return;
+                              setBusy(true);
+                              try {
+                                await agencyGrantDeadlineExtra(c.user_id, 'docs');
+                                const fresh = await getCandidateStatus(c.user_id);
+                                if (fresh) setSt((prev) => ({ ...(prev || {}), ...fresh }));
+                              } catch (e) {
+                                window.alert(e?.message || t('docs_extra_fail') || '');
+                              } finally { setBusy(false); }
+                            }}
+                          >
+                            {t('docs_agency_extra_btn') || '+3 gün'}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="hireConfirmNo"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!confirm(t('docs_deadline_end_confirm') || '')) return;
+                            setBusy(true);
+                            try {
+                              await withdrawCandidate(c.user_id, 'docs_deadline');
+                              onBack?.();
+                            } catch (e) {
+                              window.alert(e?.message || '');
+                            } finally { setBusy(false); }
+                          }}
+                        >
+                          {t('process_end') || 'Süreci sonlandır'}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })() : null}
+              {st?.consulate_deadline_at && cat === 'process' ? (() => {
+                const end = new Date(st.consulate_deadline_at);
+                const left = end.getTime() - nowTick;
+                const when = end.toLocaleString(lang === 'tr' ? 'tr-TR' : 'en-GB', {
+                  day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+                });
+                const agencyExtra = !!st.consulate_agency_extra_at;
+                return (
+                  <div className={`detailSignal ${left < 0 ? 'hot' : 'muted'} detailSignalStack`}>
+                    <strong>{t('consulate_countdown_sub_ag') || 'Konsolosluk süresi'}</strong>
+                    <span className={`detailSignalClock ${left < 0 ? 'hot' : ''}`}>
+                      {left < 0
+                        ? (t('deadline_overdue_short') || 'Süre doldu')
+                        : formatDeadlineRemain(left, t)}
+                    </span>
+                    <small>{t('docs_deadline_until', { when }) || `Son tarih: ${when}`}</small>
+                    {left < 0 ? (
+                      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                        {!agencyExtra ? (
+                          <button
+                            type="button"
+                            className="hireConfirmYes"
+                            disabled={busy}
+                            onClick={async () => {
+                              if (!confirm(t('docs_agency_extra_confirm', { n: '3' }) || '')) return;
+                              setBusy(true);
+                              try {
+                                await agencyGrantDeadlineExtra(c.user_id, 'consulate');
+                                const fresh = await getCandidateStatus(c.user_id);
+                                if (fresh) setSt((prev) => ({ ...(prev || {}), ...fresh }));
+                              } catch (e) {
+                                window.alert(e?.message || t('docs_extra_fail') || '');
+                              } finally { setBusy(false); }
+                            }}
+                          >
+                            {t('docs_agency_extra_btn') || '+3 gün'}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="hireConfirmNo"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!confirm(t('consulate_deadline_end_confirm') || '')) return;
+                            setBusy(true);
+                            try {
+                              await withdrawCandidate(c.user_id, 'consulate_deadline');
+                              onBack?.();
+                            } catch (e) {
+                              window.alert(e?.message || '');
+                            } finally { setBusy(false); }
+                          }}
+                        >
+                          {t('process_end') || 'Süreci sonlandır'}
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })() : null}
@@ -470,7 +647,7 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
               <div className="hireConfirmTitle">{t('notif_boarding_missed')}</div>
               <p className="hireConfirmLead">{t('boarding_missed_next')}</p>
               <div className="hireConfirmActs">
-                <button type="button" className="hireConfirmYes" onClick={() => setTab('docs')}>{t('boarding_missed_dates_cta')}</button>
+                <button type="button" className="hireConfirmYes" onClick={() => pickTab('docs')}>{t('boarding_missed_dates_cta')}</button>
               </div>
             </div>
           ) : null}
@@ -568,7 +745,7 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
                   </div>
                 ) : episode?.outcome === 'completion_pending' ? (
                   <div className="buyNote">
-                    {t('emp_term_body')}
+                    {t('emp_term_body_ag')}
                     {episode.term_vote_agency === 'ok' ? (
                       <div style={{ marginTop: 8 }}>{t('emp_term_waiting')}</div>
                     ) : (
@@ -602,9 +779,9 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
         <section className="detailMain">
           <div className="detailTop">
             <div className="detailTabs">
-              <button className={`detailTab ${tab === 'cv' ? 'on' : ''}`} onClick={() => setTab('cv')}>{t('agency_tab_cv') || 'CV'}</button>
-              <button className={`detailTab ${tab === 'docs' ? 'on' : ''}`} onClick={() => setTab('docs')}>{t('agency_tab_docs') || ''}</button>
-              <button className={`detailTab ${tab === 'iv' ? 'on' : ''}`} onClick={() => setTab('iv')}>{t('agency_tab_iv') || ''}</button>
+              <button type="button" className={`detailTab ${tab === 'cv' ? 'on' : ''}`} onClick={() => pickTab('cv')}>{t('agency_tab_cv') || 'Profil'}</button>
+              <button type="button" className={`detailTab ${tab === 'docs' ? 'on' : ''}`} onClick={() => pickTab('docs')}>{t('agency_tab_docs') || ''}</button>
+              <button type="button" className={`detailTab ${tab === 'iv' ? 'on' : ''}`} onClick={() => pickTab('iv')}>{t('agency_tab_iv') || ''}</button>
             </div>
             <div className="detailActions">
               <button
@@ -672,7 +849,10 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
             )
             : tab === 'docs'
             ? <Documents candidate={c} agencyUserId={agencyUserId} />
-            : <InterviewPanel candidate={{ ...c, code }} agencyUserId={agencyUserId} />}
+            : <InterviewPanel
+              candidate={{ ...c, code, _employerId: sel?.st?._employerId }}
+              agencyUserId={agencyUserId}
+            />}
         </section>
       </div>
 
@@ -742,7 +922,7 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
       {chatOpen ? (
         <ProcessChat
           candidateId={c.user_id}
-          peerLabel={code}
+          peerLabel={[displayName, code].filter(Boolean).join(' · ') || code}
           onRead={onChatRead}
           onClose={() => {
             setChatOpen(false);
@@ -756,14 +936,14 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
         open={noticeOpen}
         onClose={() => setNoticeOpen(false)}
         userIds={[c.user_id]}
-        peerLabel={code}
+        peerLabel={[displayName, code].filter(Boolean).join(' · ') || code}
       />
 
       <RateCandidateModal
         open={rateOpen}
         agencyId={agencyUserId}
         candidateId={c.user_id}
-        peerLabel={code}
+        peerLabel={[displayName, code].filter(Boolean).join(' · ') || code}
         t={t}
         onClose={() => setRateOpen(false)}
         onSaved={async () => {
@@ -771,6 +951,15 @@ export default function Candidate({ sel, onBack, agencyUserId, onChatRead }) {
           const stats = await listRatingStats([c.user_id]);
           setRatingSummary(stats[c.user_id] || null);
         }}
+      />
+
+      <EmployerPickModal
+        open={favPickOpen}
+        agencyId={agencyUserId}
+        purpose="add"
+        markedSlots={favSlots}
+        onSelect={onFavPick}
+        onClose={() => setFavPickOpen(false)}
       />
     </div>
   );

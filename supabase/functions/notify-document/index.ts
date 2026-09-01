@@ -10,7 +10,7 @@ const CORS = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 
-const AGENCY_KINDS = ['contract_unsigned', 'flight_ticket', 'pickup', 'agency_doc_retracted', 'agency_doc_updated', 'flight_ticket_updated'];
+const AGENCY_KINDS = ['contract_unsigned', 'flight_ticket', 'pickup', 'agency_doc_retracted', 'agency_doc_updated', 'flight_ticket_updated', 'success_certificate'];
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
@@ -66,7 +66,7 @@ Deno.serve(async (req) => {
         sound: 'notify.wav',
         channelId: byAgency ? 'calls' : 'default',
         ...(byAgency ? { interruptionLevel: 'critical' } : {}),
-        data: { kind, candidateUserId, scrollToStep: kind === 'pickup' ? 6 : kind === 'flight_ticket' ? 5 : undefined },
+        data: { kind, candidateUserId, scrollToStep: kind === 'pickup' ? 6 : kind === 'flight_ticket' ? 5 : kind === 'success_certificate' ? 9 : undefined },
       };
     });
 

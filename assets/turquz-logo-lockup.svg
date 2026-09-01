@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 520" fill="none">
+  <defs>
+    <linearGradient id="teal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5FD4C8"/>
+      <stop offset="45%" stop-color="#2EC4B6"/>
+      <stop offset="100%" stop-color="#0F8A7D"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F0D78C"/>
+      <stop offset="40%" stop-color="#D4AF37"/>
+      <stop offset="100%" stop-color="#9A7B1F"/>
+    </linearGradient>
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="420" height="520" fill="#000000"/>
+
+  <g transform="translate(210 118)" filter="url(#softGlow)">
+    <!-- Sol chevron -->
+    <path
+      d="M-2 -52 L-58 0 L-2 52 L-18 52 L-66 -2 L-18 -52 Z"
+      fill="url(#teal)"
+    />
+    <!-- Sa chevron -->
+    <path
+      d="M2 -52 L58 0 L2 52 L18 52 L66 -2 L18 -52 Z"
+      fill="url(#gold)"
+    />
+  </g>
+
+  <g transform="translate(210 248)" font-family="Cinzel, Georgia, 'Times New Roman', serif" font-size="54" font-weight="700">
+    <text x="-72" y="0" text-anchor="end" fill="url(#teal)" letter-spacing="8">TU</text>
+    <g transform="translate(-36 10)">
+      <circle cx="0" cy="-10" r="26" fill="rgba(0,0,0,0.2)" stroke="url(#gold)" stroke-width="2"/>
+      <text x="0" y="2" text-anchor="middle" fill="url(#gold)" font-size="46" letter-spacing="0">R</text>
+    </g>
+    <text x="18" y="0" text-anchor="start" fill="url(#teal)" letter-spacing="8">QUZ</text>
+  </g>
+
+  <text
+    x="210" y="286"
+    text-anchor="middle"
+    fill="url(#gold)"
+    font-family="Inter, Helvetica, Arial, sans-serif"
+    font-size="13.5"
+    font-weight="600"
+    letter-spacing="5.5"
+  >INTERNATIONAL CONSULTING</text>
+
+  <text
+    x="210" y="330"
+    text-anchor="middle"
+    fill="#B8C0CC"
+    font-family="Inter, Helvetica, Arial, sans-serif"
+    font-size="11.5"
+    font-weight="400"
+    letter-spacing="3.2"
+  >0^ B0RL00 / G�� / STRATEJ0</text>
+</svg>

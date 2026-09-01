@@ -321,8 +321,8 @@ export async function loadAgencyOps(agencyId) {
         kind: 'transit',
         priority: 45,
         candidateId: tr.user_id,
-        label: 'Yolda / başlangıç bekliyor',
-        detail: tr.work_start_at ? `Başlangıç ${tr.work_start_at}` : '',
+        label: 'Yolda',
+        detail: tr.work_start_at ? `İşe başlama ${tr.work_start_at}` : '',
       });
     }
   });

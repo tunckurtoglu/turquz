@@ -10,7 +10,7 @@ const parents = {
   cv: join(root, '../cv'),
   lib: join(root, '../lib'),
 };
-const libFiles = ['candidateCode.js', 'translit.js', 'cvDates.js'];
+const libFiles = ['candidateCode.js', 'documentFileName.js', 'translit.js', 'cvDates.js'];
 
 const hasParent = existsSync(parents.i18n) && existsSync(parents.cv) && existsSync(parents.lib);
 const hasCache = existsSync(join(dest, 'i18n')) && existsSync(join(dest, 'cv')) && existsSync(join(dest, 'lib'));

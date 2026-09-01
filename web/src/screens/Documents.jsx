@@ -4,10 +4,12 @@ import {
   removeDocument, notifyDocument, setWorkStartAt, getCandidateStatus, getCandidate, getContract,
   retractAgencyDoc, replaceSubmittedDocument,
 } from '../lib/api';
-import { formatArriveAt, getFlight, parseArriveAt, saveArrival, msUntilArrival } from '../../../lib/flights';
+import { formatArriveAt, getFlight, parseArriveAt, saveArrival, msUntilArrival, isYmdDue, msUntilYmdGate, msUntilSeasonEnd } from '../../../lib/flights';
 import { formatCountdown } from '../lib/interviews';
 import { useLang } from '../i18n.jsx';
 import { PIPELINE, kindState, activeStep, stepDefForKind, stepActor } from '../../../lib/pipeline';
+import { agencyDisplayName, candidateCode } from '../../../lib/candidateCode';
+import { documentDownloadName } from '../../../lib/documentFileName';
 import { Icon } from '../components/Icon.jsx';
 import ContractModal from './ContractModal.jsx';
 import PickupCard from './PickupCard.jsx';
@@ -21,6 +23,9 @@ const BOARDING_KEYS = {
 export default function Documents({ candidate, agencyUserId }) {
   const { t } = useLang();
   const docLabel = (k) => t(`doc_${k}`) || k;
+  const candidateData = candidate?.data || {};
+  const candidateNo = candidateCode(candidateData.nationality || candidate?.nationality, candidate?.reg_no);
+  const candidateName = agencyDisplayName(candidateData, false);
   const statusInfo = (st) => {
     if (!st || !STATUS_KEYS[st]) return null;
     const colors = { valid: 'green', review: 'gold', invalid: 'red', unreadable: 'red' };
@@ -115,15 +120,22 @@ export default function Documents({ candidate, agencyUserId }) {
 
   useEffect(() => {
     const arriveStr = arriveYmd ? formatArriveAt(arriveYmd, arriveTime) : '';
-    if (!arriveStr || !docs?.flight_ticket?.submitted_at) return undefined;
-    if (msUntilArrival(arriveStr) <= 0) return undefined;
+    const needArrive = !!(arriveStr && docs?.flight_ticket?.submitted_at && msUntilArrival(arriveStr) > 0);
+    const isHired = candidate?.status === 'hired' || boardingStatus === 'hired';
+    const startReached = !workStart || isYmdDue(workStart);
+    const certDone = !!docs?.success_certificate?.submitted_at;
+    const needSeason = !!(isHired && startReached && workEnd && !certDone && msUntilSeasonEnd(workEnd) > 0);
+    const needStartWait = !!(isHired && workStart && !startReached);
+    if (!needArrive && !needSeason && !needStartWait) return undefined;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [arriveYmd, arriveTime, docs?.flight_ticket?.submitted_at]);
+  }, [arriveYmd, arriveTime, docs?.flight_ticket?.submitted_at, docs?.success_certificate?.submitted_at, candidate?.status, boardingStatus, workStart, workEnd]);
 
   const isSubmitted = (k) => !!docs?.[k]?.submitted_at;
   const isUploaded = (k) => !!docs?.[k];
   const has = (k) => { const def = stepDefForKind(k); return def?.owner === 'agency' ? isSubmitted(k) : isSubmitted(k); };
+  const showContractSignal = (payStatus != null || payOk) && !isSubmitted('contract_signed');
+  const boardingNeedsAction = boardingStatus && ['pending', 'no_response', 'missed'].includes(boardingStatus);
 
   const view = async (k) => {
     const r = docs?.[k]; if (!r?.storage_path) return;
@@ -147,7 +159,12 @@ export default function Documents({ candidate, agencyUserId }) {
       const path = r?.storage_path || viewer?.path || '';
       const isPdf = mime.includes('pdf') || path.toLowerCase().endsWith('.pdf');
       const ext = isPdf ? 'pdf' : (mime.includes('png') ? 'png' : 'jpg');
-      const name = `${(docLabel(k) || k || 'belge').replace(/[^\w\-çğıöşüÇĞİÖŞÜ ]+/gi, '')}.${ext}`;
+      const name = documentDownloadName({
+        code: candidateNo,
+        name: candidateName,
+        label: docLabel(k) || k || 'belge',
+        extension: ext,
+      });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = name;
@@ -309,29 +326,33 @@ export default function Documents({ candidate, agencyUserId }) {
 
   return (
     <div className="docs">
-      <div className="docsOpsBar">
-        {payStatus != null || payOk ? (
-          <div className={`docsOpsChip ${payOk ? 'ok' : 'warn'}`}>
-            {payOk ? t('web_contract_open_chat') : (t('web_contract_pay_wait') || payStatus)}
-          </div>
-        ) : null}
-        {docsDeadlineAt ? (
-          <div className={`docsOpsChip ${new Date(docsDeadlineAt).getTime() < Date.now() ? 'hot' : ''}`}>
-            SLA: {new Date(docsDeadlineAt).toLocaleDateString('tr-TR')}
-          </div>
-        ) : null}
-        {boardingStatus ? (
-          <div className={`docsOpsChip ${boardingStatus === 'confirmed' ? 'ok' : boardingStatus === 'missed' ? 'hot' : 'warn'}`}>
-            {boardingLbl(boardingStatus)}
-            {flightDepartOn ? ` · ${flightDepartOn}` : ''}
-          </div>
-        ) : null}
-      </div>
+      {(showContractSignal || docsDeadlineAt || boardingNeedsAction) ? (
+        <div className="docsOpsBar">
+          {showContractSignal ? (
+            <div className={`docsOpsChip ${payOk ? 'ok' : 'warn'}`}>
+              {payOk ? t('web_contract_open_chat') : (t('web_contract_pay_wait') || payStatus)}
+            </div>
+          ) : null}
+          {docsDeadlineAt ? (
+            <div className={`docsOpsChip ${new Date(docsDeadlineAt).getTime() < Date.now() ? 'hot' : ''}`}>
+              SLA: {new Date(docsDeadlineAt).toLocaleDateString('tr-TR')}
+            </div>
+          ) : null}
+          {boardingNeedsAction ? (
+            <div className={`docsOpsChip ${boardingStatus === 'missed' ? 'hot' : 'warn'}`}>
+              {boardingLbl(boardingStatus)}
+              {flightDepartOn ? ` · ${flightDepartOn}` : ''}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {PIPELINE.map((s) => {
         const actor = stepActor(s, has);
         const mine = actor === 'agency';
         const act = activeStep(has);
         const mode = s.kinds.every(has) ? 'done' : s.step === act ? 'active' : 'locked';
+        const visibleKinds = s.kinds.filter((k) => k !== 'contract_signed');
+        const showDocLabel = visibleKinds.length > 1;
         return (
           <div key={s.step} className={`docStep ${mode}`}>
             <div className="docStepHead">
@@ -353,7 +374,7 @@ export default function Documents({ candidate, agencyUserId }) {
                   return (
                     <div key={k} className="docRow">
                       <span className={`docBullet ${isSubmitted(k) ? 'on' : ''}`}>{isSubmitted(k) ? '✓' : '•'}</span>
-                      <span className="docName">{docLabel(k)}</span>
+                      {showDocLabel ? <span className="docName">{docLabel(k)}</span> : null}
                       {draft ? <span className="badge gold">{t('doc_draft')}</span> : null}
                       <span className="docSpacer" />
                       {locked ? <span className="docWait">{t('web_docs_wait_pkg')}</span> : isSubmitted(k) ? (
@@ -389,7 +410,7 @@ export default function Documents({ candidate, agencyUserId }) {
                   return (
                     <div key={k} className="docRow" style={{ flexWrap: 'wrap' }}>
                       <span className={`docBullet ${kst === 'done' ? 'on' : ''}`}>{kst === 'done' ? '✓' : '•'}</span>
-                      <span className="docName">{docLabel(k)}</span>
+                      {showDocLabel ? <span className="docName">{docLabel(k)}</span> : null}
                       <span className="badge teal">{t('start_date_agency') || 'En erken başlangıç'}: {preferredStart}</span>
                       <span className="docSpacer" />
                       {exists ? (
@@ -406,38 +427,76 @@ export default function Documents({ candidate, agencyUserId }) {
                 if (k === 'flight_ticket') {
                   const locked = kst === 'locked';
                   return (
-                    <div key={k} className="docRow" style={{ flexWrap: 'wrap' }}>
-                      <span className={`docBullet ${isSubmitted(k) ? 'on' : ''}`}>{isSubmitted(k) ? '✓' : '•'}</span>
-                      <span className="docName">{docLabel(k)}</span>
-                      {draft ? <span className="badge gold">{t('doc_draft')}</span> : null}
-                      {preferredStart ? <span className="badge gold">{t('start_date_agency') || 'Aday tercihi'}: {preferredStart}</span> : null}
-                      {workStart ? <span className="badge teal">{t('work_start_label')}: {workStart}</span> : null}
-                      {arriveYmd ? <span className="badge gold">{t('flight_arrive_label')}: {formatArriveAt(arriveYmd, arriveTime) || arriveYmd}</span> : null}
-                      {workEnd ? <span className="badge">{t('work_end_label')}: {workEnd}</span> : null}
-                      <span className="docSpacer" />
-                      {locked ? <span className="docWait">{t('web_docs_wait_turn')}</span> : isSubmitted(k) ? (
-                        <>
-                          <button className="docView" onClick={() => view(k)}><Icon name="search" size={14} /> {t('doc_view') || 'Görüntüle'}</button>
-                          <button className="docView" type="button" onClick={() => download(k)}>{t('doc_download') || 'İndir'}</button>
-                          <button className="docView" type="button" onClick={() => setFlightModal('edit')}>{t('web_docs_edit_dates')}</button>
-                          <button className="docView" type="button" onClick={replaceFlight}>{t('flight_change_ticket') || 'Bileti Değiştir'}</button>
-                          <button className="docView" type="button" style={{ color: '#a32d2d' }} onClick={() => retractAgency(k)}>
-                            {t('agency_retract_btn') || 'Geri al'}
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          {exists ? (
-                            <>
-                              <button className="docView" onClick={() => view(k)}><Icon name="search" size={14} /> {t('doc_view') || 'Görüntüle'}</button>
-                              <button className="docView" type="button" onClick={() => download(k)}>{t('doc_download') || 'İndir'}</button>
-                            </>
-                          ) : null}
-                          <button className="docView" type="button" onClick={openFlightUpload}>{exists ? t('flight_change_ticket') : t('doc_upload')}</button>
-                          {draft ? <button className="sendBtn" onClick={() => send(k)}>{t('docs_send')} →</button> : null}
-                        </>
-                      )}
-                      <input ref={flightInput} type="file" accept="application/pdf,.pdf" hidden onChange={onFlightFile} />
+                    <div key={k} className="docRowBlock">
+                      <div className="docRow">
+                        <span className={`docBullet ${isSubmitted(k) ? 'on' : ''}`}>{isSubmitted(k) ? '✓' : '•'}</span>
+                        {showDocLabel ? <span className="docName">{docLabel(k)}</span> : null}
+                        {draft ? <span className="badge gold">{t('doc_draft')}</span> : null}
+                        {preferredStart ? <span className="badge gold">{t('start_date_agency') || 'Aday tercihi'}: {preferredStart}</span> : null}
+                        <span className="docSpacer" />
+                        {locked ? <span className="docWait">{t('web_docs_wait_turn')}</span> : isSubmitted(k) ? (
+                          <>
+                            <button className="docView" onClick={() => view(k)}><Icon name="search" size={14} /> {t('doc_view') || 'Görüntüle'}</button>
+                            <button className="docView" type="button" onClick={() => download(k)}>{t('doc_download') || 'İndir'}</button>
+                            <button className="docView" type="button" onClick={replaceFlight}>{t('flight_change_ticket') || 'Bileti Değiştir'}</button>
+                            <button className="docView" type="button" style={{ color: '#a32d2d' }} onClick={() => retractAgency(k)}>
+                              {t('agency_retract_btn') || 'Geri al'}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            {exists ? (
+                              <>
+                                <button className="docView" onClick={() => view(k)}><Icon name="search" size={14} /> {t('doc_view') || 'Görüntüle'}</button>
+                                <button className="docView" type="button" onClick={() => download(k)}>{t('doc_download') || 'İndir'}</button>
+                              </>
+                            ) : null}
+                            <button className="docView" type="button" onClick={openFlightUpload}>{exists ? t('flight_change_ticket') : t('doc_upload')}</button>
+                            {draft ? <button className="sendBtn" onClick={() => send(k)}>{t('docs_send')} →</button> : null}
+                          </>
+                        )}
+                        <input ref={flightInput} type="file" accept="application/pdf,.pdf" hidden onChange={onFlightFile} />
+                      </div>
+                      {workStart ? (
+                        <button type="button" className="dateEditChip" onClick={() => setFlightModal('edit')}>
+                          <span className="dateEditChipLabel">{t('work_start_label')}</span>
+                          <span className="dateEditChipValue">
+                            {workStart}
+                            {workEnd ? ` → ${workEnd}` : ''}
+                            {arriveYmd ? ` · ${formatArriveAt(arriveYmd, arriveTime) || arriveYmd}` : ''}
+                          </span>
+                          <span className="dateEditChipAction">✎ {t('work_start_edit')}</span>
+                        </button>
+                      ) : mine && (draft || kst === 'active') && !locked ? (
+                        <button type="button" className="dateEditChip warn" onClick={openFlightUpload}>
+                          <span className="dateEditChipLabel">{t('work_start_label')}</span>
+                          <span className="dateEditChipWarn">⚠️ {t('work_start_required')}</span>
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                }
+
+                const docActions = exists ? (
+                  <>
+                    <button className="docView" onClick={() => view(k)} disabled={openId === k}><Icon name="search" size={14} /> {t('doc_view') || 'Görüntüle'}</button>
+                    <button className="docView" type="button" onClick={() => download(k)}>{t('doc_download') || 'İndir'}</button>
+                  </>
+                ) : kst === 'locked' ? <span className="docLock">🔒</span> : <span className="docWait">{t('web_docs_waiting')}</span>;
+                const docReuploadBtn = exists ? <button className="docReupload" onClick={() => reupload(k)} title={t('reupload_btn')}>↻</button> : null;
+
+                if (showDocLabel) {
+                  return (
+                    <div key={k} className="docRowStack">
+                      <div className="docRowTitle">
+                        <span className={`docBullet ${kst === 'done' ? 'on' : ''}`}>{kst === 'done' ? '✓' : '•'}</span>
+                        <span className="docName">{docLabel(k) || t(`doc_${k}`) || k}</span>
+                        {st ? <span className={`badge ${st.c}`}>{st.t}</span> : null}
+                      </div>
+                      <div className="docRowActions">
+                        {docActions}
+                        {docReuploadBtn}
+                      </div>
                     </div>
                   );
                 }
@@ -445,16 +504,10 @@ export default function Documents({ candidate, agencyUserId }) {
                 return (
                   <div key={k} className="docRow">
                     <span className={`docBullet ${kst === 'done' ? 'on' : ''}`}>{kst === 'done' ? '✓' : '•'}</span>
-                    <span className="docName">{docLabel(k) || t(`doc_${k}`) || k}</span>
                     {st ? <span className={`badge ${st.c}`}>{st.t}</span> : null}
                     <span className="docSpacer" />
-                    {exists ? (
-                      <>
-                        <button className="docView" onClick={() => view(k)} disabled={openId === k}><Icon name="search" size={14} /> {t('doc_view') || 'Görüntüle'}</button>
-                        <button className="docView" type="button" onClick={() => download(k)}>{t('doc_download') || 'İndir'}</button>
-                      </>
-                    ) : kst === 'locked' ? <span className="docLock">🔒</span> : <span className="docWait">{t('web_docs_waiting')}</span>}
-                    {exists ? <button className="docReupload" onClick={() => reupload(k)} title={t('reupload_btn')}>↻</button> : null}
+                    {docActions}
+                    {docReuploadBtn}
                   </div>
                 );
               })}
@@ -488,39 +541,84 @@ export default function Documents({ candidate, agencyUserId }) {
         )}
       </div>
 
-      <div className={`docStep ${isSubmitted('success_certificate') ? 'active' : 'locked'}`}>
-        <div className="docStepHead">
-          <span className={`stepNo ${isSubmitted('success_certificate') ? 'active' : ''}`}>7</span>
-          <span className={`docStepTitle ${isSubmitted('success_certificate') ? '' : 'locked'}`}>{t('pipe_step_7') || 'Başarı Sertifikası'}</span>
-          <span className="ownerChip agency">{t('doc_owner_turquz') || 'Turquz'}</span>
-        </div>
-        {isSubmitted('success_certificate') ? (
-          <>
-            <p className="certCongrats">🎉 {t('pipe_step_7_desc')}</p>
-            <div className="docRow">
-              <span className="docBullet on">✓</span>
-              <span className="docName">{t('doc_success_certificate') || docLabel('success_certificate')}</span>
-              <span className="docSpacer" />
-              <button className="docView" onClick={() => view('success_certificate')} disabled={openId === 'success_certificate'}>
-                <Icon name="search" size={14} /> {t('doc_view') || 'Görüntüle'}
-              </button>
-              <button className="docView" type="button" onClick={() => download('success_certificate')}>
-                {t('doc_download') || 'İndir'}
-              </button>
+      {(() => {
+        const isHired = candidate?.status === 'hired' || boardingStatus === 'hired';
+        const startReached = !workStart || isYmdDue(workStart, nowTick);
+        const step7Done = isSubmitted('success_certificate');
+        const step7Live = isHired && startReached && !step7Done;
+        const step7Wait = isHired && !startReached;
+        const startLeft = step7Wait ? msUntilYmdGate(workStart, nowTick) : 0;
+        const seasonLeft = step7Live ? msUntilSeasonEnd(workEnd, nowTick) : 0;
+        const cls = step7Done || step7Live ? 'active' : 'locked';
+        return (
+          <div className={`docStep ${cls}`}>
+            <div className="docStepHead">
+              <span className={`stepNo ${step7Done || step7Live ? 'active' : ''}`}>7</span>
+              <span className={`docStepTitle`}>{t('pipe_step_7') || 'Çalışma dönemi'}</span>
             </div>
-          </>
-        ) : (
-          <p className="pickupHint">🔒 {t('pipe_step_7_wait_agency')}</p>
-        )}
-      </div>
+            {(workStart || workEnd) && (step7Done || step7Live || step7Wait) ? (
+              <div className="pickupHint" style={{ marginBottom: 6 }}>
+                {workStart ? <div>{t('work_start_label')}: {String(workStart).slice(0, 10).split('-').reverse().join('.')}</div> : null}
+                {workEnd ? <div>{t('season_end_label')}: {String(workEnd).slice(0, 10).split('-').reverse().join('.')}</div> : null}
+              </div>
+            ) : null}
+            {step7Done ? (
+              <p className="pickupHint">{t('journey_hint_7_done')}</p>
+            ) : step7Wait ? (
+              <>
+                <p className="pickupHint">{t('journey_hint_7_wait')}</p>
+                {startLeft > 0 ? (
+                  <div className="transitCountdown">
+                    <strong>⏱ {t('work_start_countdown_title')}: {formatCountdown(startLeft)}</strong>
+                    <p>{t('work_start_countdown_sub_ag')}</p>
+                  </div>
+                ) : null}
+              </>
+            ) : step7Live ? (
+              seasonLeft > 0 ? (
+                <div className="transitCountdown">
+                  <strong>⏱ {t('season_countdown_title')}: {formatCountdown(seasonLeft)}</strong>
+                  <p>{t('season_countdown_sub')}</p>
+                </div>
+              ) : (
+                <p className="pickupHint">{t('season_countdown_sub')}</p>
+              )
+            ) : (
+              <p className="pickupHint">🔒 {t('journey_hint_7_wait')}</p>
+            )}
+          </div>
+        );
+      })()}
 
       {flightModal ? (
         <div className="docViewer" onClick={() => setFlightModal(null)}>
           <div className="docViewerCard" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420, padding: 20 }}>
             <h3 style={{ marginTop: 0 }}>{flightModal === 'edit' ? t('work_start_edit_title') : t('flight_ticket_sheet_title')}</h3>
-            <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.45 }}>
+            <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.45, marginBottom: 12 }}>
               {t('work_start_hint')}
             </p>
+            {preferredStart ? (
+              <div className="flightPrefBlock">
+                <span className="flightFieldLabel">{t('start_date_agency')}</span>
+                <strong className="flightPrefValue">{preferredStart}</strong>
+              </div>
+            ) : null}
+            <label className="flightFieldLabel">{t('work_start_label')} *</label>
+            <input
+              type="date"
+              className="input flightFieldInput"
+              value={workStart}
+              onChange={(e) => onWorkStartChange(e.target.value)}
+              required
+            />
+            <label className="flightFieldLabel">{t('flight_depart_label')} *</label>
+            <input
+              type="date"
+              className="input flightFieldInput"
+              value={flightDepart}
+              onChange={(e) => setFlightDepart(e.target.value)}
+              required
+            />
             <div className="flightArriveNote">
               <span className="flightArriveKicker">{t('flight_arrive_kicker')}</span>
               <strong>{t('flight_arrive_notice_title')}</strong>
@@ -529,7 +627,7 @@ export default function Documents({ candidate, agencyUserId }) {
             <label className="flightFieldLabel">{t('flight_arrive_label')} *</label>
             <input
               type="date"
-              className={`input ${arriveYmd ? '' : 'inputNeed'}`}
+              className={`input flightFieldInput ${arriveYmd ? '' : 'inputNeed'}`}
               value={arriveYmd}
               onChange={(e) => setArriveYmd(e.target.value)}
               required
@@ -537,33 +635,12 @@ export default function Documents({ candidate, agencyUserId }) {
             <label className="flightFieldLabel">{t('flight_arrive_time_label')} *</label>
             <input
               type="time"
-              className={`input ${arriveTime ? '' : 'inputNeed'}`}
+              className={`input flightFieldInput ${arriveTime ? '' : 'inputNeed'}`}
               value={arriveTime}
               onChange={(e) => setArriveTime((e.target.value || '').slice(0, 5))}
               required
             />
-            {preferredStart ? (
-              <p className="flightPrefHint">
-                {t('start_date_agency') || 'Adayın tercih ettiği en erken başlangıç'}: {preferredStart}
-              </p>
-            ) : null}
-            <label className="flightFieldLabel">{t('flight_depart_label')} *</label>
-            <input
-              type="date"
-              className="input"
-              value={flightDepart}
-              onChange={(e) => setFlightDepart(e.target.value)}
-              required
-            />
-            <label className="flightFieldLabel">{t('work_start_label')} *</label>
-            <input
-              type="date"
-              className="input"
-              value={workStart}
-              onChange={(e) => onWorkStartChange(e.target.value)}
-              required
-            />
-            <label className="flightFieldLabel">{t('work_term_label')} *</label>
+            <label className="flightFieldLabel flightFieldSection">{t('work_term_label')} *</label>
             <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
               {[
                 { id: '6m', label: t('web_term_6m') },

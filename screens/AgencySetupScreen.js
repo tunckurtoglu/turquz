@@ -3,13 +3,14 @@
 // Vergi levhası PDF + yetkili ad/soyad + yetkili telefon + temsilci telefon.
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet, Image,
+  View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   completeAgencySetup, getAgencyProfile, uploadAgencyTaxPlate,
 } from '../lib/agencyProfile';
+import TurquzLogo from '../components/TurquzLogo';
 
 const GOLD = '#c2a25a';
 const NAVY = '#1b2533';
@@ -76,6 +77,8 @@ export default function AgencySetupScreen({ user, onDone, onLogout }) {
     const l = last.trim();
     const p1 = phoneAuth.trim();
     const p2 = phoneRep.trim();
+    const c = company.trim();
+    if (!c) { setErr('Şirket / işletme adı zorunludur.'); return; }
     if (!f || !l) { setErr('Yetkili ad ve soyad zorunludur.'); return; }
     if (p1.replace(/\D/g, '').length < 10) { setErr('Geçerli bir yetkili telefon girin.'); return; }
     if (p2.replace(/\D/g, '').length < 10) { setErr('Geçerli bir temsilci telefon girin.'); return; }
@@ -85,7 +88,7 @@ export default function AgencySetupScreen({ user, onDone, onLogout }) {
     setBusy(true);
     try {
       await completeAgencySetup(uid, {
-        companyName: company,
+        companyName: c,
         contactFirstName: f,
         contactLastName: l,
         phoneAuthorized: p1,
@@ -105,14 +108,14 @@ export default function AgencySetupScreen({ user, onDone, onLogout }) {
     <View style={[styles.wrap, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16 }]}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          <Image source={require('../assets/turquz-logo.png')} style={styles.logo} resizeMode="contain" />
+          <TurquzLogo width={150} height={60} style={styles.logo} wordmarkSize={11} fontFamily="Cinzel_600SemiBold" fontsReady />
           <Text style={styles.kicker}>ACENTE KAYIT</Text>
           <Text style={styles.title}>Kurulumu tamamlayın</Text>
           <Text style={styles.note}>
             CV havuzuna erişmek için vergi levhanızı (PDF) yükleyin; yetkili bilgilerinizi ve iki iletişim telefonunu girin.
           </Text>
 
-          <Text style={styles.lbl}>Şirket / işletme adı (isteğe bağlı)</Text>
+          <Text style={styles.lbl}>Şirket / işletme adı *</Text>
           <TextInput style={styles.input} value={company} onChangeText={setCompany} placeholder="Örn. ABC Turizm Ltd." placeholderTextColor="#9aa1ac" />
 
           <Text style={styles.sec}>Yetkili kişi</Text>

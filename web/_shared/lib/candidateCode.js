@@ -46,6 +46,17 @@ export function maskedName(data) {
   return [first, li].filter(Boolean).join(' ');
 }
 
+/** Sözleşme ödemesi sonrası: tam Latin ad + soyad. */
+export function fullName(data) {
+  const d = data || {};
+  return [latinFirst(d).trim(), latinLast(d).trim()].filter(Boolean).join(' ');
+}
+
+/** Ödeme öncesi maskeli; ödeme sonrası açık isim. */
+export function agencyDisplayName(data, revealed = false) {
+  return revealed ? fullName(data) : maskedName(data);
+}
+
 // Acenteye gösterilecek maskelenmiş kopya: iletişim + aile her zaman gizli.
 // candidateNo: önceden hesaplanmış aday no.
 // revealName=false (ekran): soyad -> baş harf + ".".  revealName=true (otele PDF): gerçek isim.

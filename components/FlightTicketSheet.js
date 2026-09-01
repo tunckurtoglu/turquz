@@ -206,6 +206,23 @@ export default function FlightTicketSheet({
               {mode === 'edit' ? t('work_start_edit_title') : t('flight_ticket_sheet_title')}
             </Text>
 
+            {preferredStartDate ? (
+              <View style={styles.prefBox}>
+                <Text style={styles.prefLabel}>{t('start_date_agency')}</Text>
+                <Text style={styles.prefDate}>{preferredStartDate}</Text>
+              </View>
+            ) : null}
+
+            <Text style={styles.label}>{t('work_start_label')} *</Text>
+            <TouchableOpacity style={styles.dateBtn} onPress={() => openPicker('start')} activeOpacity={0.85}>
+              <Text style={styles.dateBtnText}>{fmtTr(start) || t('work_start_pick')}</Text>
+            </TouchableOpacity>
+
+            <Text style={styles.label}>{t('flight_depart_label')} *</Text>
+            <TouchableOpacity style={styles.dateBtn} onPress={() => openPicker('flight')} activeOpacity={0.85}>
+              <Text style={styles.dateBtnText}>{fmtTr(flight) || t('work_start_pick')}</Text>
+            </TouchableOpacity>
+
             <View style={styles.notice}>
               <Text style={styles.noticeKicker}>{t('flight_arrive_kicker')}</Text>
               <Text style={styles.noticeTitle}>{t('flight_arrive_notice_title')}</Text>
@@ -234,25 +251,7 @@ export default function FlightTicketSheet({
               </Text>
             </TouchableOpacity>
 
-            {preferredStartDate ? (
-              <View style={styles.prefBox}>
-                <Text style={styles.prefText}>
-                  {t('start_date_agency')}: <Text style={styles.prefDate}>{preferredStartDate}</Text>
-                </Text>
-              </View>
-            ) : null}
-
-            <Text style={styles.label}>{t('flight_depart_label')} *</Text>
-            <TouchableOpacity style={styles.dateBtn} onPress={() => openPicker('flight')} activeOpacity={0.85}>
-              <Text style={styles.dateBtnText}>{fmtTr(flight) || t('work_start_pick')}</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.label}>{t('work_start_label')} *</Text>
-            <TouchableOpacity style={styles.dateBtn} onPress={() => openPicker('start')} activeOpacity={0.85}>
-              <Text style={styles.dateBtnText}>{fmtTr(start) || t('work_start_pick')}</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.label}>{t('work_term_label')} *</Text>
+            <Text style={[styles.label, styles.sectionGap]}>{t('work_term_label')} *</Text>
             <View style={styles.segRow}>
               {[
                 { id: '6m', label: t('work_term_6m') },
@@ -342,9 +341,10 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: GOLD,
     borderRadius: 6,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginTop: 4,
+    marginBottom: 10,
   },
   noticeKicker: {
     fontSize: 10,
@@ -358,14 +358,15 @@ const styles = StyleSheet.create({
   noticeBody: { fontSize: 13, lineHeight: 18, color: '#5b6575' },
   prefBox: {
     backgroundColor: '#f4f6f8', borderRadius: 10,
-    paddingVertical: 11, paddingHorizontal: 13, marginBottom: 14, marginTop: 6,
+    paddingVertical: 10, paddingHorizontal: 13, marginBottom: 10,
   },
-  prefText: { fontSize: 13, color: '#2a5560', fontWeight: '600' },
-  prefDate: { fontWeight: '900', color: INK },
-  label: { fontSize: 12, fontWeight: '700', color: '#6b7280', marginBottom: 6, letterSpacing: 0.3, marginTop: 4 },
+  prefLabel: { fontSize: 12, color: '#6b7280', fontWeight: '700', marginBottom: 4 },
+  prefDate: { fontSize: 16, fontWeight: '900', color: INK },
+  label: { fontSize: 12, fontWeight: '700', color: '#6b7280', marginBottom: 4, letterSpacing: 0.3, marginTop: 2 },
+  sectionGap: { marginTop: 12 },
   dateBtn: {
-    borderWidth: 1.5, borderColor: '#e2e6ec', borderRadius: 12, paddingVertical: 14, paddingHorizontal: 14,
-    backgroundColor: '#f7f8fa', marginBottom: 8,
+    borderWidth: 1.5, borderColor: '#e2e6ec', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14,
+    backgroundColor: '#f7f8fa', marginBottom: 6,
   },
   dateBtnNeed: { borderColor: GOLD, backgroundColor: '#fbf7ee' },
   dateBtnNeedText: { color: '#8a7340', fontWeight: '700' },

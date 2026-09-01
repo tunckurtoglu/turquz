@@ -6,7 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Platform, Image,
+  ActivityIndicator, Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,7 +18,9 @@ import { getRole } from '../lib/roles';
 import { registerAsAgency, registerAsCandidate } from '../lib/agencyProfile';
 import { GoogleIcon, AppleIcon } from '../components/BrandIcons';
 import { openPrivacy } from '../lib/config';
+import { saveConsent } from '../lib/consent';
 import { clearRememberedLogin, loadRememberedLogin, saveRememberedLogin } from '../lib/rememberLogin';
+import TurquzLogo from '../components/TurquzLogo';
 
 const GOLD = '#c2a25a';
 const GOLD_D = '#9a7b1f';
@@ -29,12 +31,17 @@ const LINE = '#dfe3e8';
 
 const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || '').trim());
 
-function PrivacyNote({ prefixKey, t, rtl }) {
+function ConsentCheck({ checked, onToggle, label, requiredLabel }) {
   return (
-    <Text style={[styles.privacyNote, rtl && styles.privacyNoteRtl]}>
-      {t(prefixKey)}{' '}
-      <Text style={styles.privacyLink} onPress={openPrivacy}>{t('privacy_link')} ↗</Text>
-    </Text>
+    <TouchableOpacity style={styles.consentRow} onPress={onToggle} activeOpacity={0.7} accessibilityRole="checkbox" accessibilityState={{ checked }}>
+      <View style={[styles.checkbox, checked && styles.checkboxOn]}>
+        {checked ? <Text style={styles.checkboxMark}>✓</Text> : null}
+      </View>
+      <Text style={styles.consentLbl}>
+        {label}
+        <Text style={styles.consentReq}>  {requiredLabel}</Text>
+      </Text>
+    </TouchableOpacity>
   );
 }
 
@@ -52,7 +59,7 @@ function Field({ label, ta, ...inputProps }) {
 }
 
 export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fontsReady }) {
-  const { t, dir } = useLanguage();
+  const { t, dir, lang } = useLanguage();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState('signin');     // 'signin' | 'signup'
   const [email, setEmail] = useState('');
@@ -63,7 +70,11 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   const [showReset, setShowReset] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
+  const [consentGeneral, setConsentGeneral] = useState(false);
+  const [consentCross, setConsentCross] = useState(false);
   const agencyMode = portal === 'agency';
+  const candidateSignup = !agencyMode && mode === 'signup';
+  const signupConsentOk = consentGeneral && consentCross;
 
   useEffect(() => {
     let live = true;
@@ -99,6 +110,10 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
       console.warn('register_as_agency:', code);
     }
     const role = await getRole(session.user.id);
+    if (role == null) {
+      setMsg({ type: 'err', text: t('role_verify_failed') });
+      return false;
+    }
     if (role !== 'agency' && role !== 'admin') {
       await signOut();
       setMsg({ type: 'err', text: t('auth_err_not_agency') });
@@ -108,7 +123,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
     return true;
   };
 
-  const finishCandidateSession = async (session) => {
+  const finishCandidateSession = async (session, { persistConsent = false } = {}) => {
     try {
       await registerAsCandidate();
     } catch (e) {
@@ -121,6 +136,10 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
       console.warn('register_as_candidate:', code);
     }
     const role = await getRole(session.user.id);
+    if (role == null) {
+      setMsg({ type: 'err', text: t('role_verify_failed') });
+      return false;
+    }
     const ok = role === 'admin'
       || (portal === 'hotel' && (role === 'hotel' || role === 'agency'))
       || (portal === 'candidate' && role === 'candidate');
@@ -128,6 +147,18 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
       await signOut();
       setMsg({ type: 'err', text: t('auth_err_not_candidate') });
       return false;
+    }
+    if (persistConsent && consentGeneral && consentCross) {
+      try {
+        await saveConsent(session.user.id, {
+          general: true,
+          crossBorder: true,
+          sensitive: false,
+          locale: lang,
+        });
+      } catch (e) {
+        console.warn('signup consent:', e?.message);
+      }
     }
     onAuthed?.(session);
     return true;
@@ -139,6 +170,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
     if (!isEmail(email)) return setMsg({ type: 'err', text: t('auth_err_email') });
     if (pass.length < 6) return setMsg({ type: 'err', text: t('auth_err_pass_short') });
     if (mode === 'signup' && pass !== pass2) return setMsg({ type: 'err', text: t('auth_err_pass_match') });
+    if (candidateSignup && !signupConsentOk) return setMsg({ type: 'err', text: t('consent_must') });
 
     setBusy(true);
     try {
@@ -149,7 +181,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
         if (error) { setMsg({ type: 'err', text: error.message }); return; }
         if (data?.session) {
           if (agencyMode) await finishAgencySession(data.session);
-          else await finishCandidateSession(data.session);
+          else await finishCandidateSession(data.session, { persistConsent: true });
           return;
         }
         setMsg({ type: 'ok', text: t('auth_check_email') });
@@ -245,7 +277,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
           </TouchableOpacity>
         ) : <View style={{ height: 8 }} />}
 
-        <Image source={require('../assets/turquz-logo.png')} style={styles.logo} resizeMode="contain" />
+        <TurquzLogo width={148} height={124} style={styles.logo} fontFamily="Cinzel_600SemiBold" fontsReady={fontsReady} />
 
         <View style={styles.card}>
           <Text style={styles.kicker}>{agencyMode ? t('auth_panel_kicker') : t('portal_candidate')}</Text>
@@ -257,14 +289,14 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
           <View style={styles.tabs}>
             <TouchableOpacity
               style={[styles.tab, mode === 'signin' && styles.tabActive]}
-              onPress={() => { setMode('signin'); clearMsg(); }}
+              onPress={() => { setMode('signin'); clearMsg(); setConsentGeneral(false); setConsentCross(false); }}
               activeOpacity={0.85}
             >
               <Text style={[styles.tabText, mode === 'signin' && styles.tabTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('auth_tab_signin')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.tab, mode === 'signup' && styles.tabActive]}
-              onPress={() => { setMode('signup'); clearMsg(); }}
+              onPress={() => { setMode('signup'); clearMsg(); setConsentGeneral(false); setConsentCross(false); }}
               activeOpacity={0.85}
             >
               <Text style={[styles.tabText, mode === 'signup' && styles.tabTextActive]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{t('auth_tab_signup')}</Text>
@@ -334,11 +366,36 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
             </View>
           ) : null}
 
+          {candidateSignup ? (
+            <View style={styles.consentBlock}>
+              <TouchableOpacity onPress={openPrivacy} activeOpacity={0.7}>
+                <Text style={styles.privacyLink}>{t('consent_read')}</Text>
+              </TouchableOpacity>
+              <ConsentCheck
+                checked={consentGeneral}
+                onToggle={() => { setConsentGeneral((v) => !v); clearMsg(); }}
+                label={t('consent_general')}
+                requiredLabel={t('consent_required')}
+              />
+              <ConsentCheck
+                checked={consentCross}
+                onToggle={() => { setConsentCross((v) => !v); clearMsg(); }}
+                label={t('consent_crossborder')}
+                requiredLabel={t('consent_required')}
+              />
+            </View>
+          ) : null}
+
           {msg ? (
             <Text style={[msg.type === 'err' ? styles.warn : styles.ok, ta, { marginTop: 10 }]}>{msg.text}</Text>
           ) : null}
 
-          <TouchableOpacity style={[styles.cta, busy && styles.ctaDisabled]} onPress={submit} disabled={busy} activeOpacity={0.9}>
+          <TouchableOpacity
+            style={[styles.cta, (busy || (candidateSignup && !signupConsentOk)) && styles.ctaDisabled]}
+            onPress={submit}
+            disabled={busy}
+            activeOpacity={0.9}
+          >
             {busy ? (
               <ActivityIndicator color="#fff" />
             ) : (
@@ -347,10 +404,6 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
               </Text>
             )}
           </TouchableOpacity>
-
-          {mode === 'signup' ? (
-            <PrivacyNote prefixKey="auth_privacy_signup_before" t={t} rtl={rtl} />
-          ) : null}
 
           <View style={styles.divider}>
             <View style={styles.line} />
@@ -382,7 +435,12 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
               </View>
             </TouchableOpacity>
           ) : null}
-          <PrivacyNote prefixKey="auth_privacy_oauth_before" t={t} rtl={rtl} />
+          {!agencyMode ? (
+            <Text style={[styles.privacyNote, rtl && styles.privacyNoteRtl]}>
+              {t('auth_privacy_oauth_hint')}{' '}
+              <Text style={styles.privacyLink} onPress={openPrivacy}>{t('privacy_link')}</Text>
+            </Text>
+          ) : null}
         </View>
 
         <Text style={styles.trust}>{t('auth_trust')}</Text>
@@ -494,7 +552,11 @@ const styles = StyleSheet.create({
 
   privacyNote: { color: MUTED, fontSize: 12, textAlign: 'center', marginTop: 14, lineHeight: 17, paddingHorizontal: 2 },
   privacyNoteRtl: { writingDirection: 'rtl' },
-  privacyLink: { color: GOLD_D, fontWeight: '700' },
+  privacyLink: { color: GOLD_D, fontWeight: '700', marginBottom: 8 },
+  consentBlock: { marginTop: 14, gap: 2 },
+  consentRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 8 },
+  consentLbl: { flex: 1, color: '#3d4654', fontSize: 12.5, fontWeight: '600', lineHeight: 17 },
+  consentReq: { color: '#a32d2d', fontWeight: '700', fontSize: 11 },
 
   divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 16 },
   line: { flex: 1, height: 1, backgroundColor: LINE },

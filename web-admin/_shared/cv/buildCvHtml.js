@@ -102,7 +102,7 @@ export function buildCvHtml(data = {}, lang = 'tr', { withLogo = true, masked = 
   const fam = d.family || { mother: {}, father: {} };
   const photoTag = d.photo
     ? `<img class="photo" src="${esc(d.photo)}" alt="${esc(d.firstName)} ${esc(d.lastName)}">`
-    : `<div class="photo" style="background:#2c3a4e;"></div>`;
+    : `<div class="photo" style="background:#e6dfd3;"></div>`;
 
   // --- Tanıtım fotoğrafları (boydan / yakın) -> ayrı 2. sayfa. İkisi de boşsa sayfa eklenmez. ---
   // 2. sayfa: yakın çekim + boydan (vesikalık burada YOK; o 1. sayfada). Alt alta, büyük.
@@ -146,22 +146,22 @@ export function buildCvHtml(data = {}, lang = 'tr', { withLogo = true, masked = 
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@300;400;500;600;700;800&family=Barlow+Semi+Condensed:wght@600;700;800&display=swap" rel="stylesheet">
 <style>
   :root{
-    --sidebar:#1b2533;
-    --sidebar-2:#202b3b;
-    --main:#ffffff;
+    --sidebar:#f5f1e8;
+    --sidebar-2:#fbf9f4;
+    --main:#fffdf9;
     --ink:#1b2533;
-    --muted:#737373;
-    --muted-2:#9aa1ac;
-    --accent:#c2a25a;
-    --bar-track:#b6b6b6;
-    --line:#d6d6d6;
+    --muted:#5c6570;
+    --muted-2:#8a929c;
+    --accent:#a27d32;
+    --bar-track:#d8d2c7;
+    --line:#e6dfd3;
   }
   *{margin:0;padding:0;box-sizing:border-box;}
   html,body{background:#ffffff;font-family:'Barlow',sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
   .page{
     width:900px;min-height:1273px;margin:0px auto;background:var(--main);
     display:grid;grid-template-columns:248px 1fr;
-    box-shadow:0 18px 50px rgba(0,0,0,.35);overflow:hidden;
+    box-shadow:0 10px 28px rgba(27,37,51,.12);overflow:hidden;
   }
   /* Grid/flex çocuklarının içeriğe göre genişlemesini engelle (taşma koruması) */
   .page > *, .topbar > *, .tl-item > *{min-width:0;}
@@ -173,16 +173,16 @@ export function buildCvHtml(data = {}, lang = 'tr', { withLogo = true, masked = 
   }
 
   /* ---------- SIDEBAR ---------- */
-  .side{background:var(--sidebar);color:#fff;padding:26px 20px 40px;}
+  .side{background:var(--sidebar);color:var(--ink);padding:26px 20px 40px;border-right:1px solid var(--line);}
   .photo-wrap{display:flex;justify-content:center;margin-bottom:30px;}
   .photo{
     width:100%;aspect-ratio:1/1;border-radius:6px;object-fit:cover;
-    border:4px solid #2c3a4e;box-shadow:0 6px 18px rgba(0,0,0,.4);
+    border:4px solid var(--accent);box-shadow:0 6px 18px rgba(27,37,51,.12);
   }
   .side h2, .side .side-sub{
     font-family:'Barlow Semi Condensed',sans-serif;font-weight:700;
     letter-spacing:1.2px;text-transform:uppercase;font-size:17px;
-    text-align:center;color:#f3f3f3;white-space:nowrap;
+    text-align:center;color:var(--ink);white-space:nowrap;
   }
   .side h2{margin-bottom:20px;}
   .side .side-sub{margin-top:40px;margin-bottom:14px;}
@@ -191,13 +191,13 @@ export function buildCvHtml(data = {}, lang = 'tr', { withLogo = true, masked = 
     color:var(--accent);font-size:15px;width:18px;text-align:center;
     flex:0 0 18px;margin-top:2px;
   }
-  .info-item .label{font-weight:700;font-size:14px;letter-spacing:.4px;color:#fff;line-height:1.25;}
-  .info-item .value{font-weight:300;font-size:13.5px;color:#aeb6c2;line-height:1.3;margin-top:1px;}
+  .info-item .label{font-weight:700;font-size:14px;letter-spacing:.4px;color:var(--ink);line-height:1.25;}
+  .info-item .value{font-weight:300;font-size:13.5px;color:var(--muted);line-height:1.3;margin-top:1px;}
 
   .side-langs{margin-top:6px;}
-  .side-langs .lg{font-weight:300;font-size:13.5px;color:#aeb6c2;margin-bottom:7px;}
-  .side-langs .lg b{font-weight:700;color:#fff;}
-  .fam-head{font-weight:700;font-size:16px;color:#fff;margin-bottom:7px;letter-spacing:.4px;}
+  .side-langs .lg{font-weight:300;font-size:13.5px;color:var(--muted);margin-bottom:7px;}
+  .side-langs .lg b{font-weight:700;color:var(--ink);}
+  .fam-head{font-weight:700;font-size:16px;color:var(--ink);margin-bottom:7px;letter-spacing:.4px;}
   .fam-group{margin-bottom:16px;}
   .fam-group .lg{padding-left:0;margin-bottom:8px;}
 
@@ -269,7 +269,7 @@ export function buildCvHtml(data = {}, lang = 'tr', { withLogo = true, masked = 
   .shot{display:flex;flex-direction:column;align-items:center;width:auto;}
   .shot img{
     height:470px;width:auto;aspect-ratio:3/4;object-fit:cover;border-radius:8px;
-    border:4px solid #2c3a4e;box-shadow:0 8px 22px rgba(0,0,0,.32);background:#e9ebee;
+    border:4px solid var(--accent);box-shadow:0 8px 22px rgba(27,37,51,.12);background:#f1ede5;
   }
   .shot figcaption{
     margin-top:12px;text-align:center;font-weight:700;font-size:15px;

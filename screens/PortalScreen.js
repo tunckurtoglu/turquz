@@ -1,12 +1,13 @@
 // screens/PortalScreen.js
 // Açılış portalı: kullanıcı önce hangi tarafa gireceğini seçer (Aday / Acente / Otel).
 import React from 'react';
-import { View, Text, Image, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Circle, Rect, Line } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
 import { HOTEL_PORTAL_ENABLED } from '../lib/features';
+import TurquzLogo from '../components/TurquzLogo';
 
 const GOLD_D = '#9a7b1f';
 const TEAL = '#2a9db8';
@@ -98,7 +99,7 @@ export default function PortalScreen({ onSelect, fontsReady }) {
         contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 28, paddingBottom: insets.bottom + 28 }]}
         showsVerticalScrollIndicator={false}
       >
-        <Image source={require('../assets/turquz-logo.png')} style={styles.logo} resizeMode="contain" />
+        <TurquzLogo width={200} height={168} style={styles.logo} fontFamily="Cinzel_600SemiBold" fontsReady />
         <Text style={[styles.slogan, sloganFontStyle]} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.7}>
           {t('portal_slogan')}
         </Text>

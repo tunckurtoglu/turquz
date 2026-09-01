@@ -1,12 +1,13 @@
 // screens/ResetPasswordScreen.js — e-posta linkinden gelen recovery oturumunda yeni şifre.
 import React, { useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Image,
+  View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { useLanguage } from '../i18n/LanguageContext';
 import { updatePassword, signOut } from '../lib/auth';
+import TurquzLogo from '../components/TurquzLogo';
 
 const GOLD = '#c2a25a';
 const NAVY = '#1b2533';
@@ -54,7 +55,7 @@ export default function ResetPasswordScreen({ onDone, onCancel }) {
         keyboardShouldPersistTaps="handled"
         enableOnAndroid
       >
-        <Image source={require('../assets/turquz-logo.png')} style={styles.logo} resizeMode="contain" />
+        <TurquzLogo width={150} height={58} style={styles.logo} wordmarkSize={11} fontFamily="Cinzel_600SemiBold" fontsReady />
         <Text style={styles.kicker}>{t('auth_reset_title')}</Text>
         <Text style={[styles.title, ta]}>{t('auth_new_password_title')}</Text>
         <Text style={[styles.desc, ta]}>{t('auth_new_password_desc')}</Text>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { listNotifications, unreadCount, markAllRead } from '../lib/api';
+import { listNotifications, markAllRead } from '../lib/api';
 import { announcementText } from '../lib/announcementI18n';
 import { useLang } from '../i18n.jsx';
 import { candidateCode } from '../../../lib/candidateCode';
@@ -8,10 +8,16 @@ const ICON = {
   document: '📄', accepted: '✅', interview_proposed: '🎥', interview_scheduled: '🎥',
   interview_declined: '✕', interview_no_response: '⏳', interview_respond_remind: '⏰', pool_passive: '⏸',
   new_candidate: '🆕', reupload: '🔁', agency_doc_retracted: '↩', agency_doc_updated: '📄', flight_ticket_updated: '✈️',
-  docs_deadline: '⏰', docs_extra: '⏳', chat_message: '💬', announcement: '📢', agency_notice: '📌',
+  docs_deadline: '⏰', docs_extra: '⏳', docs_agency_extra: '⏳', consulate_deadline: '⏰',
+  consulate_agency_extra: '⏳', process_ended: '⏹', chat_message: '💬', announcement: '📢', agency_notice: '📌',
   arrival_today: '🛬', arrival_tomorrow: '🛬', pickup: '🤝', flight_ticket_ready: '✈️', flight_ticket_sent: '✈️',
   default: '🔔',
 };
+
+const CANDIDATE_ONLY_NOTIF = new Set([
+  'employment_started', 'boarding_check', 'flight_ticket_ready',
+  'process_ended', 'reupload', 'employment_end_requested_ack',
+]);
 
 function notifText(n, t, lang) {
   const p = n.payload || {};
@@ -94,8 +100,10 @@ export default function NotifBell({ userId, onNavigate }) {
   const ref = useRef(null);
 
   const refresh = async () => {
-    const [list, n] = await Promise.all([listNotifications(userId), unreadCount(userId)]);
-    setItems(list); setUnread(n);
+    const list = await listNotifications(userId);
+    const filtered = (list || []).filter((x) => !CANDIDATE_ONLY_NOTIF.has(x.type));
+    setItems(filtered);
+    setUnread(filtered.filter((x) => !x.read_at).length);
   };
 
   useEffect(() => { refresh(); const id = setInterval(refresh, 30000); return () => clearInterval(id); }, [userId]);
@@ -129,8 +137,9 @@ export default function NotifBell({ userId, onNavigate }) {
   return (
     <div className="bellWrap" ref={ref}>
       <button className="bellBtn" onClick={toggle} title={t('notif_title') || ''} type="button">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.7 21a2 2 0 0 1-3.4 0" />
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+          <path d="M13.7 21a2 2 0 0 1-3.4 0" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
         {unread > 0 ? <span className="bellDot">{unread > 9 ? '9+' : unread}</span> : null}
       </button>

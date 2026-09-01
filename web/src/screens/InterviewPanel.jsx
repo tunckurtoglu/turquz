@@ -104,6 +104,8 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
     return () => clearInterval(id);
   }, []);
 
+  const closeCall = useCallback(() => setCallOpen(false), []);
+
   const updateForm = (key, v) => setForm((p) => {
     const next = { ...p, [key]: v };
     if (key === 'd' || key === 'm' || key === 'y') {
@@ -140,7 +142,7 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
   const doPropose = async (slots) => {
     setBusy(true);
     try {
-      await proposeInterview(userId, slots, agencyUserId);
+      await proposeInterview(userId, slots, agencyUserId, candidate.employerId || candidate.employer_id || candidate._employerId || null);
       notifyInterview(userId, 'proposed');
       setReplan(false);
       await load();
@@ -148,6 +150,10 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
       const msg = String(e?.message || e || '');
       alert(msg.includes('candidate_passive')
         ? (t('iv_candidate_passive') || '')
+        : msg.includes('favorite_required')
+          ? (t('offer_fav_required_body') || 'Adayı önce bir otel favorisine ekleyin.')
+          : msg.includes('employer_incomplete')
+            ? (t('employer_need_details') || 'Otel bilgilerini tamamlayın.')
         : (msg || t('err_generic') || ''));
     }
     finally { setBusy(false); }
@@ -209,7 +215,6 @@ export default function InterviewPanel({ candidate, agencyUserId }) {
       <button className="ivJoinBtn sm" onClick={startTest} disabled={busy}>{t('iv_test_start') || ''}</button>
     </div>
   ) : null;
-  const closeCall = useCallback(() => setCallOpen(false), []);
   const callModal = callOpen ? <Suspense fallback={null}><CallRoom candidateUserId={userId} candidateLabel={candidate.code || t('role_candidate') || ''} slotISO={iv?.selectedSlot || ''} onClose={closeCall} /></Suspense> : null;
 
   if (status === 'scheduled' && iv.selectedSlot && !callWindow(iv.selectedSlot, callOpts).ended) {

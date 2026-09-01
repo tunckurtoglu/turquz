@@ -1,6 +1,6 @@
 // screens/HomeScreen.js
-// Aday ana sayfa — koyu zemin, kariyer 1–7 şeridi, beyaz profil kartı (3 foto + CV),
-// altında tanıtım videosu. Fotoğrafa dokununca tam ekran galeri.
+// Aday ana sayfa — koyu zemin, kariyer şeridi, beyaz profil kartı (3 foto + tanıtım videosu + CV).
+// Fotoğrafa dokununca tam ekran galeri; videoya dokununca tam ekran oynatıcı.
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, Image, ScrollView, TouchableOpacity, StyleSheet, Modal, Animated, Alert, ActivityIndicator, Pressable, Share, Platform, useWindowDimensions, StatusBar } from 'react-native';
 import Svg, { Path, Polyline, Line, Circle, Rect } from 'react-native-svg';
@@ -13,8 +13,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
 import { listDocuments } from '../lib/documents';
 import InterviewModal from '../components/InterviewModal';
-import FaqSheet from '../components/FaqSheet';
 import ContactSheet from '../components/ContactSheet';
+import ContactIcon from '../components/ContactIcon';
 import AnnouncementsListSheet from '../components/AnnouncementsListSheet';
 import RemindersSheet, { loadDocReminders } from '../components/RemindersSheet';
 import CareerJourneySheet from '../components/CareerJourneySheet';
@@ -24,22 +24,22 @@ import { getInterview, formatCountdown } from '../lib/interviews';
 import { callWindow, getCallWindowOpts } from '../lib/livekitCall';
 import { supabase } from '../lib/supabase';
 import PhotoWatermark from '../components/PhotoWatermark';
+import TurquzLogo from '../components/TurquzLogo';
 import PhotoGalleryModal from '../components/PhotoGalleryModal';
 import { getCandidateStatus, docsUnlocked, reactivateCandidate, workInfo } from '../lib/candidate';
 import {
   undoEmploymentEnd, contestEmploymentEnd, acceptEmploymentEnd, answerEmploymentTerm, getMyEmploymentEpisode,
-  listCandidateWorkHistory, scanEmploymentLifecycle, answerBoarding, isEmploymentNotif,
+  listCandidateWorkHistory, scanEmploymentLifecycle, answerBoarding, answerAirportCheck, isEmploymentNotif,
 } from '../lib/employment';
 import { acceptOffer, rejectOffer } from '../lib/roles';
 import { notifyOffer } from '../lib/push';
-import { candidatePendingCount, journeyStep, journeyTitleKey, JOURNEY_COUNT } from '../lib/pipeline';
-import { getFlight, msUntilArrival, msUntilYmdGate } from '../lib/flights';
+import { candidatePendingCount, journeyStep, journeyTitleKey, JOURNEY_COUNT, seasonCompleteFromEpisode } from '../lib/pipeline';
+import { getFlight, parseArriveAt, msUntilArrival, msUntilYmdGate } from '../lib/flights';
 import CountdownBanner from '../components/CountdownBanner';
 import { touchLastSeen } from '../lib/lastSeen';
-import { APP_SHARE_URL } from '../lib/config';
+import { APP_SHARE_URL, openPrivacy } from '../lib/config';
+import { getCandidateOfferDisplay, getCandidateInterviewDisplay } from '../lib/offerEmployer';
 import { unreadAnnouncementCount } from '../lib/notifications';
-
-const FOOTER_LOGO = require('../assets/icon-dark.png');
 
 const INK = '#1b2533';
 const GOLD = '#c2a25a';
@@ -59,39 +59,22 @@ function FooterMegaphoneIcon({ color = '#e7dcc4', size = 20 }) {
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Path
         d="M3.5 10.2v3.6c0 .7.5 1.3 1.2 1.4l3.3.5 2.2 3.8c.3.5 1.1.3 1.1-.3v-2.8l6.2 1.1c1.1.2 2-.7 2-1.8V9.1c0-1.1-.9-2-2-1.8l-6.2 1.1V5.8c0-.6-.8-.8-1.1-.3L7.9 9.3l-3.3.5c-.6.1-1.1.7-1.1 1.4Z"
-        stroke={color}
-        strokeWidth="1.7"
-        strokeLinejoin="round"
+        fill={color}
       />
-      <Path d="M19.8 9.6c.8.7.8 2.1 0 2.8" stroke={color} strokeWidth="1.7" strokeLinecap="round" />
+      <Path d="M19.8 9.6c.8.7.8 2.1 0 2.8" stroke={color} strokeWidth="2" strokeLinecap="round" />
     </Svg>
   );
 }
 
 function FooterStopwatchIcon({ color = '#e7dcc4', size = 20 }) {
+  const hand = '#0e141c';
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <Circle cx="12" cy="13.2" r="7.2" stroke={color} strokeWidth="1.8" />
-      <Path d="M12 13.2V9.6" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
-      <Path d="M10 3.6h4" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
-      <Path d="M12 3.6v2.2" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
-      <Path d="M17.6 7.2l1.2-1.2" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
-    </Svg>
-  );
-}
-
-function FooterFaqIcon({ color = '#e7dcc4', size = 20 }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <Circle cx="12" cy="12" r="9" stroke={color} strokeWidth="1.8" />
-      <Path
-        d="M9.1 9.2a2.9 2.9 0 0 1 5.6.9c0 1.9-2.8 2.4-2.8 4"
-        stroke={color}
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <Circle cx="12" cy="17.2" r="1.05" fill={color} />
+      <Circle cx="12" cy="13.2" r="7.2" fill={color} />
+      <Path d="M12 13.2V9.6" stroke={hand} strokeWidth="2" strokeLinecap="round" />
+      <Path d="M10 3.6h4" stroke={color} strokeWidth="2.2" strokeLinecap="round" />
+      <Path d="M12 3.6v2.2" stroke={color} strokeWidth="2.2" strokeLinecap="round" />
+      <Path d="M17.6 7.2l1.2-1.2" stroke={color} strokeWidth="2" strokeLinecap="round" />
     </Svg>
   );
 }
@@ -211,6 +194,59 @@ function PhotoCell({ uri, caption, addLabel, busy, onView, onAdd, onMenu }) {
   );
 }
 
+// Tanıtım videosu — foto şeridinde 4. hücre (kompakt).
+function VideoCell({
+  hasVideo, busy, progress, phase, pending, caption, addLabel, uploadLabel,
+  onPlay, onAdd, onMenu,
+}) {
+  return (
+    <View style={styles.cell}>
+      {hasVideo && !busy ? (
+        <View style={styles.cellBox}>
+          <TouchableOpacity activeOpacity={0.85} onPress={onPlay} style={StyleSheet.absoluteFill}>
+            <View style={styles.videoCellMedia} />
+            <View style={styles.videoCellOverlay} pointerEvents="none">
+              <View style={styles.videoCellBadge}>
+                <Text style={styles.videoCellPlay}>▶</Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+          {pending ? (
+            <View style={styles.videoCellPending}>
+              <Text style={styles.videoCellPendingText}>!</Text>
+            </View>
+          ) : null}
+          <TouchableOpacity style={styles.videoCellMenu} onPress={onMenu} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} activeOpacity={0.8}>
+            <Text style={styles.videoCellMenuIcon}>⋯</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onPress={onAdd}
+          disabled={busy}
+          style={[styles.cellBox, styles.cellEmpty]}
+        >
+          {busy ? (
+            <>
+              <View style={[styles.videoBarTrack, { width: '78%' }]}>
+                <View style={[styles.videoBarFill, { width: `${Math.max(4, Math.round(progress * 100))}%` }]} />
+              </View>
+              <Text style={[styles.cellAdd, { marginTop: 8 }]}>{uploadLabel}</Text>
+            </>
+          ) : (
+            <>
+              <VideoCamIcon size={20} />
+              <Text style={styles.cellAdd}>{addLabel}</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      )}
+      <Text style={styles.cellCap}>{caption}</Text>
+    </View>
+  );
+}
+
 async function optimizeHomePhoto(uri) {
   const actions = [{ resize: { width: 800 } }];
   try {
@@ -243,10 +279,11 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
   const [menuOpen, setMenuOpen] = useState(false); // ⋮ ayarlar
   const [langOpen, setLangOpen] = useState(false);
   const [offerPending, setOfferPending] = useState(false); // acente teklif gönderdi, aday cevabı bekleniyor
+  const [offerEmployer, setOfferEmployer] = useState(null); // { displayName, revealed }
+  const [interviewEmployer, setInterviewEmployer] = useState(null);
   const [inProcess, setInProcess] = useState(false); // teklifi kabul etti, belge sürecinde
   const [offerBusy, setOfferBusy] = useState(false);
   const [interviewOpen, setInterviewOpen] = useState(false);
-  const [faqOpen, setFaqOpen] = useState(false);
   const [contactOpen, setContactOpen] = useState(false);
   const [announcementsOpen, setAnnouncementsOpen] = useState(false);
   const [announceUnread, setAnnounceUnread] = useState(0);
@@ -265,14 +302,18 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
   const [certEpisode, setCertEpisode] = useState(null);
   const [boardingStatus, setBoardingStatus] = useState(null);
   const [boardingGateYmd, setBoardingGateYmd] = useState(null); // kalkış günü YYYY-MM-DD
+  const [airportCheckStatus, setAirportCheckStatus] = useState(null);
+  const [flightDepartAt, setFlightDepartAt] = useState('');
   const [flightArriveAt, setFlightArriveAt] = useState('');
   const [workStartYmd, setWorkStartYmd] = useState(null);
+  const [plannedEndAt, setPlannedEndAt] = useState(null);
   const [boardingBusy, setBoardingBusy] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(null); // 'photo' | 'photoClose' | 'photoFull' | null
   const blink = useRef(new Animated.Value(1)).current;
   const remindBlink = useRef(new Animated.Value(1)).current;
   const ivBlink = useRef(new Animated.Value(1)).current;
   const cardBlink = useRef(new Animated.Value(1)).current;
+  const spotBlink = useRef(new Animated.Value(1)).current;
   const homeScroll = useRef(null);
   const [careerFocus, setCareerFocus] = useState(false);
   const [statusReady, setStatusReady] = useState(false);
@@ -289,14 +330,26 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       ]);
       setEpisode(ep);
       setBoardingStatus(status?.boarding_status || null);
+      setAirportCheckStatus(status?.airport_check_status || null);
       {
         const gate = status?.flight_depart_on || status?.work_start_at || null;
         setBoardingGateYmd(gate ? String(gate).slice(0, 10) : null);
       }
       setWorkStartYmd(status?.work_start_at ? String(status.work_start_at).slice(0, 10) : null);
+      {
+        const endRaw = status?.work_end_at
+          || status?.planned_end_on
+          || (ep?.planned_end_at ? String(ep.planned_end_at) : null);
+        setPlannedEndAt(endRaw || null);
+      }
       setWorkHistory((hist || []).filter((h) => h.outcome === 'completed'));
       setCertified((hist || []).some((h) => h.outcome === 'completed'));
       setOfferPending(status?.status === 'offered');
+      if (status?.status === 'offered') {
+        getCandidateOfferDisplay(userId).then((d) => setOfferEmployer(d)).catch(() => setOfferEmployer(null));
+      } else {
+        setOfferEmployer(null);
+      }
       scanEmploymentLifecycle();
 
       const nextWork = workInfo(status);
@@ -315,10 +368,14 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       }
 
       const [rows, flight] = await Promise.all([listDocuments(userId), getFlight(userId)]);
+      setFlightDepartAt(flight?.departAtTs || flight?.departAt || '');
       setFlightArriveAt(flight?.arriveAt || '');
       const has = (k) => rows.some((r) => r.kind === k && r.submitted_at);
       setMissingDocs(candidatePendingCount(has));
-      setJourneyN(journeyStep(has, !!flight?.pickupSent));
+      setJourneyN(journeyStep(has, !!flight?.pickupSent, {
+        hired: !!nextWork.hired,
+        seasonComplete: seasonCompleteFromEpisode(ep) || (hist || []).some((h) => h.outcome === 'completed'),
+      }));
       setWork(nextWork);
       setInProcess(nextInProcess);
       const reminds = await loadDocReminders(userId);
@@ -367,6 +424,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       .channel(`home-status-${userId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'candidate_status', filter: `user_id=eq.${userId}` }, () => loadStatus())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'user_documents', filter: `user_id=eq.${userId}` }, () => loadStatus())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'contracts', filter: `user_id=eq.${userId}` }, () => loadStatus())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [userId, loadStatus]);
@@ -516,6 +574,12 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     try {
       const iv = await getInterview(userId);
       setInterview(iv || null);
+      if (iv?.status === 'proposed' || iv?.status === 'scheduled') {
+        const opportunity = await getCandidateInterviewDisplay(userId).catch(() => null);
+        setInterviewEmployer(opportunity);
+      } else {
+        setInterviewEmployer(null);
+      }
       setIvPending(iv?.status === 'proposed');
       if (iv?.status === 'scheduled' && iv.selectedSlot) {
         const opts = await getCallWindowOpts(iv);
@@ -546,11 +610,12 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
   useEffect(() => {
     const needTick = (interview?.status === 'scheduled' && interview?.selectedSlot)
       || ((boardingStatus === 'pending' || boardingStatus === 'no_response') && boardingGateYmd)
+      || (airportCheckStatus === 'pending' && flightDepartAt)
       || (work.inTransit && (msUntilArrival(flightArriveAt) > 0 || msUntilYmdGate(workStartYmd) > 0));
     if (!needTick) return undefined;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [interview?.status, interview?.selectedSlot, boardingStatus, boardingGateYmd, work.inTransit, flightArriveAt, workStartYmd]);
+  }, [interview?.status, interview?.selectedSlot, boardingStatus, boardingGateYmd, airportCheckStatus, flightDepartAt, work.inTransit, flightArriveAt, workStartYmd]);
   // Mülakat daveti / katıl penceresi: kutuyu yanıp söndür.
   useEffect(() => {
     if (ivPending || ivJoinable) {
@@ -571,10 +636,41 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
 
   const ivScheduled = interview?.status === 'scheduled' && !!interview?.selectedSlot;
   const ivFocus = ivPending || ivScheduled;
+  const showSpotLive = careerReady && !offerPending && !work.hired && !work.inTransit && !inProcess && !ivFocus;
+
+  useEffect(() => {
+    if (showSpotLive) {
+      const loop = Animated.loop(Animated.sequence([
+        Animated.timing(spotBlink, { toValue: 0.28, duration: 720, useNativeDriver: true }),
+        Animated.timing(spotBlink, { toValue: 1, duration: 720, useNativeDriver: true }),
+      ]));
+      loop.start();
+      return () => loop.stop();
+    }
+    spotBlink.setValue(1);
+    return undefined;
+  }, [showSpotLive, spotBlink]);
+
   const ivWin = ivScheduled ? callWindow(interview.selectedSlot, ivOpts) : null;
   const ivCountdownLeft = ivWin?.base ? ivWin.base - nowTick : 0;
   // Anlık joinable (saniyelik tick ile)
   const ivCanJoin = !!(ivWin && (ivWin.joinable || (nowTick >= ivWin.start && nowTick <= ivWin.end + 120000)));
+  const renderOpportunityLocation = (opportunity) => {
+    if (!opportunity?.displayName) return null;
+    const location = [opportunity.country, opportunity.city, opportunity.region].filter(Boolean).join(' · ');
+    return (
+      <View style={styles.opportunityMeta}>
+        <Text style={styles.opportunityName}>
+          {t('offer_employer_label') || 'İşletme'}: {opportunity.displayName}
+        </Text>
+        {location ? (
+          <Text style={styles.opportunityLocation}>
+            {t('opportunity_location') || 'Konum'}: {location}
+          </Text>
+        ) : null}
+      </View>
+    );
+  };
 
   // Uçuş teyidi: kalkış günü gelene kadar geri sayım (bildirim taramasıyla aynı kapı).
   const boardingPending = boardingStatus === 'pending' || boardingStatus === 'no_response';
@@ -592,6 +688,11 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
   })();
   const showBoardingAsk = boardingPending && boardingDue;
   const showBoardingCountdown = boardingPending && !boardingDue;
+  const departureDate = parseArriveAt(flightDepartAt)?.dt || null;
+  const airportCheckOpen = airportCheckStatus === 'pending'
+    && departureDate
+    && nowTick >= departureDate.getTime() - 60 * 60 * 1000
+    && nowTick < departureDate.getTime();
   const arriveCountdownLeft = msUntilArrival(flightArriveAt, nowTick);
   const workStartCountdownLeft = work.inTransit ? msUntilYmdGate(workStartYmd, nowTick) : 0;
   const workStartDue = work.inTransit && workStartYmd && workStartCountdownLeft === 0;
@@ -727,6 +828,30 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     ]);
   };
 
+  const videoMenu = () => {
+    const opts = [];
+    if (isPending) {
+      opts.push({ text: t('intro_video_save'), onPress: saveVideo });
+      opts.push({ text: t('intro_video_cancel'), onPress: cancelVideo, style: 'destructive' });
+    }
+    if (showVideo) {
+      opts.push({ text: t('intro_video_watch'), onPress: playVideo });
+      opts.push({ text: t('intro_video_change'), onPress: pickVideo });
+      if (!isPending) {
+        opts.push({ text: t('intro_video_remove'), style: 'destructive', onPress: removeVideo });
+      }
+    }
+    opts.push({ text: t('consent_cancel'), style: 'cancel' });
+    Alert.alert(t('intro_video_cap'), '', opts);
+  };
+
+  useEffect(() => {
+    if (!videoError) return undefined;
+    Alert.alert(t('intro_video_label'), videoError);
+    setVideoError('');
+    return undefined;
+  }, [videoError, t]);
+
   const cells = [
     { field: 'photo', aspect: [1, 1], uri: d.photo, caption: t('photo_cap_id') },
     { field: 'photoClose', aspect: [3, 4], uri: d.photoClose, caption: t('photo_cap_close') },
@@ -740,7 +865,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
       <View style={[styles.hero, { paddingTop: insets.top + 8 }]}>
         <View style={styles.heroRow}>
           <View style={styles.heroBrand}>
-            <Image source={require('../assets/turquz-logo.png')} style={styles.heroLogo} resizeMode="contain" />
+            <TurquzLogo width={94} height={64} style={styles.heroLogo} wordmarkSize={10} fontFamily="Cinzel_600SemiBold" fontsReady />
             <Text style={styles.heroHi} numberOfLines={2}>{localeUpper(t('home_panel_title'), lang)}</Text>
           </View>
           <View style={styles.headerActions}>
@@ -759,6 +884,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                   || type === 'agency_doc_updated'
                   || type === 'flight_ticket_updated'
                   || type === 'document'
+                  || type === 'success_certificate'
                   || type === 'accepted'
                   || type === 'docs_extra'
                   || type === 'flight_ticket_ready'
@@ -767,11 +893,12 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                 ) {
                   const scrollToStep = type === 'pickup'
                     ? 6
-                    : (type === 'flight_ticket_ready' || type === 'flight_ticket_sent' || type === 'flight_ticket_updated' || type === 'agency_doc_updated' ? 5 : undefined);
+                    : (type === 'success_certificate' ? 9
+                      : (type === 'flight_ticket_ready' || type === 'flight_ticket_sent' || type === 'flight_ticket_updated' || type === 'agency_doc_updated' ? 5 : undefined));
                   onOpenDocs?.(scrollToStep ? { scrollToStep } : undefined);
                   return;
                 }
-                if (type === 'boarding_check' || type.startsWith('boarding_')) {
+                if (type === 'airport_check' || type === 'boarding_check' || type.startsWith('boarding_')) {
                   homeScroll.current?.scrollTo({ y: 0, animated: true });
                   return;
                 }
@@ -874,6 +1001,15 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
 
               <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('set_account')}</Text>
               <TouchableOpacity
+                style={[styles.actionRow, { marginBottom: 10 }]}
+                onPress={() => { closeSettings(); openPrivacy(); }}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.menuPrivacyIcon}>🔒</Text>
+                <Text style={[styles.menuPrivacyText, { flex: 1 }]}>{t('set_privacy')}</Text>
+                <Text style={styles.menuPrivacyHint}>›</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
                 style={styles.actionRow}
                 onPress={() => { closeSettings(); onLogout?.(); }}
                 activeOpacity={0.85}
@@ -902,6 +1038,9 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
             <>
               <Text style={styles.workActive}>{t('spotlight_offer_title')}</Text>
               <View style={[styles.offerCard, styles.workEmbed]}>
+                {offerEmployer?.displayName ? (
+                  renderOpportunityLocation(offerEmployer)
+                ) : null}
                 <Text style={styles.offerCardDesc}>{t('offer_card_desc')}</Text>
                 <View style={styles.offerBtns}>
                   <TouchableOpacity style={styles.offerDecline} onPress={doRejectOffer} disabled={offerBusy} activeOpacity={0.85}>
@@ -923,7 +1062,9 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                   {journeyN > 0 ? <JourneyMeter current={journeyN} pulse={cardBlink} /> : null}
                   <View style={styles.workStageRow}>
                     <Text style={[styles.workActive, { flex: 1 }]} numberOfLines={2}>
-                      {journeyN > 0 ? t(journeyTitleKey(journeyN)) : '…'}
+                      {journeyN > 0
+                        ? t(journeyTitleKey(Math.min(journeyN, JOURNEY_COUNT)))
+                        : '…'}
                     </Text>
                     {missingDocs > 0 ? (
                       <Animated.View style={[styles.workMissBadge, { opacity: blink }]}>
@@ -936,10 +1077,13 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
               ) : ivFocus ? (
                 <Text style={styles.workActive}>{ivPending ? t('spotlight_iv_title') : t('spotlight_iv_sched_title')}</Text>
               ) : (
-                <>
-                  <Text style={styles.workActive}>{t('spotlight_title')}</Text>
+                <View>
+                  <Animated.View style={{ opacity: spotBlink }}>
+                    <Text style={styles.workActive}>{t('spotlight_title')}</Text>
+                  </Animated.View>
                   <Text style={styles.workSub}>{t('spotlight_sub')}</Text>
-                </>
+                  <Text style={styles.workSub}>{t('spotlight_hint')}</Text>
+                </View>
               )}
 
               {!work.hired && ivFocus ? (
@@ -979,22 +1123,61 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                   </TouchableOpacity>
                 )
               ) : null}
+              {ivFocus ? renderOpportunityLocation(interviewEmployer) : null}
             </>
           )}
 
           {showStaffSummary && work.end ? (
             <Text style={styles.workSub}>{t('work_until', { date: `${String(work.end.getDate()).padStart(2, '0')}.${String(work.end.getMonth() + 1).padStart(2, '0')}.${work.end.getFullYear()}` })}</Text>
           ) : null}
-          {showStaffSummary && episode?.employer_title ? (
-            <Text style={styles.workSub}>{episode.employer_title}</Text>
-          ) : null}
 
           {work.inTransit && workStartDue ? (
             <Text style={styles.workSub}>{t('home_transit_wait')}</Text>
           ) : null}
 
-          {(work.hired || work.inTransit) ? (
+          {work.inTransit ? (
             <>
+              {airportCheckOpen ? (
+                <View style={styles.workAlert}>
+                  <Text style={styles.workAlertText}>{t('airport_check_prompt') || 'Uçuşunuza yaklaşık 1 saat kaldı. Havaalanına geldiniz mi?'}</Text>
+                  <TouchableOpacity
+                    style={[styles.workBtnPrimary, boardingBusy && styles.workBtnDim]}
+                    disabled={boardingBusy}
+                    onPress={async () => {
+                      setBoardingBusy(true);
+                      try { await answerAirportCheck('confirmed'); await loadStatus(); }
+                      catch (e) { Alert.alert(t('airport_check_title') || 'Havaalanı teyidi', e?.message || 'error'); }
+                      finally { setBoardingBusy(false); }
+                    }}
+                    activeOpacity={0.9}
+                  >
+                    <Text style={styles.workBtnPrimaryText}>{t('airport_check_yes') || 'Evet, havaalanına geldim'}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.workBtnDanger, boardingBusy && styles.workBtnDim]}
+                    disabled={boardingBusy}
+                    onPress={async () => {
+                      setBoardingBusy(true);
+                      try { await answerAirportCheck('not_yet'); await loadStatus(); }
+                      catch (e) { Alert.alert(t('airport_check_title') || 'Havaalanı teyidi', e?.message || 'error'); }
+                      finally { setBoardingBusy(false); }
+                    }}
+                    activeOpacity={0.9}
+                  >
+                    <Text style={styles.workBtnDangerText}>{t('airport_check_no') || 'Hayır, henüz gelemedim'}</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+              {airportCheckStatus === 'confirmed' ? (
+                <View style={styles.workNote}>
+                  <Text style={styles.workNoteText}>✓ {t('airport_check_confirmed_self') || 'Havaalanına geldiğiniz acentenize bildirildi.'}</Text>
+                </View>
+              ) : airportCheckStatus === 'missed' ? (
+                <View style={styles.workNote}>
+                  <Text style={styles.workNoteText}>{t('airport_check_missed_self') || 'Havaalanına gelemediğiniz acentenize bildirildi.'}</Text>
+                </View>
+              ) : null}
+
               {showBoardingCountdown ? (
                 <View style={styles.workNote}>
                   <Text style={styles.workNoteText}>⏱ {t('boarding_countdown_title')}: {formatCountdown(boardingCountdownLeft)}</Text>
@@ -1063,7 +1246,17 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
                   <Text style={styles.workNoteText}>{t('boarding_missed_self')}</Text>
                 </View>
               ) : null}
+            </>
+          ) : null}
 
+          {work.hired && episode?.outcome === 'active' ? (
+            <View style={styles.workNote}>
+              <Text style={styles.workNoteText}>✓ {t('home_work_started')}</Text>
+            </View>
+          ) : null}
+
+          {(work.hired || work.inTransit) ? (
+            <>
               {work.hired && episode?.outcome === 'early_exit_pending' ? (
                 <View style={styles.workAlert}>
                   <Text style={styles.workAlertText}>
@@ -1184,100 +1377,59 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
           <View style={styles.divider} />
 
           <View style={styles.strip}>
-            {cells.map((c) => (
-              <PhotoCell
-                key={c.field}
-                uri={c.uri}
-                caption={c.caption}
+            <View style={styles.stripRow}>
+              {cells.slice(0, 2).map((c) => (
+                <PhotoCell
+                  key={c.field}
+                  uri={c.uri}
+                  caption={c.caption}
+                  addLabel={t('photo_add')}
+                  busy={photoBusy === c.field}
+                  onView={() => {
+                    const i = gallery.findIndex((g) => g.uri === c.uri);
+                    if (i >= 0) setGalleryIndex(i);
+                  }}
+                  onAdd={() => pickHomePhoto(c.field, c.aspect)}
+                  onMenu={() => photoMenu(c.field, c.aspect, c.caption)}
+                />
+              ))}
+            </View>
+            <View style={styles.stripRow}>
+              {cells.slice(2).map((c) => (
+                <PhotoCell
+                  key={c.field}
+                  uri={c.uri}
+                  caption={c.caption}
+                  addLabel={t('photo_add')}
+                  busy={photoBusy === c.field}
+                  onView={() => {
+                    const i = gallery.findIndex((g) => g.uri === c.uri);
+                    if (i >= 0) setGalleryIndex(i);
+                  }}
+                  onAdd={() => pickHomePhoto(c.field, c.aspect)}
+                  onMenu={() => photoMenu(c.field, c.aspect, c.caption)}
+                />
+              ))}
+              <VideoCell
+                hasVideo={!!showVideo}
+                busy={videoBusy}
+                progress={videoProgress}
+                phase={videoPhase}
+                pending={isPending}
+                caption={t('intro_video_cap')}
                 addLabel={t('photo_add')}
-                busy={photoBusy === c.field}
-                onView={() => {
-                  const i = gallery.findIndex((g) => g.uri === c.uri);
-                  if (i >= 0) setGalleryIndex(i);
-                }}
-                onAdd={() => pickHomePhoto(c.field, c.aspect)}
-                onMenu={() => photoMenu(c.field, c.aspect, c.caption)}
+                uploadLabel={videoPhase === 'compress' ? t('intro_video_processing') : t('intro_video_uploading')}
+                onPlay={playVideo}
+                onAdd={pickVideo}
+                onMenu={videoMenu}
               />
-            ))}
+            </View>
           </View>
 
           <TouchableOpacity style={styles.cvBtn} onPress={onPreview} activeOpacity={0.85}>
             <Text style={styles.cvBtnText}>{t('home_view_cv')}  →</Text>
           </TouchableOpacity>
         </View>
-
-          <View style={styles.videoCard}>
-            <View style={styles.videoHead}>
-              <View style={styles.videoIconCircle}><VideoCamIcon /></View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.videoKicker} numberOfLines={1}>{t('intro_video_label')}</Text>
-              </View>
-            </View>
-
-            {videoError ? (
-              <View style={styles.videoWarn}>
-                <Text style={styles.videoWarnIcon}>⚠</Text>
-                <Text style={styles.videoWarnText}>{videoError}</Text>
-              </View>
-            ) : null}
-
-            {videoBusy ? (
-              <View style={styles.videoUploading}>
-                <View style={styles.videoBarTrack}><View style={[styles.videoBarFill, { width: `${Math.max(4, Math.round(videoProgress * 100))}%` }]} /></View>
-                <Text style={styles.videoUploadingText}>{videoPhase === 'compress' ? t('intro_video_processing') : t('intro_video_uploading')}  %{Math.round(videoProgress * 100)}</Text>
-              </View>
-            ) : showVideo ? (
-              <>
-                {/* Dikey önizleme (oynatılabilir) + tam ekran */}
-                <View style={styles.videoPreview}>
-                  {videoPreviewUrl ? (
-                    <WebView
-                      source={{ html: `<html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"></head><body style="margin:0;background:#000"><video src="${videoPreviewUrl}" controls playsinline preload="metadata" style="width:100%;height:100%;object-fit:contain;background:#000"></video></body></html>` }}
-                      style={{ flex: 1, backgroundColor: '#000' }}
-                      originWhitelist={['*']}
-                      allowsInlineMediaPlayback
-                      mediaPlaybackRequiresUserAction
-                      scrollEnabled={false}
-                    />
-                  ) : (
-                    <View style={styles.videoPreviewLoading}><ActivityIndicator color="#9a7b1f" /></View>
-                  )}
-                  {isPending ? <View style={styles.videoPendingTag}><Text style={styles.videoPendingText}>{t('intro_video_unsaved')}</Text></View> : null}
-                  <TouchableOpacity style={styles.videoFsBtn} onPress={playVideo} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
-                    <Text style={styles.videoFsIcon}>⛶</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {isPending ? (
-                  <View style={styles.videoActions}>
-                    <TouchableOpacity style={styles.videoCancelBtn} onPress={cancelVideo} activeOpacity={0.85}>
-                      <Text style={styles.videoCancelText}>{t('intro_video_cancel')}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.videoSaveBtn} onPress={saveVideo} activeOpacity={0.9}>
-                      <Text style={styles.videoSaveText}>✓  {t('intro_video_save')}</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <View style={styles.videoSaved}>
-                    <TouchableOpacity onPress={pickVideo} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} activeOpacity={0.7}>
-                      <Text style={styles.videoLink}>{t('intro_video_change')}</Text>
-                    </TouchableOpacity>
-                    <Text style={styles.videoLinkSep}>·</Text>
-                    <TouchableOpacity onPress={removeVideo} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} activeOpacity={0.7}>
-                      <Text style={[styles.videoLink, { color: '#a32d2d' }]}>{t('intro_video_remove')}</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-              </>
-            ) : (
-              <>
-                <Text style={styles.videoMotiv}>{t('intro_video_motiv')}</Text>
-                <TouchableOpacity style={styles.videoCta} onPress={pickVideo} activeOpacity={0.9}>
-                  <Text style={styles.videoCtaText}>{t('intro_video_add')}</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
@@ -1295,7 +1447,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
               </View>
             ) : null}
           </View>
-          <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_announcements')}</Text>
+          <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_announce_short')}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.footerTab}
@@ -1312,21 +1464,11 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.footerTab}
-          onPress={() => setFaqOpen(true)}
-          activeOpacity={0.85}
-        >
-          <View style={styles.footerIconWrap}>
-            <FooterFaqIcon color="#e7dcc4" size={20} />
-          </View>
-          <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_faq_short')}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.footerTab}
           onPress={() => setContactOpen(true)}
           activeOpacity={0.85}
         >
-          <View style={styles.footerLogoWrap}>
-            <Image source={FOOTER_LOGO} style={styles.footerLogo} resizeMode="cover" />
+          <View style={styles.footerIconWrap}>
+            <ContactIcon color="#e7dcc4" size={20} />
           </View>
           <Text style={styles.footerLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('home_support_short')}</Text>
         </TouchableOpacity>
@@ -1359,16 +1501,6 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
         </View>
       </Modal>
 
-      <FaqSheet
-        visible={faqOpen}
-        onClose={() => setFaqOpen(false)}
-        chatPrefill={`${t('faq_chat_msg')}${fullName ? `\n${fullName}` : ''}`}
-        onOpenContact={() => {
-          setFaqOpen(false);
-          setContactOpen(true);
-        }}
-      />
-
       <ContactSheet
         visible={contactOpen}
         onClose={() => setContactOpen(false)}
@@ -1400,7 +1532,11 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
         onClose={() => setJourneyOpen(false)}
         current={journeyN}
         certified={certified}
+        workStartYmd={workStartYmd}
+        seasonEndAt={plannedEndAt || (work.end ? work.end.toISOString() : null)}
+        seasonComplete={seasonCompleteFromEpisode(episode) || certified}
         onOpenStep={(step) => {
+          if (step === 7) return; // adım 7 belgesiz — sadece geri sayım
           setJourneyOpen(false);
           onOpenDocs?.({ scrollToStep: step, returnToJourney: true });
         }}
@@ -1472,6 +1608,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 12, paddingHorizontal: 14,
     borderRadius: 16, backgroundColor: '#fff', borderWidth: 1, borderColor: '#ebe4d5',
   },
+  menuPrivacyIcon: { width: 38, textAlign: 'center', fontSize: 18 },
+  menuPrivacyText: { color: '#2a3342', fontWeight: '800', fontSize: 15 },
+  menuPrivacyHint: { color: '#c2a25a', fontSize: 22, fontWeight: '300' },
   menuLogoutIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#fbeae8', alignItems: 'center', justifyContent: 'center' },
   menuLogoutText: { color: '#b5413a', fontWeight: '800', fontSize: 15 },
   menuLogoutHint: { color: '#c9a9a4', fontSize: 22, fontWeight: '300' },
@@ -1682,6 +1821,10 @@ const styles = StyleSheet.create({
   offerCard: { backgroundColor: '#fff', borderRadius: 18, padding: 18, marginBottom: 14, borderWidth: 1, borderColor: '#d6e0ec', shadowColor: '#1b2533', shadowOpacity: 0.08, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 3 },
   offerKicker: { color: '#1f3a63', fontSize: 11.5, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 },
   offerCardTitle: { color: '#1b2533', fontSize: 18, fontWeight: '800' },
+  offerEmployerName: { color: '#1b2533', fontSize: 15, fontWeight: '800', marginBottom: 8 },
+  opportunityMeta: { marginBottom: 10, paddingVertical: 2 },
+  opportunityName: { color: '#1b2533', fontSize: 15, fontWeight: '800' },
+  opportunityLocation: { color: '#5a5a6b', fontSize: 13, fontWeight: '600', marginTop: 4 },
   offerCardDesc: { color: '#5a5a6b', fontSize: 13.5, fontWeight: '500', lineHeight: 20 },
   offerBtns: { flexDirection: 'row', gap: 10, marginTop: 16 },
   offerDecline: { flex: 1, backgroundColor: '#f3f4f6', borderRadius: 12, paddingVertical: 13, alignItems: 'center' },
@@ -1723,17 +1866,18 @@ const styles = StyleSheet.create({
 
   divider: { height: 1, backgroundColor: '#eef0f2', marginVertical: 16 },
 
-  strip: { flexDirection: 'row', gap: 10 },
+  strip: { gap: 12 },
+  stripRow: { flexDirection: 'row', gap: 10 },
   cell: { flex: 1 },
-  cellBox: { width: '100%', aspectRatio: 0.78, borderRadius: 14, overflow: 'hidden', backgroundColor: '#eef0f2' },
+  cellBox: { width: '100%', aspectRatio: 0.85, borderRadius: 16, overflow: 'hidden', backgroundColor: '#eef0f2' },
   cellImg: { width: '100%', height: '100%' },
   cellEmpty: {
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: '#c2a25a', borderStyle: 'dashed', backgroundColor: '#fafbfc',
   },
-  cellPlus: { fontSize: 24, color: '#c2a25a', fontWeight: '700' },
-  cellAdd: { fontSize: 11.5, color: '#c2a25a', fontWeight: '700', marginTop: 2 },
-  cellCap: { fontSize: 11.5, color: '#6b6457', fontWeight: '700', textAlign: 'center', marginTop: 7 },
+  cellPlus: { fontSize: 26, color: '#c2a25a', fontWeight: '700' },
+  cellAdd: { fontSize: 12.5, color: '#c2a25a', fontWeight: '700', marginTop: 2 },
+  cellCap: { fontSize: 12, color: '#6b6457', fontWeight: '700', textAlign: 'center', marginTop: 8 },
   // Galerideki tanıtım videosu hücresi (foto hücreleriyle aynı boy: cell + cellBox)
   videoCellMedia: { width: '100%', height: '100%', backgroundColor: '#000' },
   videoCellLoading: { alignItems: 'center', justifyContent: 'center' },
@@ -1749,6 +1893,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center', zIndex: 2,
   },
   videoCellMenuIcon: { color: '#fff', fontSize: 16, fontWeight: '900', marginTop: -4 },
+  videoCellPending: {
+    position: 'absolute', top: 4, left: 4, minWidth: 16, height: 16, borderRadius: 8,
+    backgroundColor: '#c2a25a', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, zIndex: 2,
+  },
+  videoCellPendingText: { color: '#16202e', fontSize: 10, fontWeight: '900' },
+  videoBarTrack: { height: 5, borderRadius: 3, backgroundColor: '#eee8dc', overflow: 'hidden' },
+  videoBarFill: { height: '100%', backgroundColor: '#c2a25a', borderRadius: 3 },
+  videoModalWrap: { flex: 1, backgroundColor: '#000' },
+  videoModalHeader: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, paddingBottom: 8, backgroundColor: '#000' },
+  videoModalX: { color: '#fff', fontSize: 24, fontWeight: '800' },
 
   cvBtn: { marginTop: 16, backgroundColor: '#c2a25a', borderRadius: 14, paddingVertical: 15, alignItems: 'center', justifyContent: 'center' },
   cvBtnText: { color: '#1b2533', fontSize: 15.5, fontWeight: '800', letterSpacing: 0.2 },

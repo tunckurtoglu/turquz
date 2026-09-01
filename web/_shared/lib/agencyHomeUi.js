@@ -7,19 +7,16 @@ export const PIPELINE_STAGES = [
   { id: 'concluded', labelKey: 'sub_concluded' },
   { id: 'offered', labelKey: 'sub_offered' },
   { id: 'inprocess', labelKey: 'sub_inprocess' },
-  { id: 'arrivals', labelKey: 'staff_tab_arrivals' },
-  { id: 'transit', labelKey: 'ops_transit' },
   { id: 'staff', labelKey: 'staff_tab_list' },
   { id: 'former', labelKey: 'staff_tab_former' },
+  { id: 'arrivals', labelKey: 'staff_tab_arrivals' },
 ];
 
-/** Günlük kullanım — şeritte görünen 6 aşama */
+/** Günlük kullanım — şeritte görünen aşamalar */
 export const PIPELINE_STAGES_PRIMARY = [
   { id: 'interviews', labelKey: 'sub_interviews' },
   { id: 'offered', labelKey: 'sub_offered' },
   { id: 'inprocess', labelKey: 'sub_inprocess' },
-  { id: 'arrivals', labelKey: 'staff_tab_arrivals' },
-  { id: 'transit', labelKey: 'ops_transit' },
   { id: 'staff', labelKey: 'staff_tab_list' },
 ];
 
@@ -33,6 +30,41 @@ const MORE_STAGE_IDS = new Set(PIPELINE_STAGES_MORE.map((s) => s.id));
 
 export function isPipelineMoreStage(stage) {
   return MORE_STAGE_IDS.has(stage);
+}
+
+/** ATS düzeni: süreçtekiler vs personeller. */
+export const PIPELINE_PHASES = [
+  {
+    id: 'hiring',
+    labelKey: 'pipe_phase_hiring',
+    defaultStage: 'interviews',
+    stages: [
+      { id: 'interviews', labelKey: 'sub_interviews' },
+      { id: 'offered', labelKey: 'agency_filter_offered' },
+      { id: 'inprocess', labelKey: 'sub_inprocess' },
+    ],
+  },
+  {
+    id: 'placed',
+    labelKey: 'pipe_phase_placed',
+    defaultStage: 'staff',
+    stages: [
+      { id: 'staff', labelKey: 'staff_tab_list' },
+      { id: 'former', labelKey: 'staff_tab_former' },
+      { id: 'arrivals', labelKey: 'staff_tab_arrivals' },
+    ],
+  },
+];
+
+export function phaseOfPipelineStage(stage) {
+  if (stage === 'concluded' || stage === 'interviews' || stage === 'offered' || stage === 'inprocess') {
+    return 'hiring';
+  }
+  return 'placed';
+}
+
+export function pipelinePhaseById(id) {
+  return PIPELINE_PHASES.find((p) => p.id === id) || PIPELINE_PHASES[0];
 }
 
 const PROCESS_STAGES = new Set(['interviews', 'concluded', 'offered', 'inprocess']);
@@ -55,12 +87,16 @@ export function normalizeAgencyView(view) {
 }
 
 export function normalizePipelineStage(stage, legacy = {}) {
+  if (stage === 'concluded') return 'interviews';
+  if (stage === 'transit') return 'arrivals';
   if (stage && (PROCESS_STAGES.has(stage) || STAFF_STAGES.has(stage))) return stage;
   const { view, subView, staffView } = legacy;
   if (view === 'staff' || view === 'hired') {
-    if (staffView === 'transit' || staffView === 'arrivals' || staffView === 'former') return staffView;
+    if (staffView === 'transit') return 'arrivals';
+    if (staffView === 'arrivals' || staffView === 'former') return staffView;
     return 'staff';
   }
+  if (subView === 'concluded') return 'interviews';
   if (subView && PROCESS_STAGES.has(subView)) return subView;
   return 'interviews';
 }
@@ -69,11 +105,13 @@ export function normalizePipelineStage(stage, legacy = {}) {
 export function stageFromOpsNav(cat, sub) {
   if (cat === 'messages') return null;
   if (cat === 'hired' || cat === 'staff') {
-    if (sub === 'transit' || sub === 'arrivals' || sub === 'former') return sub;
+    if (sub === 'transit') return 'arrivals';
+    if (sub === 'arrivals' || sub === 'former') return sub;
     return 'staff';
   }
   if (cat === 'process') {
     if (typeof sub === 'string' && sub.startsWith('pipe_')) return 'inprocess';
+    if (sub === 'concluded') return 'interviews';
     if (sub && PROCESS_STAGES.has(sub)) return sub;
     return 'inprocess';
   }
@@ -87,9 +125,15 @@ let ui = {
   poolSort: 'online',
   advFilters: {},
   favOn: false,
+  favEmployerId: null,
+  favEmployerName: '',
+  favDepartment: null,
+  favDepartmentLabel: '',
 };
 
 export function readAgencyHomeUi() {
+  ui.view = normalizeAgencyView(ui.view);
+  ui.pipelineStage = normalizePipelineStage(ui.pipelineStage, ui);
   return ui;
 }
 
@@ -98,6 +142,12 @@ export function writeAgencyHomeUi(patch) {
   next.view = normalizeAgencyView(next.view);
   next.pipelineStage = normalizePipelineStage(next.pipelineStage, next);
   next.subView = isProcessPipelineStage(next.pipelineStage) ? next.pipelineStage : next.subView;
+  if (!next.favEmployerId || !next.favDepartment) {
+    next.favOn = false;
+    next.favEmployerName = '';
+    next.favDepartment = null;
+    next.favDepartmentLabel = '';
+  }
   ui = next;
 }
 
@@ -109,5 +159,9 @@ export function resetAgencyHomeUi() {
     poolSort: 'online',
     advFilters: {},
     favOn: false,
+    favEmployerId: null,
+    favEmployerName: '',
+    favDepartment: null,
+    favDepartmentLabel: '',
   };
 }

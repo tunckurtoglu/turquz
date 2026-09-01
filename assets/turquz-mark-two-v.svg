@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="turquzTwoVGold" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E4B35D"/>
+      <stop offset=".45" stop-color="#C2A25A"/>
+      <stop offset="1" stop-color="#9A7B38"/>
+    </linearGradient>
+  </defs>
+  <!-- Two thick hollow V shapes and the upper diamond detail. -->
+  <path d="M30 36 60 66 90 36v13L60 79 30 49V36Z" fill="url(#turquzTwoVGold)"/>
+  <path d="M20 57 60 97l40-40v14l-40 40-40-40V57Z" fill="url(#turquzTwoVGold)"/>
+  <path d="m60 10 19 18-19 18-19-18L60 10Zm0 11 8 7-8 7-8-7 8-7Z" fill="url(#turquzTwoVGold)" fill-rule="evenodd"/>
+  <circle cx="60" cy="28" r="2.4" fill="#4AB8C7"/>
+  <circle cx="60" cy="28" r="1" fill="#8EC8DC" fill-opacity=".85"/>
+</svg>

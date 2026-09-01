@@ -114,10 +114,12 @@ async function allowedRecipientIds(
   const allowed = new Set<string>();
   for (let i = 0; i < ids.length; i += 200) {
     const slice = ids.slice(i, i + 200);
-    const [{ data: profs, error: pErr }, { data: st, error: sErr }, { data: roles, error: rErr }] = await Promise.all([
+    const [{ data: profs, error: pErr }, { data: st, error: sErr }, { data: roles, error: rErr }, { data: favs }, { data: ivs }] = await Promise.all([
       admin.from('profiles').select('user_id').in('user_id', slice),
       admin.from('candidate_status').select('user_id, status, accepted_by').in('user_id', slice),
       admin.from('user_roles').select('user_id, role').in('user_id', slice),
+      admin.from('agency_favorites').select('candidate_id').eq('agency_id', agencyId).in('candidate_id', slice),
+      admin.from('interviews').select('user_id').eq('created_by', agencyId).in('user_id', slice),
     ]);
     if (pErr) console.error('allow profiles', pErr.message);
     if (sErr) console.error('allow status', sErr.message);
@@ -133,14 +135,15 @@ async function allowedRecipientIds(
       const row = r as { user_id: string; status?: string | null; accepted_by?: string | null };
       if (row.user_id) byId[row.user_id] = row;
     }
+    const favSet = new Set((favs || []).map((r: { candidate_id: string }) => r.candidate_id));
+    const ivSet = new Set((ivs || []).map((r: { user_id: string }) => r.user_id));
     for (const id of slice) {
       if (!exists.has(id) || staff.has(id)) continue;
       const row = byId[id];
       const status = String(row?.status || '');
       const owner = String(row?.accepted_by || '').trim().toLowerCase();
       const owned = !!aid && owner === aid && ['offered', 'accepted', 'hired', 'in_transit'].includes(status);
-      const inPool = status !== 'hired' && status !== 'in_transit';
-      if (owned || inPool) allowed.add(id);
+      if (owned || favSet.has(id) || ivSet.has(id)) allowed.add(id);
     }
   }
   return ids.filter((id) => allowed.has(id));

@@ -15,5 +15,6 @@ ios/
 android/
 .DS_Store
 supabase/.temp/
+.deploy-cache/
 assets/flags_yedek/
 .apple-client-secret.txt

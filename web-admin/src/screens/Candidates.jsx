@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ConfirmDelete from '../components/ConfirmDelete.jsx';
+import SuccessCertificateModal from '../components/SuccessCertificateModal.jsx';
 import {
-  categoryOf, deleteUserFully, getCandidate, listCandidates, signedUrl,
+  categoryOf, deleteUserFully, getCandidate, listCandidates, signedUrl, signedCertificateUrl,
   listCandidateRatings, adminSaveRating, adminDeleteRating,
-  uploadSuccessCertificate, removeSuccessCertificate,
+  removeSuccessCertificate,
 } from '../lib/api';
+import { completedEpisodeFromDetail } from '../lib/successCertificate';
 import { candidateCode } from '../../../lib/candidateCode';
 import { buildCvHtml } from '../../../cv/buildCvHtml';
 import {
@@ -28,6 +30,35 @@ const GENDER_LBL = { male: 'Erkek', female: 'Kadın', unspecified: 'Belirtilmemi
 function fmt(d) {
   if (!d) return '—';
   try { return new Date(d).toLocaleString('tr-TR'); } catch { return String(d); }
+}
+
+function fmtDate(d) {
+  if (!d) return '—';
+  const s = String(d).slice(0, 10);
+  const [y, m, day] = s.split('-');
+  if (!y || !m || !day) return String(d);
+  return `${day}.${m}.${y}`;
+}
+
+function outcomeLabel(o) {
+  const map = {
+    active: 'Aktif',
+    early_exit_pending: 'Erken çıkış (bekliyor)',
+    disputed: 'İtiraz',
+    completed: 'Tamamlandı',
+    early_exit: 'Erken çıkış',
+  };
+  return map[o] || o || '—';
+}
+
+function boardingLabel(s) {
+  const map = {
+    pending: 'Bekliyor',
+    confirmed: 'Onaylandı',
+    missed: 'Kaçırdı',
+    no_response: 'Yanıt yok',
+  };
+  return map[s] || s || '—';
 }
 
 function labelOf(dict, v) {
@@ -106,7 +137,7 @@ export default function Candidates({ selectedId, onSelect }) {
   const [ratingEdits, setRatingEdits] = useState({}); // agency_id -> { discipline, communication, rehire }
   const [ratingBusy, setRatingBusy] = useState(null); // agency_id | 'load'
   const [certBusy, setCertBusy] = useState(false);
-  const certInput = useRef(null);
+  const [certPreviewOpen, setCertPreviewOpen] = useState(false);
 
   const [fPos, setFPos] = useState([]);
   const [fLang, setFLang] = useState([]);
@@ -170,7 +201,11 @@ export default function Candidates({ selectedId, onSelect }) {
       if (term) {
         const code = candidateCode(r.nationality, r.reg_no) || '';
         const pos = (r.positions || []).map((p) => labelOf(POSITION_LABELS, p)).join(' ');
-        const blob = `${code} ${pos} ${r.nationality || ''} ${r.full_name || ''} ${r.email || ''} ${r.title || ''} ${r.reg_no || ''}`;
+        const blob = [
+          code, pos, r.nationality, r.full_name, r.email, r.title, r.reg_no,
+          r.agency_company, r.agency_contact, r.agency_email,
+          r.employer_title, r.employer_name,
+        ].filter(Boolean).join(' ');
         if (!blob.toLocaleLowerCase('tr').includes(term)) return false;
       }
       return true;
@@ -295,30 +330,31 @@ export default function Candidates({ selectedId, onSelect }) {
     }
   };
 
+  const openCert = async (path) => {
+    const w = window.open('about:blank', '_blank');
+    if (!w) {
+      setErr('Tarayıcı pop-up engelledi. Safari’de bu site için pop-up’a izin ver.');
+      return;
+    }
+    try {
+      const url = await signedCertificateUrl(path);
+      if (!url) { w.close(); setErr('Sertifika linki alınamadı'); return; }
+      w.location.href = url;
+    } catch (e) {
+      try { w.close(); } catch { /* ignore */ }
+      setErr(e.message);
+    }
+  };
+
   const reloadDetail = async () => {
     if (!selectedId) return;
     const d = await getCandidate(selectedId);
     setDetail(d);
   };
 
-  const onCertFile = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || !selectedId) return;
-    setCertBusy(true); setErr('');
-    try {
-      await uploadSuccessCertificate(selectedId, file);
-      await reloadDetail();
-    } catch (ex) {
-      setErr(ex?.message || 'Sertifika yüklenemedi');
-    } finally {
-      setCertBusy(false);
-    }
-  };
-
   const doRemoveCert = async () => {
     if (!selectedId) return;
-    if (!window.confirm('Başarı sertifikası silinsin mi? Aday ve acente belgelerinden de kalkar.')) return;
+    if (!window.confirm('Başarı sertifikası kaydı silinsin mi? Aday e-posta kopyasını saklamış olabilir.')) return;
     setCertBusy(true); setErr('');
     try {
       await removeSuccessCertificate(selectedId);
@@ -386,8 +422,15 @@ export default function Candidates({ selectedId, onSelect }) {
     const ratingAvg = ratings.length
       ? (ratings.reduce((s, r) => s + Number(r.avg_score || 0), 0) / ratings.length)
       : null;
-    const certDoc = (detail.documents || []).find((d) => d.kind === 'success_certificate');
-    const otherDocs = (detail.documents || []).filter((d) => d.kind !== 'success_certificate');
+    const certAwards = Array.isArray(detail.certificate_awards) ? detail.certificate_awards : [];
+    const certAward = certAwards[0] || null;
+    const certPublished = !!certAward?.issued_at;
+    const certEpisode = completedEpisodeFromDetail(detail);
+    const otherDocs = detail.documents || [];
+    const ep = detail.episode || null;
+    const fl = detail.flight || null;
+    const episodes = Array.isArray(detail.episodes) ? detail.episodes : [];
+    const hotelName = ep?.employer_title || ep?.employer_name || null;
     return (
       <div>
         <button type="button" className="backLink" onClick={() => onSelect(null)}>‹ Aday listesi</button>
@@ -425,38 +468,122 @@ export default function Candidates({ selectedId, onSelect }) {
               <button type="button" className="dangerBtn" onClick={() => setConfirm(true)}>Sistemden sil</button>
             </div>
           </div>
+
+          <div className="card">
+            <h2>Yerleşim</h2>
+            <div className="kv">
+              <div className="k">Otel / işveren</div>
+              <div className="v">
+                {hotelName ? (
+                  <>
+                    <strong>{hotelName}</strong>
+                    {ep?.employer_name && ep.employer_name !== hotelName ? (
+                      <div className="muted" style={{ fontSize: 12.5 }}>{ep.employer_name}</div>
+                    ) : null}
+                  </>
+                ) : <span className="muted">Henüz yerleşim yok</span>}
+              </div>
+              <div className="k">Pozisyon</div><div className="v">{ep?.position || detail.title || '—'}</div>
+              <div className="k">Adres</div><div className="v">{ep?.employer_address || '—'}</div>
+              <div className="k">Otel tel</div><div className="v">{ep?.employer_phone || '—'}</div>
+              <div className="k">Otel e-posta</div><div className="v">{ep?.employer_email || '—'}</div>
+              <div className="k">Sezon durumu</div>
+              <div className="v"><span className="badge">{outcomeLabel(ep?.outcome)}</span></div>
+            </div>
+          </div>
+
+          <div className="card">
+            <h2>Operasyon</h2>
+            <div className="kv">
+              <div className="k">Teklif</div><div className="v">{fmt(detail.offered_at)}</div>
+              <div className="k">Kabul</div><div className="v">{fmt(detail.accepted_at)}</div>
+              <div className="k">İşe alındı</div><div className="v">{fmt(detail.hired_at || ep?.hired_at)}</div>
+              <div className="k">İşe başlama</div><div className="v">{fmtDate(detail.work_start_at || ep?.work_start_at)}</div>
+              <div className="k">Plan bitiş</div>
+              <div className="v">
+                {detail.planned_end_on
+                  ? fmtDate(detail.planned_end_on)
+                  : (ep?.planned_end_at ? fmt(ep.planned_end_at) : '—')}
+              </div>
+              <div className="k">Sözleşme bitiş</div><div className="v">{fmt(detail.work_end_at)}</div>
+              <div className="k">Uçuş günü</div><div className="v">{fmtDate(detail.flight_depart_on)}</div>
+              <div className="k">Boarding</div><div className="v">{boardingLabel(detail.boarding_status)}</div>
+              {ep?.ended_at ? (
+                <>
+                  <div className="k">Sezon bitti</div><div className="v">{fmt(ep.ended_at)}</div>
+                  <div className="k">Bitiş nedeni</div><div className="v">{ep.end_reason || '—'}</div>
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="card">
+            <h2>Uçuş / transfer</h2>
+            {fl ? (
+              <div className="kv">
+                <div className="k">Güzergâh</div>
+                <div className="v">
+                  {[fl.from_city, fl.from_airport].filter(Boolean).join(' / ') || '—'}
+                  {' → '}
+                  {[fl.to_city, fl.to_airport].filter(Boolean).join(' / ') || '—'}
+                </div>
+                <div className="k">Kalkış</div><div className="v">{fl.depart_at || '—'}</div>
+                <div className="k">Varış</div><div className="v">{fl.arrive_at || '—'}</div>
+                <div className="k">Uçuş</div><div className="v">{[fl.airline, fl.flight_no].filter(Boolean).join(' · ') || '—'}</div>
+                <div className="k">Terminal</div><div className="v">{fl.terminal || '—'}</div>
+                <div className="k">Karşılama</div>
+                <div className="v">
+                  {fl.pickup_name || fl.pickup_phone ? (
+                    <>
+                      <strong>{fl.pickup_name || '—'}</strong>
+                      {fl.pickup_phone ? <div className="muted" style={{ fontSize: 12.5 }}>{fl.pickup_phone}</div> : null}
+                      {fl.pickup_sent_at ? <div className="muted" style={{ fontSize: 12.5 }}>İletildi: {fmt(fl.pickup_sent_at)}</div> : null}
+                    </>
+                  ) : '—'}
+                </div>
+              </div>
+            ) : (
+              <p className="empty" style={{ padding: 8 }}>Uçuş kaydı yok</p>
+            )}
+          </div>
+
           <div className="card">
             <h2>Belgeler</h2>
             <div className="certBox">
               <div className="certBoxHead">
                 <strong>Başarı sertifikası</strong>
-                {certDoc ? <span className="badge ok">Yüklü</span> : <span className="badge">Bekliyor</span>}
+                {certPublished ? <span className="badge ok">Adaya gönderildi</span>
+                  : certEpisode ? <span className="badge warn">Gönderim bekliyor</span>
+                    : <span className="badge">Sezon tamamlanmadı</span>}
               </div>
               <p className="muted" style={{ fontSize: 13, lineHeight: 1.45, margin: '6px 0 10px' }}>
-                Sezonu başarıyla tamamlayan adaya yükleyin. Aday ve acente belgelerinde 7. adım olarak görünür.
+                Adayın adına özel İngilizce sertifika otomatik oluşturulur. Önizleyip onayladıktan sonra
+                adaya e-posta ile gönderilir; yalnızca aday bildirim alır.
               </p>
               <div className="certBoxActions">
-                <input
-                  ref={certInput}
-                  type="file"
-                  accept="application/pdf,image/jpeg,image/png,image/webp,.pdf,.jpg,.jpeg,.png,.webp"
-                  hidden
-                  onChange={onCertFile}
-                />
-                <button
-                  type="button"
-                  className="goldBtn"
-                  style={{ width: 'auto', marginTop: 0, padding: '8px 14px', fontSize: 13 }}
-                  disabled={certBusy}
-                  onClick={() => certInput.current?.click()}
-                >
-                  {certBusy ? 'Yükleniyor…' : (certDoc ? 'Değiştir' : 'Yükle')}
-                </button>
-                {certDoc?.storage_path ? (
-                  <button type="button" className="linkBtn" disabled={certBusy} onClick={() => openDoc(certDoc.storage_path)}>Aç</button>
+                {!certPublished && certEpisode ? (
+                  <button
+                    type="button"
+                    className="goldBtn"
+                    style={{ width: 'auto', marginTop: 0, padding: '8px 14px', fontSize: 13 }}
+                    disabled={certBusy}
+                    onClick={() => setCertPreviewOpen(true)}
+                  >
+                    Önizle ve gönder
+                  </button>
                 ) : null}
-                {certDoc ? (
-                  <button type="button" className="linkBtn danger" disabled={certBusy} onClick={doRemoveCert}>Kaldır</button>
+                {certPublished && certAward?.storage_path ? (
+                  <button type="button" className="linkBtn" disabled={certBusy} onClick={() => openCert(certAward.storage_path)}>Gönderilen belgeyi aç</button>
+                ) : null}
+                {certPublished && certAward ? (
+                  <>
+                    {certAward.email_sent_at ? (
+                      <span className="muted" style={{ fontSize: 12.5 }}>E-posta: {certAward.email_to || '—'} · {fmt(certAward.email_sent_at)}</span>
+                    ) : (
+                      <span className="muted" style={{ fontSize: 12.5 }}>E-posta gönderimi bekleniyor</span>
+                    )}
+                    <button type="button" className="linkBtn danger" disabled={certBusy} onClick={doRemoveCert}>Verilmiş sertifikayı kaldır</button>
+                  </>
                 ) : null}
               </div>
             </div>
@@ -476,6 +603,41 @@ export default function Candidates({ selectedId, onSelect }) {
             )}
           </div>
         </div>
+
+        {episodes.length ? (
+          <div className="card" style={{ marginTop: 16 }}>
+            <h2>Sezon geçmişi</h2>
+            <div className="tableWrap">
+              <table className="adminTable">
+                <thead>
+                  <tr>
+                    <th>Otel</th>
+                    <th>Acente</th>
+                    <th>Durum</th>
+                    <th>Başlangıç</th>
+                    <th>Bitiş</th>
+                    <th>Neden</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {episodes.map((e) => (
+                    <tr key={e.id}>
+                      <td>
+                        <strong>{e.employer_title || e.employer_name || '—'}</strong>
+                        {e.position ? <div className="muted" style={{ fontSize: 12 }}>{e.position}</div> : null}
+                      </td>
+                      <td>{e.agency_company || '—'}</td>
+                      <td><span className="badge">{outcomeLabel(e.outcome)}</span></td>
+                      <td>{e.work_start_at ? fmtDate(e.work_start_at) : fmt(e.hired_at)}</td>
+                      <td>{e.ended_at ? fmt(e.ended_at) : (e.planned_end_at ? fmt(e.planned_end_at) : '—')}</td>
+                      <td>{e.end_reason || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
 
         <div className="card" style={{ marginTop: 16 }}>
           <div className="cvToolbar">
@@ -592,6 +754,13 @@ export default function Candidates({ selectedId, onSelect }) {
             onConfirm={doDelete}
           />
         ) : null}
+        {certPreviewOpen ? (
+          <SuccessCertificateModal
+            detail={detail}
+            onClose={() => setCertPreviewOpen(false)}
+            onSent={reloadDetail}
+          />
+        ) : null}
       </div>
     );
   }
@@ -660,7 +829,7 @@ export default function Candidates({ selectedId, onSelect }) {
                     <option value="old">En eski</option>
                   </select>
                 </label>
-                <input className="input searchInline" placeholder="Ara: ad, e-posta, kod…" value={q} onChange={(e) => setQ(e.target.value)} />
+                <input className="input searchInline" placeholder="Ara: ad, kod, acente, otel…" value={q} onChange={(e) => setQ(e.target.value)} />
                 <button type="button" className="ghostBtn" onClick={load}>Yenile</button>
               </div>
             </div>
@@ -688,12 +857,13 @@ export default function Candidates({ selectedId, onSelect }) {
                       <th>Uyruk</th>
                       <th>Durum</th>
                       <th>Acente</th>
+                      <th>Otel</th>
                       <th>Güncelleme</th>
                     </tr>
                   </thead>
                   <tbody>
                     {list.length === 0 ? (
-                      <tr><td colSpan={7} className="empty">Bu filtrede aday yok</td></tr>
+                      <tr><td colSpan={8} className="empty">Bu filtrede aday yok</td></tr>
                     ) : list.map((r) => (
                       <tr key={r.user_id} className="clickable" onClick={() => onSelect(r.user_id)}>
                         <td>
@@ -710,6 +880,11 @@ export default function Candidates({ selectedId, onSelect }) {
                               <strong>{r.agency_company || r.agency_contact || 'Acente'}</strong>
                               {r.agency_email ? <div className="muted" style={{ fontSize: 12 }}>{r.agency_email}</div> : null}
                             </>
+                          ) : <span className="muted">—</span>}
+                        </td>
+                        <td>
+                          {r.employer_title || r.employer_name ? (
+                            <strong>{r.employer_title || r.employer_name}</strong>
                           ) : <span className="muted">—</span>}
                         </td>
                         <td>{fmt(r.updated_at)}</td>

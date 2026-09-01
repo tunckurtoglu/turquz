@@ -6,7 +6,8 @@ import {
 import { buildAuditLine, sha256Hex } from '../lib/esign';
 import { buildContractHtml } from '../../../cv/buildContractHtml';
 import { withLatinName } from '../../../lib/translit';
-import { candidateCode } from '../../../lib/candidateCode';
+import { agencyDisplayName, candidateCode } from '../../../lib/candidateCode';
+import { documentDownloadName } from '../../../lib/documentFileName';
 import {
   listEmployers, saveEmployer, touchEmployer, deleteEmployer, mergeEmployerIntoContract,
   getEmployer, employerStampInfo, employerReadyForContract, employerContractBlockReason,
@@ -43,12 +44,14 @@ const FIELDS = [
 
 const EMPLOYER_FORM = [
   ['name', 'employer_f_name'], ['title', 'contract_f_title'], ['address', 'contract_f_address'],
+  ['country', 'hotels_country'], ['city', 'hotels_city'], ['region', 'hotels_region'],
+  ['webUrl', 'hotels_badge_web'],
   ['phone', 'contract_f_phone'], ['email', 'contract_f_email'],
   ['contactPhone', 'contract_f_contact_phone'], ['contactEmail', 'contract_f_contact_email'],
 ];
 
 const REQ_CONTRACT = new Set(['title', 'address', 'position']);
-const REQ_EMPLOYER = new Set(['name', 'title', 'address']);
+const REQ_EMPLOYER = new Set(['name', 'title', 'address', 'country', 'city', 'region', 'webUrl']);
 
 export default function ContractModal({ candidate, onClose, onChanged, autoSend = false }) {
   const { t } = useLang();
@@ -68,12 +71,19 @@ export default function ContractModal({ candidate, onClose, onChanged, autoSend 
   const [stampOpen, setStampOpen] = useState(null); // employer object or null
   const [f, setF] = useState({});
   const code = candidateCode(candidate.nationality, candidate.reg_no);
+  const contractDownloadName = documentDownloadName({
+    code,
+    name: agencyDisplayName(data, false),
+    label: t('doc_contract_unsigned') || 'Sözleşme',
+    extension: 'pdf',
+  });
   const autoSendTried = useRef(false);
 
   const blockMsg = (reason) => (
     reason === 'tax' ? t('employer_need_tax')
       : reason === 'stamp' ? t('employer_need_stamp')
-        : t('employer_need_both')
+        : reason === 'details' ? t('employer_need_details')
+          : t('employer_need_both')
   );
 
   const reloadStamp = async (employerId = contract?.employerId) => {
@@ -130,16 +140,12 @@ export default function ContractModal({ candidate, onClose, onChanged, autoSend 
     setFormOpen(true);
   };
 
-  const openNewEmployer = () => {
-    setEmpEditId(null);
-    setEmpF({ name: '', title: '', address: '', phone: '', email: '', contactPhone: '', contactEmail: '' });
-    setEmployerFormOpen(true);
-  };
-
   const openEditEmployer = (e) => {
     setEmpEditId(e.id);
     setEmpF({
       name: e.name || '', title: e.title || '', address: e.address || '',
+      country: e.country || '', city: e.city || '', region: e.region || '',
+      webUrl: e.webUrl || '',
       phone: e.phone || '', email: e.email || '',
       contactPhone: e.contact_phone || '', contactEmail: e.contact_email || '',
     });
@@ -147,12 +153,15 @@ export default function ContractModal({ candidate, onClose, onChanged, autoSend 
   };
 
   const saveEmployerForm = async () => {
-    if (!empF.name?.trim() || !empF.title?.trim() || !empF.address?.trim()) return;
+    if (!empF.name?.trim() || !empF.title?.trim() || !empF.address?.trim()
+      || !empF.country?.trim() || !empF.city?.trim() || !empF.region?.trim() || !empF.webUrl?.trim()) return;
     setEmpSaving(true);
     try {
       await saveEmployer(agencyId, {
         id: empEditId || undefined,
         name: empF.name, title: empF.title, address: empF.address,
+        country: empF.country, city: empF.city, region: empF.region,
+        webUrl: empF.webUrl,
         phone: empF.phone, email: empF.email,
         contact_phone: empF.contactPhone, contact_email: empF.contactEmail,
       });
@@ -167,7 +176,8 @@ export default function ContractModal({ candidate, onClose, onChanged, autoSend 
   };
 
   const removeEmployer = async (e) => {
-    if (!confirm(t('employer_delete_confirm', { name: e.name || '' }))) return;
+    if (!confirm(t('employer_delete_warning', { name: e.name || '' }))) return;
+    if (!confirm(t('employer_delete_final'))) return;
     try {
       await deleteEmployer(agencyId, e.id);
       await refreshEmployers();
@@ -194,7 +204,7 @@ export default function ContractModal({ candidate, onClose, onChanged, autoSend 
 
   const download = () => {
     const w = window.open('', '_blank'); if (!w) return;
-    w.document.write(html); w.document.close(); w.focus();
+    w.document.write(html); w.document.title = contractDownloadName; w.document.close(); w.focus();
     setTimeout(() => { try { w.print(); } catch (_) {} }, 400);
   };
 
@@ -338,7 +348,6 @@ export default function ContractModal({ candidate, onClose, onChanged, autoSend 
                     </div>
                   ))}
                   {employers.length === 0 ? <p className="fieldHint">{t('employer_pick_empty')}</p> : null}
-                  <button type="button" className="ghostBtn full" onClick={openNewEmployer}>+ {t('employer_add_new')}</button>
                 </div>
               )}
             </div>
@@ -366,7 +375,7 @@ export default function ContractModal({ candidate, onClose, onChanged, autoSend 
             </div>
             <div className="modalFoot">
               <button className="ghostBtn" onClick={() => setEmployerFormOpen(false)}>{t('intro_video_cancel')}</button>
-              <button className="goldBtn sm" onClick={saveEmployerForm} disabled={empSaving || !empF.name?.trim() || !empF.title?.trim() || !empF.address?.trim()}>
+              <button className="goldBtn sm" onClick={saveEmployerForm} disabled={empSaving || !empF.name?.trim() || !empF.title?.trim() || !empF.address?.trim() || !empF.country?.trim() || !empF.city?.trim() || !empF.region?.trim() || !empF.webUrl?.trim()}>
                 {empSaving ? '…' : t('save')}
               </button>
             </div>

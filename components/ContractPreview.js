@@ -16,7 +16,7 @@ const GOLD = '#c2a25a';
 
 export default function ContractPreview({
   visible, data, contract, stampInfo,
-  onClose, onSaveContract, onOpenStampSetup,
+  onClose, onSaveContract, onOpenStampSetup, downloadFileName = 'Turquz-Sözleşme.pdf',
 }) {
   const { t, dir } = useLanguage();
   const insets = useSafeAreaInsets();
@@ -52,9 +52,13 @@ export default function ContractPreview({
   const share = async () => {
     setSharing(true);
     try {
-      const uri = pdfUri || (await Print.printToFileAsync({ html })).uri;
+      const sourceUri = pdfUri || (await Print.printToFileAsync({ html })).uri;
+      const FS = await import('expo-file-system');
+      const named = new FS.File(FS.Paths.cache, downloadFileName);
+      try { named.delete(); } catch (_) { /* yoksa sorun değil */ }
+      new FS.File(sourceUri).copy(named);
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: t('contract_title'), UTI: 'com.adobe.pdf' });
+        await Sharing.shareAsync(named.uri, { mimeType: 'application/pdf', dialogTitle: t('contract_title'), UTI: 'com.adobe.pdf' });
       }
     } catch (e) {
       Alert.alert(t('doc_contract_unsigned'), e?.message || 'error');

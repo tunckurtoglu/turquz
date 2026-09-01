@@ -72,7 +72,7 @@ export default function NoticeAudienceBuckets({
   const [dropped, setDropped] = useState({});
   const dark = theme === 'dark';
   const pickedSet = picked instanceof Set ? picked : new Set(picked || []);
-  const visible = (buckets || []).filter((b) => b.id === 'pool' || b.id === 'fav' || (b.people || []).length);
+  const visible = (buckets || []).filter((b) => b.id === 'fav' || (b.people || []).length);
 
   const dropOf = (id) => dropped[id] || new Set();
   const remainingOf = (b) => (b.people || []).filter((p) => !dropOf(b.id).has(p.userId));
@@ -96,12 +96,12 @@ export default function NoticeAudienceBuckets({
         const total = (b.people || []).length;
         const n = people.length;
         const droppedN = total - n;
-        const isPool = b.id === 'pool';
-        const expanded = !isPool && !!open[b.id];
+        const isFav = b.id === 'fav';
+        const expanded = !!open[b.id];
         const allOn = n > 0 && people.every((p) => pickedSet.has(p.userId));
         const someOn = people.some((p) => pickedSet.has(p.userId));
         return (
-          <View key={b.id} style={[styles.card, dark ? styles.cardDark : styles.cardLight, isPool && (dark ? styles.cardPoolDark : styles.cardPoolLight)]}>
+          <View key={b.id} style={[styles.card, dark ? styles.cardDark : styles.cardLight]}>
             <View style={styles.head}>
               {mode === 'pick' ? (
                 <TouchableOpacity
@@ -115,19 +115,16 @@ export default function NoticeAudienceBuckets({
               ) : null}
               <TouchableOpacity
                 style={styles.headMain}
-                onPress={() => { if (!isPool) setOpen((p) => ({ ...p, [b.id]: !p[b.id] })); }}
-                activeOpacity={isPool ? 1 : 0.85}
-                disabled={isPool}
+                onPress={() => setOpen((p) => ({ ...p, [b.id]: !p[b.id] }))}
+                activeOpacity={0.85}
               >
                 <Text style={[styles.title, dark ? styles.titleDark : styles.titleLight]} numberOfLines={1}>
-                  {b.id === 'fav' ? '★ ' : ''}{t(b.labelKey)}
+                  {isFav ? '★ ' : ''}{t(b.labelKey)}
                 </Text>
                 <Text style={[styles.count, dark ? styles.countDark : styles.countLight]}>
                   {droppedN ? `${n}/${total}` : n}
                 </Text>
-                {isPool ? null : (
-                  <Text style={[styles.chev, dark ? styles.chevDark : styles.chevLight]}>{expanded ? '▴' : '▾'}</Text>
-                )}
+                <Text style={[styles.chev, dark ? styles.chevDark : styles.chevLight]}>{expanded ? '▴' : '▾'}</Text>
               </TouchableOpacity>
               {mode === 'send' ? (
                 <TouchableOpacity
@@ -140,9 +137,6 @@ export default function NoticeAudienceBuckets({
                 </TouchableOpacity>
               ) : null}
             </View>
-            {isPool ? (
-              <Text style={[styles.hint, dark ? styles.hintDark : styles.hintLight]}>{t('agency_notice_aud_pool_hint')}</Text>
-            ) : null}
             {expanded ? (
               n || droppedN ? (
                 <View style={styles.people}>

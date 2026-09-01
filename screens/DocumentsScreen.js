@@ -18,13 +18,14 @@ import { Select } from '../components/Select';
 import { DAYS, monthOptions, FLIGHT_YEARS } from '../cv/options';
 import { getLatestConsent, saveConsent, canUploadDocs, hasSensitiveConsent } from '../lib/consent';
 import { listDocuments, uploadDocument, verifyDocument, getSignedUrl, removeDocument, submitDocuments } from '../lib/documents';
+import { getMyCertificateAward, getCertificateAwardUrl } from '../lib/certificateAwards';
 import { getCandidateStatus, docsUnlocked, passportDeadline, formatDeadlineRemain, requestDocsExtraTime } from '../lib/candidate';
 import { supabase } from '../lib/supabase';
 import { latinFirst, latinLast } from '../lib/translit';
-import { PIPELINE, kindState, activeStep, stepActor, kindOwner, DOCS_EXTRA_DAYS } from '../lib/pipeline';
+import { PIPELINE, kindState, activeStep, stepActor, kindOwner, DOCS_EXTRA_DAYS, journeyStep, seasonCompleteFromEpisode } from '../lib/pipeline';
 import { notifyDocumentSubmit, notifyDocsDeadline } from '../lib/push';
 import { getContract } from '../lib/contracts';
-import { getFlight, msUntilArrival, msUntilYmdGate } from '../lib/flights';
+import { getFlight, msUntilArrival, msUntilYmdGate, isYmdDue, msUntilSeasonEnd } from '../lib/flights';
 import CountdownBanner from '../components/CountdownBanner';
 import { loadProfile, saveProfile } from '../lib/profile';
 import { birthPlaceFromOcr } from '../lib/passportFields';
@@ -35,6 +36,9 @@ import ProcessChatSheet from '../components/ProcessChatSheet';
 import ProcessChatFab from '../components/ProcessChatFab';
 import PickupCard from '../components/PickupCard';
 import VerifyingOverlay from '../components/VerifyingOverlay';
+import { getMyEmploymentEpisode } from '../lib/employment';
+import { getCandidateContractEmployer } from '../lib/offerEmployer';
+import TurquzLogo from '../components/TurquzLogo';
 
 function fmtDocDate(v) {
   if (!v) return '';
@@ -101,6 +105,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
 
   const [consent, setConsent] = useState(null);
   const [docs, setDocs] = useState({});          // { passport: row, criminal: row }
+  const [certAward, setCertAward] = useState(null);
   const [uploading, setUploading] = useState(null); // yüklenen belge anahtarı | null
   const [verifying, setVerifying] = useState(null); // doğrulanan belge anahtarı | null
   const [verifyOverlay, setVerifyOverlay] = useState(null); // 'verifying' | 'success' | null
@@ -149,7 +154,9 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
   const [plannedEndOn, setPlannedEndOn] = useState(null);
   const [flightDepartOn, setFlightDepartOn] = useState(null);
   const [contract, setContract] = useState(null);     // acentenin doldurduğu sözleşme verisi
+  const [contractEmployer, setContractEmployer] = useState(null);
   const [processStatus, setProcessStatus] = useState(null);
+  const [episode, setEpisode] = useState(null);
   const [flight, setFlight] = useState(null);         // acentenin doldurduğu uçuş bilgisi
   const [nameSheet, setNameSheet] = useState(false);  // pasaport (Latin) isim düzeltme
   const [nFirst, setNFirst] = useState('');
@@ -178,27 +185,35 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
   const isSubmitted = (k) => !!docs[k]?.submitted_at;
   // Akış (kindState/activeStep) GÖNDERİLEN belgeyle ilerler; taslak adımı ilerletmez.
   const has = isSubmitted;
+  const certIssued = !!certAward?.issued_at;
   const turnAct = unlocked ? activeStep(has) : 0;
   const turnDef = PIPELINE.find((s) => s.step === turnAct);
   const turnMine = !!(unlocked && turnDef && stepActor(turnDef, has) === 'candidate');
-  const turnStepKey = turnDef?.titleKey || (turnAct >= 6 ? 'pipe_step_6' : null);
+  const pickupDone = has('flight_ticket') || !!flight?.pickupSent;
+  const isHired = processStatus === 'hired';
+  const seasonDone = seasonCompleteFromEpisode(episode) || certIssued;
+  // Bilet/transfer bittikten sonra sıra kutusunda “Havaalanı Transfer” kalmasın
+  const turnStepKey = turnDef?.titleKey
+    || (turnAct >= 6 && !pickupDone ? 'pipe_step_6' : null);
 
   // Yol haritası zaten tüm süreci gösteriyor — bu sayfada yalnızca odak adımı.
   const navStep = Number(initialScrollStep);
   const focusStep = (() => {
-    if (navStep >= 1 && navStep <= 7) return navStep;
+    if (navStep >= 1 && navStep <= 9) return navStep;
     if (!unlocked) return null;
     if (turnAct >= 1 && turnAct <= 5) return turnAct;
     if (turnAct >= 6) {
-      if (!(has('flight_ticket') || flight?.pickupSent)) return 6;
-      return 7;
+      return journeyStep(has, pickupDone, { hired: isHired, seasonComplete: seasonDone, certificateIssued: certIssued });
     }
     return null;
   })();
   const headerTitle = t('docs_title');
-  const focusHintKey = focusStep === 7
-    ? (has('success_certificate') ? 'pipe_step_7_desc' : 'pipe_step_7_wait')
-    : (focusStep >= 1 && focusStep <= 6 ? `journey_hint_${focusStep}` : null);
+  const focusTitleKey = focusStep >= 1 && focusStep <= 9 ? `pipe_step_${focusStep}` : null;
+  const focusHintKey = focusStep === 8
+    ? 'journey_hint_8'
+    : focusStep === 9
+      ? (certIssued ? 'pipe_step_9_desc' : 'journey_hint_9')
+      : (focusStep >= 1 && focusStep <= 7 ? `journey_hint_${focusStep}` : null);
 
   useEffect(() => {
     if (!turnMine) {
@@ -237,7 +252,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
 
   useEffect(() => {
     const n = Number(initialScrollStep);
-    if (n >= 1 && n <= 7) setOpenStep(n);
+    if (n >= 1 && n <= 9) setOpenStep(n);
   }, [initialScrollStep]);
 
   const applyStatus = useCallback((status) => {
@@ -250,14 +265,20 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
   }, []);
 
   const refreshDocs = useCallback(async () => {
-    const [rows, con, fl, status] = await Promise.all([
+    const [rows, con, fl, status, ep, employer, award] = await Promise.all([
       listDocuments(userId), getContract(userId), getFlight(userId), getCandidateStatus(userId),
+      getMyEmploymentEpisode().catch(() => null),
+      getCandidateContractEmployer(userId).catch(() => null),
+      getMyCertificateAward(userId),
     ]);
     const map = {};
     rows.forEach((r) => { map[r.kind] = r; });
     setDocs(map);
+    setCertAward(award);
     setContract(con);
+    setContractEmployer(employer);
     setFlight(fl);
+    setEpisode(ep);
     applyStatus(status);
     setDocsReady(true);
     docsFetchedRef.current = true;
@@ -280,6 +301,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
       .on('postgres_changes', { event: '*', schema: 'public', table: 'contracts', filter: `user_id=eq.${userId}` }, () => refreshDocs())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'flights', filter: `user_id=eq.${userId}` }, () => refreshDocs())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'candidate_status', filter: `user_id=eq.${userId}` }, () => refreshDocs())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'certificate_awards', filter: `candidate_id=eq.${userId}` }, () => refreshDocs())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [userId, refreshDocs]);
@@ -545,6 +567,17 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
     }
   };
 
+  const handleViewCert = async () => {
+    try {
+      if (!certAward?.storage_path) return;
+      const url = await getCertificateAwardUrl(certAward.storage_path, 120);
+      setViewerPdf(true);
+      setViewerUrl(url);
+    } catch (e) {
+      Alert.alert(t('docs_title'), t('doc_upload_error'));
+    }
+  };
+
   const handleView = async (docKey) => {
     try {
       // Sözleşme: ödeme portalı açıkken her zaman web (app içi PDF atlanır — indir/yazdır orada).
@@ -734,7 +767,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
           <ActivityIndicator color="#c2a25a" style={{ marginTop: 30 }} />
         ) : !unlocked ? (
           <View style={styles.lockCard}>
-            <Text style={styles.lockIcon}>🔒</Text>
+            <Text style={styles.lockIcon}>⌑</Text>
             <Text style={styles.lockTitle}>{t('docs_locked_title')}</Text>
             <Text style={styles.lockMsg}>{t('docs_locked_msg')}</Text>
           </View>
@@ -747,8 +780,10 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                     <Text style={styles.focusNumText}>{focusStep}</Text>
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.focusKicker}>{t('step')} {focusStep} / 7</Text>
-                    <Text style={[styles.focusTitle, fontsReady && styles.titleFont]}>{t(`pipe_step_${focusStep}`)}</Text>
+                    <Text style={styles.focusKicker}>{t('step')} {focusStep} / 9</Text>
+                    <Text style={[styles.focusTitle, fontsReady && styles.titleFont]}>
+                      {focusTitleKey ? t(focusTitleKey) : null}
+                    </Text>
                   </View>
                 </View>
                 {focusHintKey ? (
@@ -757,11 +792,11 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
               </View>
             ) : null}
 
-            {/* Tüm aday adımları bitti (çalışma vizesi gönderildi) -> premium tebrik kartı */}
-            {has('work_permit') && (!focusStep || focusStep >= 4) ? (
+            {/* Sözleşme ödemesi sonrası tebrik — transfer (6) / sertifika (7) aşamasında gösterme */}
+            {contract?.isPaid && focusStep >= 2 && focusStep < 6 ? (
               <View style={styles.doneCard}>
                 <View style={styles.doneFrame} pointerEvents="none" />
-                <Image source={require('../assets/turquz-logo.png')} style={styles.doneLogo} resizeMode="contain" />
+                <TurquzLogo width={180} height={123} style={styles.doneLogo} wordmarkSize={14} fontFamily="Cinzel_600SemiBold" fontsReady />
                 <View style={styles.doneOrn}>
                   <View style={styles.doneRule} />
                   <Text style={styles.doneStar}>✦</Text>
@@ -773,7 +808,21 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
               </View>
             ) : null}
 
-            {turnStepKey && (!focusStep || turnAct === focusStep || (focusStep >= 6 && turnAct >= 6)) ? (
+            {contractEmployer ? (
+              <View style={styles.employerRevealCard}>
+                <Text style={styles.employerRevealKicker}>{t('employer_details_title') || 'Çalışacağınız işletme'}</Text>
+                <Text style={styles.employerRevealName}>{contractEmployer.displayName}</Text>
+                <Text style={styles.employerRevealLocation}>
+                  {[contractEmployer.country, contractEmployer.city, contractEmployer.region].filter(Boolean).join(' · ')}
+                </Text>
+                {contractEmployer.address ? <Text style={styles.employerRevealLine}>{contractEmployer.address}</Text> : null}
+                {contractEmployer.phone ? <Text style={styles.employerRevealLine}>{contractEmployer.phone}</Text> : null}
+                {contractEmployer.email ? <Text style={styles.employerRevealLine}>{contractEmployer.email}</Text> : null}
+                {contractEmployer.webUrl ? <Text style={styles.employerRevealLine}>{contractEmployer.webUrl}</Text> : null}
+              </View>
+            ) : null}
+
+            {turnStepKey && (!focusStep || turnAct === focusStep || (focusStep === 6 && turnAct >= 6 && !pickupDone)) ? (
               <Animated.View style={turnMine ? { opacity: turnBlink } : null}>
                 <View
                   style={[styles.turnBox, turnMine ? styles.turnYou : styles.turnAgency]}
@@ -846,7 +895,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                       ) : waitingAgency ? (
                         <Text style={styles.waitLabel}>{t('docs_waiting')}</Text>
                       ) : pipelineMode === 'locked' && !tabDone ? (
-                        <Text style={styles.lockedIcon}>🔒</Text>
+                        <Text style={styles.lockedIcon}>⌑</Text>
                       ) : (
                         <Text style={[styles.progressLabel, tabDone && styles.progressDone]}>
                           {t('docs_progress', { n: String(doneN), m: String(totalN) })}
@@ -879,7 +928,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                       ) : waitingAgency ? (
                         <Text style={styles.waitLabel}>{t('docs_waiting')}</Text>
                       ) : pipelineMode === 'locked' && !tabDone ? (
-                        <Text style={styles.lockedIcon}>🔒</Text>
+                        <Text style={styles.lockedIcon}>⌑</Text>
                       ) : (
                         <Text style={[styles.progressLabel, tabDone && styles.progressDone]}>
                           {t('docs_progress', { n: String(doneN), m: String(totalN) })}
@@ -944,7 +993,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                               {busy ? <ActivityIndicator color="#1b2533" /> : <Text style={styles.addBtnText}>{t('doc_upload')}</Text>}
                             </TouchableOpacity>
                           ) : showState === 'locked' ? (
-                            <Text style={styles.lockedIcon}>🔒</Text>
+                            <Text style={styles.lockedIcon}>⌑</Text>
                           ) : null}
                         </View>
                         {draft ? (
@@ -964,13 +1013,13 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                               </TouchableOpacity>
                             )}
                             <TouchableOpacity style={styles.changeBtn} onPress={() => handleRemove(kind)} activeOpacity={0.85}>
-                              <Text style={[styles.changeBtnText, styles.removeText]}>🗑 {t('photo_remove')}</Text>
+                              <Text style={[styles.changeBtnText, styles.removeText]}>⌫ {t('photo_remove')}</Text>
                             </TouchableOpacity>
                           </View>
                         ) : null}
                         {kind === 'passport' && mine && showState === 'active' && !draft ? (
                           <View style={styles.langNoteBox}>
-                            <Text style={styles.langNoteText}>ℹ️ {t('doc_passport_desc')}</Text>
+                            <Text style={styles.langNoteText}>ⓘ {t('doc_passport_desc')}</Text>
                             <Text style={[styles.langNoteText, styles.langNoteTextGap]}>{t('doc_passport_upload_hint')}</Text>
                           </View>
                         ) : null}
@@ -978,10 +1027,10 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                           <View style={styles.langNoteBox}><Text style={styles.langNoteText}>⚠ {t('doc_lang_note')}</Text></View>
                         ) : null}
                         {kind === 'consulate_ref' && mine && showState === 'active' && !draft ? (
-                          <View style={[styles.page3Note, { marginLeft: 22 }]}><Text style={styles.page3NoteText}>📌 {t('consulate_ref_note')}</Text></View>
+                          <View style={[styles.page3Note, { marginLeft: 22 }]}><Text style={styles.page3NoteText}>◇ {t('consulate_ref_note')}</Text></View>
                         ) : null}
                         {kind === 'work_permit' && mine && showState === 'active' && !draft ? (
-                          <View style={[styles.page3Note, { marginLeft: 22 }]}><Text style={styles.page3NoteText}>📌 {t('doc_work_permit_desc')}</Text></View>
+                          <View style={[styles.page3Note, { marginLeft: 22 }]}><Text style={styles.page3NoteText}>◇ {t('doc_work_permit_desc')}</Text></View>
                         ) : null}
                         {/* Çalışma vizesiyle birlikte: başlamayı tercih ettiği en erken tarih */}
                         {kind === 'work_permit' && mine && showState === 'active' ? (
@@ -992,12 +1041,12 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                               <View style={styles.startDateCol}><Select label={t('f_month')} value={psMonth} options={monthOptions(lang)} onChange={(v) => setPreferredDate('m', v)} /></View>
                               <View style={styles.startDateCol}><Select label={t('f_year')} value={psYear} options={FLIGHT_YEARS} onChange={(v) => setPreferredDate('y', v)} /></View>
                             </View>
-                            <Text style={styles.startDateNote}>ℹ️ {t('start_date_note')}</Text>
+                            <Text style={styles.startDateNote}>ⓘ {t('start_date_note')}</Text>
                           </View>
                         ) : null}
                         {kind === 'work_permit' && mine && showState === 'done' && cvData?.preferredStartDate ? (
                           <View style={styles.startDateBox}>
-                            <Text style={styles.startDateLabel}>📅 {t('start_date_label')}: {cvData.preferredStartDate}</Text>
+                          <Text style={styles.startDateLabel}>◫ {t('start_date_label')}: {cvData.preferredStartDate}</Text>
                           </View>
                         ) : null}
                         {kind === 'flight_ticket' && isSubmitted('flight_ticket') && (workStartAt || flightDepartOn || flight?.arriveAt) ? (
@@ -1006,10 +1055,10 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                               <Text style={styles.startDateLabel}>{t('flight_arrive_label')}: {flight.arriveAt}</Text>
                             ) : null}
                             {flightDepartOn ? (
-                              <Text style={styles.startDateLabel}>✈️ {t('flight_depart_label')}: {fmtDocDate(flightDepartOn)}</Text>
+                              <Text style={styles.startDateLabel}>↗ {t('flight_depart_label')}: {fmtDocDate(flightDepartOn)}</Text>
                             ) : null}
                             {workStartAt ? (
-                              <Text style={styles.startDateLabel}>📅 {t('work_start_label')}: {fmtDocDate(workStartAt)}</Text>
+                              <Text style={styles.startDateLabel}>◫ {t('work_start_label')}: {fmtDocDate(workStartAt)}</Text>
                             ) : null}
                             {plannedEndOn ? (
                               <Text style={styles.startDateNote}>{t('work_end_label')}: {fmtDocDate(plannedEndOn)}</Text>
@@ -1066,7 +1115,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
 
             {/* 6) Havaalanı transfer — bilet gelmeden kilitli */}
             {(!focusStep || focusStep === 6) ? (() => {
-              const pickupOpen = has('flight_ticket') || flight?.pickupSent;
+              const pickupOpen = pickupDone;
               return (
                 <View
                   style={[styles.stepCard, pickupOpen ? styles.cardDone : styles.cardLocked]}
@@ -1082,7 +1131,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                       {pickupOpen ? (
                         <Text style={[styles.progressLabel, styles.progressDone]}>{t('docs_progress', { n: '1', m: '1' })}</Text>
                       ) : (
-                        <Text style={styles.lockedIcon}>🔒</Text>
+                            <Text style={styles.lockedIcon}>⌑</Text>
                       )}
                     </View>
                   ) : (
@@ -1097,7 +1146,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                       {pickupOpen ? (
                         <Text style={[styles.progressLabel, styles.progressDone]}>{t('docs_progress', { n: '1', m: '1' })}</Text>
                       ) : (
-                        <Text style={styles.lockedIcon}>🔒</Text>
+                        <Text style={styles.lockedIcon}>⌑</Text>
                       )}
                     </View>
                   )}
@@ -1120,65 +1169,194 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
                     />
                     </>
                   ) : (
-                    <Text style={styles.pickupLockText}>🔒 {t('pickup_lock')}</Text>
+                    <Text style={styles.pickupLockText}>⌑ {t('pickup_lock')}</Text>
                   )}
                 </View>
               );
             })() : null}
 
-            {/* 7) Turquz başarı sertifikası — admin yükler */}
+            {/* 7) İşe başladınız — belge yok; tarihe kadar pasif, sonra sezon geri sayımı */}
             {(!focusStep || focusStep === 7) ? (() => {
-              const certOpen = has('success_certificate');
+              const startYmd = workStartAt ? String(workStartAt).slice(0, 10) : null;
+              const startReached = !startYmd || isYmdDue(startYmd, nowTick);
+              const step7Done = seasonDone;
+              const step7Live = isHired && startReached && !seasonDone;
+              const step7Wait = isHired && !startReached;
+              const open = step7Done || step7Live;
+              const startLeft = step7Wait ? msUntilYmdGate(startYmd, nowTick) : 0;
+              const seasonLeft = step7Live ? msUntilSeasonEnd(plannedEndOn, nowTick) : 0;
               return (
                 <View
-                  style={[styles.stepCard, certOpen ? styles.cardDone : styles.cardLocked]}
+                  style={[
+                    styles.stepCard,
+                    step7Done ? styles.cardDone : step7Live ? styles.cardActive : styles.cardLocked,
+                  ]}
                   collapsable={false}
                   onLayout={(e) => pinStep(7, e.nativeEvent.layout.y)}
                 >
                   {focusStep === 7 ? (
                     <View style={styles.focusMetaRow}>
+                      <View style={[styles.ownerChip, open ? styles.ownerOther : styles.ownerMuted]}>
+                        <Text style={[styles.ownerChipText, open ? styles.ownerOtherText : styles.ownerMutedText]}>{t('doc_owner_you')}</Text>
+                      </View>
+                      <View style={{ flex: 1 }} />
+                      {step7Done ? (
+                        <Text style={[styles.progressLabel, styles.progressDone]}>✓</Text>
+                      ) : step7Live ? (
+                        <View style={styles.nowChip}><Text style={styles.nowChipText}>{t('docs_now')}</Text></View>
+                      ) : (
+                        <Text style={styles.lockedIcon}>⌑</Text>
+                      )}
+                    </View>
+                  ) : (
+                    <View style={styles.stepHead}>
+                      <View style={[styles.stepNo, step7Done ? styles.circleDone : step7Live ? styles.circleYou : styles.circleLocked]}>
+                        <Text style={styles.stepNoText}>{step7Done ? '✓' : '7'}</Text>
+                      </View>
+                      <Text style={[styles.stepTitle, !open && !step7Wait && styles.stepTitleMuted]}>{t('pipe_step_7')}</Text>
+                      {step7Done ? (
+                        <Text style={[styles.progressLabel, styles.progressDone]}>✓</Text>
+                      ) : step7Live ? (
+                        <View style={styles.nowChip}><Text style={styles.nowChipText}>{t('docs_now')}</Text></View>
+                      ) : (
+                        <Text style={styles.lockedIcon}>⌑</Text>
+                      )}
+                    </View>
+                  )}
+                  {(workStartAt || plannedEndOn) && (step7Done || step7Live || step7Wait) ? (
+                    <View style={{ marginTop: 6, marginBottom: 4 }}>
+                      {workStartAt ? (
+                        <Text style={styles.pickupLockText}>{t('work_start_label')}: {fmtDocDate(workStartAt)}</Text>
+                      ) : null}
+                      {plannedEndOn ? (
+                        <Text style={styles.pickupLockText}>{t('season_end_label')}: {fmtDocDate(plannedEndOn)}</Text>
+                      ) : null}
+                    </View>
+                  ) : null}
+                  {step7Done ? (
+                    <Text style={styles.pickupLockText}>{t('journey_hint_7_done')}</Text>
+                  ) : step7Wait ? (
+                    <>
+                      <Text style={styles.pickupLockText}>{t('journey_hint_7_wait')}</Text>
+                      {startLeft > 0 ? (
+                        <CountdownBanner
+                          variant="muted"
+                          titleKey="work_start_countdown_title"
+                          subKey="work_start_countdown_sub"
+                          leftMs={startLeft}
+                        />
+                      ) : null}
+                    </>
+                  ) : step7Live ? (
+                    seasonLeft > 0 ? (
+                      <CountdownBanner
+                        variant="muted"
+                        titleKey="season_countdown_title"
+                        subKey="season_countdown_sub"
+                        leftMs={seasonLeft}
+                      />
+                    ) : (
+                      <Text style={styles.pickupLockText}>{t('season_countdown_sub')}</Text>
+                    )
+                  ) : (
+                    <Text style={styles.pickupLockText}>⌑ {t('journey_hint_7_wait')}</Text>
+                  )}
+                </View>
+              );
+            })() : null}
+
+            {/* 8) Forum — yakında */}
+            {(!focusStep || focusStep === 8) ? (
+              <View
+                style={[styles.stepCard, styles.cardLocked]}
+                collapsable={false}
+                onLayout={(e) => pinStep(8, e.nativeEvent.layout.y)}
+              >
+                {focusStep === 8 ? (
+                  <View style={styles.focusMetaRow}>
+                    <View style={[styles.ownerChip, styles.ownerMuted]}>
+                      <Text style={[styles.ownerChipText, styles.ownerMutedText]}>{t('soon')}</Text>
+                    </View>
+                    <View style={{ flex: 1 }} />
+                    <Text style={styles.lockedIcon}>⌑</Text>
+                  </View>
+                ) : (
+                  <View style={styles.stepHead}>
+                    <View style={[styles.stepNo, styles.circleLocked]}>
+                      <Text style={styles.stepNoText}>8</Text>
+                    </View>
+                    <Text style={[styles.stepTitle, styles.stepTitleMuted]}>{t('pipe_step_8')}</Text>
+                    <View style={[styles.ownerChip, styles.ownerMuted]}>
+                      <Text style={[styles.ownerChipText, styles.ownerMutedText]}>{t('soon')}</Text>
+                    </View>
+                      <Text style={styles.lockedIcon}>⌑</Text>
+                  </View>
+                )}
+                <Text style={styles.pickupLockText}>⌑ {t('journey_hint_8')}</Text>
+              </View>
+            ) : null}
+
+            {/* 9) Turquz başarı sertifikası — admin yükler (forumdan sonra) */}
+            {(!focusStep || focusStep === 9) ? (() => {
+              const certOpen = certIssued;
+              const unlocked9 = seasonDone || certOpen;
+              return (
+                <View
+                  style={[styles.stepCard, certOpen ? styles.cardDone : styles.cardLocked]}
+                  collapsable={false}
+                  onLayout={(e) => pinStep(9, e.nativeEvent.layout.y)}
+                >
+                  {focusStep === 9 ? (
+                    <View style={styles.focusMetaRow}>
                       <View style={[styles.ownerChip, certOpen ? styles.ownerOther : styles.ownerMuted]}>
-                        <Text style={[styles.ownerChipText, certOpen ? styles.ownerOtherText : styles.ownerMutedText]}>{t('doc_owner_turquz')}</Text>
+                        <Text style={[styles.ownerChipText, certOpen ? styles.ownerOtherText : styles.ownerMutedText]}>
+                          {t('doc_owner_turquz')}
+                        </Text>
                       </View>
                       <View style={{ flex: 1 }} />
                       {certOpen ? (
                         <Text style={[styles.progressLabel, styles.progressDone]}>{t('docs_progress', { n: '1', m: '1' })}</Text>
                       ) : (
-                        <Text style={styles.lockedIcon}>🔒</Text>
+                        <Text style={styles.lockedIcon}>⌑</Text>
                       )}
                     </View>
                   ) : (
                     <View style={styles.stepHead}>
                       <View style={[styles.stepNo, certOpen ? styles.circleDone : styles.circleLocked]}>
-                        <Text style={styles.stepNoText}>{certOpen ? '✓' : '7'}</Text>
+                        <Text style={styles.stepNoText}>{certOpen ? '✓' : '9'}</Text>
                       </View>
-                      <Text style={[styles.stepTitle, !certOpen && styles.stepTitleMuted]}>{t('pipe_step_7')}</Text>
+                      <Text style={[styles.stepTitle, !certOpen && styles.stepTitleMuted]}>{t('pipe_step_9')}</Text>
                       <View style={[styles.ownerChip, certOpen ? styles.ownerOther : styles.ownerMuted]}>
-                        <Text style={[styles.ownerChipText, certOpen ? styles.ownerOtherText : styles.ownerMutedText]}>{t('doc_owner_turquz')}</Text>
+                        <Text style={[styles.ownerChipText, certOpen ? styles.ownerOtherText : styles.ownerMutedText]}>
+                          {t('doc_owner_turquz')}
+                        </Text>
                       </View>
                       {certOpen ? (
                         <Text style={[styles.progressLabel, styles.progressDone]}>{t('docs_progress', { n: '1', m: '1' })}</Text>
                       ) : (
-                        <Text style={styles.lockedIcon}>🔒</Text>
+                        <Text style={styles.lockedIcon}>⌑</Text>
                       )}
                     </View>
                   )}
                   {certOpen ? (
                     <>
-                      <Text style={styles.certCongrats}>🎉 {t('pipe_step_7_desc')}</Text>
+                      <Text style={styles.certCongrats}>✦ {t('pipe_step_9_desc')}</Text>
+                      {certAward?.email_sent_at ? (
+                        <Text style={styles.pickupLockText}>{t('cert_email_sent', { email: certAward.email_to || '—' })}</Text>
+                      ) : null}
                       <View style={styles.subRow}>
                         <View style={styles.subMain}>
                           <Text style={[styles.subBullet, styles.subBulletDone]}>✓</Text>
                           <Text style={styles.subLabel}>{t('doc_success_certificate')}</Text>
                           <View style={{ flex: 1 }} />
-                          <TouchableOpacity onPress={() => handleView('success_certificate')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                          <TouchableOpacity onPress={handleViewCert} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                             <Text style={styles.linkAgency}>{t('doc_view')}</Text>
                           </TouchableOpacity>
                         </View>
                       </View>
                     </>
                   ) : (
-                    <Text style={styles.pickupLockText}>🔒 {t('pipe_step_7_wait')}</Text>
+                    <Text style={styles.pickupLockText}>⌑ {t(unlocked9 ? 'pipe_step_9_wait' : 'journey_hint_9')}</Text>
                   )}
                 </View>
               );
@@ -1302,6 +1480,7 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
       />
       <ProcessChatSheet
         visible={chatOpen}
+        light
         onClose={() => setChatOpen(false)}
         candidateId={userId}
         peerLabel={t('chat_title')}
@@ -1396,9 +1575,17 @@ const styles = StyleSheet.create({
   doneStarBottom: { color: 'rgba(194,162,90,0.8)', fontSize: 12, marginTop: 16 },
   doneTitle: { color: '#16202e', fontSize: 22, fontWeight: '900', marginBottom: 14, textAlign: 'center', letterSpacing: 0.3 },
   doneBody: { color: '#5b5444', fontSize: 13.5, lineHeight: 21, textAlign: 'center' },
+  employerRevealCard: {
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#e7dcc2', borderRadius: 16,
+    padding: 16, marginBottom: 16,
+  },
+  employerRevealKicker: { color: '#9a7b1f', fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
+  employerRevealName: { color: '#1b2533', fontSize: 18, fontWeight: '900', marginTop: 5 },
+  employerRevealLocation: { color: '#9a7b1f', fontSize: 14, fontWeight: '800', marginTop: 6 },
+  employerRevealLine: { color: '#5a6575', fontSize: 13, lineHeight: 19, marginTop: 4 },
 
   lockCard: { alignItems: 'center', backgroundColor: '#fff', borderWidth: 0.5, borderColor: '#e6e8ec', borderRadius: 14, padding: 26, marginTop: 16 },
-  lockIcon: { fontSize: 40, marginBottom: 10 },
+  lockIcon: { fontSize: 40, color: '#9aa1ac', marginBottom: 10 },
   lockTitle: { fontSize: 17, fontWeight: '800', color: '#1b2533', marginBottom: 8, textAlign: 'center' },
   lockMsg: { fontSize: 13.5, color: '#737373', lineHeight: 20, textAlign: 'center' },
 
@@ -1530,7 +1717,7 @@ const styles = StyleSheet.create({
   stepLocked: { backgroundColor: '#c9ccd2' },
   lockedText: { color: '#9aa1ac' },
   waitText: { fontSize: 12.5, color: '#9a6b16', fontWeight: '700', marginTop: 4 },
-  lockedIcon: { fontSize: 15, marginLeft: 10 },
+  lockedIcon: { fontSize: 17, color: '#9aa1ac', marginLeft: 10, fontWeight: '600' },
 
   busyOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 80, elevation: 80, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.35)' },
   busyCard: { backgroundColor: '#fff', borderRadius: 16, paddingVertical: 26, paddingHorizontal: 34, alignItems: 'center', minWidth: 180 },

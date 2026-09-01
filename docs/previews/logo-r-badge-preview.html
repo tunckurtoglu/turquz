@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <title>Turquz — R daire denemesi</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      background: #0a1121;
+      color: #e7dcc4;
+      font-family: Inter, system-ui, sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 48px; padding: 40px 24px;
+    }
+    h1 { font-size: 14px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #8e98a8; margin: 0; }
+    .panel {
+      background: #121b2e; border: 1px solid rgba(168,148,104,0.28);
+      border-radius: 20px; padding: 40px 48px; text-align: center;
+    }
+    .wordmark {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0.35em;
+      font-family: Cinzel, Georgia, serif; font-weight: 600;
+    }
+    .wordmark .teal { color: #4AB8C7; letter-spacing: 0.28em; }
+    .wordmark .r-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 1.45em; height: 1.45em; border-radius: 50%;
+      border: 2px solid #C2A25A; background: rgba(0,0,0,0.2);
+      margin: 0 0.12em;
+    }
+    .wordmark .r-badge span {
+      color: #D4AF37; font-size: 0.88em; letter-spacing: 0;
+      background: linear-gradient(180deg, #F0D78C 0%, #D4AF37 55%, #9A7B1F 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .sizes { display: flex; flex-wrap: wrap; gap: 32px; justify-content: center; align-items: flex-end; }
+    .size-block { text-align: center; }
+    .size-block p { margin: 12px 0 0; font-size: 11px; color: #687487; }
+    .sm { font-size: 20px; }
+    .md { font-size: 32px; }
+    .lg { font-size: 54px; }
+  </style>
+</head>
+<body>
+  <h1>TURQUZ — altın R yuvarlak içinde</h1>
+  <div class="panel">
+    <div class="sizes">
+      <div class="size-block">
+        <div class="wordmark sm">
+          <span class="teal">TU</span>
+          <span class="r-badge"><span>R</span></span>
+          <span class="teal">QUZ</span>
+        </div>
+        <p>Acente header (20px)</p>
+      </div>
+      <div class="size-block">
+        <div class="wordmark md">
+          <span class="teal">TU</span>
+          <span class="r-badge"><span>R</span></span>
+          <span class="teal">QUZ</span>
+        </div>
+        <p>Giriş ekranı (~32px)</p>
+      </div>
+      <div class="size-block">
+        <div class="wordmark lg">
+          <span class="teal">TU</span>
+          <span class="r-badge"><span>R</span></span>
+          <span class="teal">QUZ</span>
+        </div>
+        <p>Lockup (~54px)</p>
+      </div>
+    </div>
+  </div>
+  <p style="max-width: 420px; text-align: center; font-size: 13px; color: #687487; line-height: 1.6;">
+    TU + QUZ turkuaz; R altın gradyan ve ince altın halka içinde. Mobilde acente paneli ve giriş ekranında canlı deneme.
+  </p>
+</body>
+</html>

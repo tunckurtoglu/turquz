@@ -24,6 +24,10 @@ const META = {
   document: { icon: '📄', bg: '#e7ecf3', fg: '#1f3a63' },
   docs_deadline: { icon: '⏰', bg: '#fbeae8', fg: '#b5413a' },
   docs_extra: { icon: '⏳', bg: '#fbf0db', fg: '#c98a1e' },
+  docs_agency_extra: { icon: '⏳', bg: '#fbf0db', fg: '#c98a1e' },
+  consulate_deadline: { icon: '⏰', bg: '#fbeae8', fg: '#b5413a' },
+  consulate_agency_extra: { icon: '⏳', bg: '#fbf0db', fg: '#c98a1e' },
+  process_ended: { icon: '⏹', bg: '#f1f3f6', fg: '#5b6575' },
   reupload: { icon: '🔄', bg: '#fbf0db', fg: '#c98a1e' },
   agency_doc_retracted: { icon: '↩', bg: '#fbeae8', fg: '#b5413a' },
   agency_doc_updated: { icon: '📄', bg: '#e7ecf3', fg: '#1f3a63' },
@@ -43,6 +47,7 @@ const META = {
   employment_end_undone: { icon: '↩', bg: '#e7f3ec', fg: '#1f8a4c' },
   employment_disputed: { icon: '⚖️', bg: '#fbf0db', fg: '#c98a1e' },
   employment_completed: { icon: '🏅', bg: '#f3ecdc', fg: '#9a7b1f' },
+  success_certificate: { icon: '🏅', bg: '#f3ecdc', fg: '#9a7b1f' },
   employment_early_exit: { icon: '🚪', bg: '#f1f3f6', fg: '#5b6575' },
   employment_continued: { icon: '✓', bg: '#e7f3ec', fg: '#1f8a4c' },
   employment_end_remind: { icon: '⏰', bg: '#fbf0db', fg: '#c98a1e' },
@@ -70,23 +75,30 @@ const META = {
 };
 const metaOf = (type) => META[type] || META.default;
 
+/** Adaya özel — acente zilinde gösterilmez */
+const CANDIDATE_ONLY_NOTIF = new Set([
+  'employment_started', 'boarding_check', 'flight_ticket_ready',
+  'process_ended', 'reupload', 'employment_end_requested_ack',
+]);
+
 function BellIcon({ color, size = 24 }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <Path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      <Path d="M13.7 21a2 2 0 0 1-3.4 0" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" fill={color} />
+      <Path d="M13.7 21a2 2 0 0 1-3.4 0" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
     </Svg>
   );
 }
 
 function StopwatchIcon({ color, size = 22 }) {
+  const hand = '#0e141c';
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <Circle cx="12" cy="13.2" r="7.2" stroke={color} strokeWidth="1.8" />
-      <Path d="M12 13.2V9.6" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
-      <Path d="M10 3.6h4" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
-      <Path d="M12 3.6v2.2" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
-      <Path d="M17.6 7.2l1.2-1.2" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+      <Circle cx="12" cy="13.2" r="7.2" fill={color} />
+      <Path d="M12 13.2V9.6" stroke={hand} strokeWidth="2" strokeLinecap="round" />
+      <Path d="M10 3.6h4" stroke={color} strokeWidth="2.2" strokeLinecap="round" />
+      <Path d="M12 3.6v2.2" stroke={color} strokeWidth="2.2" strokeLinecap="round" />
+      <Path d="M17.6 7.2l1.2-1.2" stroke={color} strokeWidth="2" strokeLinecap="round" />
     </Svg>
   );
 }
@@ -117,6 +129,10 @@ function notifText(n, t, lang) {
     if (n.ref_user && n.user_id && n.ref_user === n.user_id) return t('notif_document_for_you');
     return t('notif_document');
   }
+  if (n.type === 'employment_completed') {
+    if (p.openRate) return t('notif_employment_completed_agency');
+    return t('notif_employment_completed');
+  }
   if (n.type === 'interview_scheduled') {
     const code = candidateCode(p.nationality, p.reg_no);
     const slot = p.slot ? slotLabel(p.slot, lang) : '';
@@ -146,7 +162,7 @@ function notifText(n, t, lang) {
   return t(`notif_${n.type}`);
 }
 
-export default function NotificationBell({ userId, color = '#cbd2db', onNavigate, footerLabel, excludeChat = false, excludeAnnouncement = false, footerIcon = 'bell' }) {
+export default function NotificationBell({ userId, color = '#cbd2db', onNavigate, footerLabel, excludeChat = false, excludeAnnouncement = false, footerIcon = 'bell', forAgency = false }) {
   const { t, lang } = useLanguage();
   const insets = useSafeAreaInsets();
   const [open, setOpen] = useState(false);
@@ -158,6 +174,7 @@ export default function NotificationBell({ userId, color = '#cbd2db', onNavigate
     ...(excludeChat ? ['chat_message'] : []),
     ...(excludeAnnouncement ? ['announcement', 'agency_notice'] : []),
     'agency_notice',
+    ...(forAgency ? [...CANDIDATE_ONLY_NOTIF] : []),
   ];
 
   const refresh = useCallback(async () => {
@@ -169,7 +186,7 @@ export default function NotificationBell({ userId, color = '#cbd2db', onNavigate
     const filtered = list.filter((x) => !excludeTypes.includes(x.type));
     setItems(filtered);
     setUnread(n);
-  }, [userId, excludeChat, excludeAnnouncement]);
+  }, [userId, excludeChat, excludeAnnouncement, forAgency]);
 
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {

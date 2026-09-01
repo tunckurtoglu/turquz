@@ -11,7 +11,6 @@ export const FOCUS_ORDER = [
   'interview_today',
   'chat',
   'transit',
-  'offered_wait',
 ];
 
 /** Ekranda gösterilen satır üst sınırı (grup başına). */
@@ -87,18 +86,18 @@ export const OPS_SHORTCUTS = [
 
 /**
  * Süreç özeti (funnel) — sakin envanter; tek odak kuyruğundan ayrı.
- * 9 kutu: Teklif → Mülakat → Belge → Sözleşme → Konsolosluk no → İzin → Bilet → Transfer → Yolda
+ * 9 kutu: Mülakat → Teklif → Belge → Sözleşme → Konsolosluk → İzin → Bilet → Transfer → Personeller
  */
 export const FUNNEL_TILES = [
-  { id: 'offered', metricKey: 'funnelOffered', titleKey: 'ops_funnel_offer', nav: { cat: 'process', sub: 'offered' } },
   { id: 'interview', metricKey: 'funnelInterview', titleKey: 'ops_funnel_interview', nav: { cat: 'process', sub: 'interviews' } },
+  { id: 'offered', metricKey: 'funnelOffered', titleKey: 'ops_funnel_offer', nav: { cat: 'process', sub: 'offered' } },
   { id: 'docs', metricKey: 'funnelDocs', titleKey: 'pipe_step_1', nav: { cat: 'process', sub: 'pipe_1' } },
   { id: 'contract', metricKey: 'funnelContract', titleKey: 'pipe_step_2', nav: { cat: 'process', sub: 'pipe_2' } },
   { id: 'ref', metricKey: 'funnelRef', titleKey: 'ops_funnel_ref', nav: { cat: 'process', sub: 'pipe_3' } },
   { id: 'permit', metricKey: 'funnelPermit', titleKey: 'ops_funnel_permit', nav: { cat: 'process', sub: 'pipe_4' } },
   { id: 'flight', metricKey: 'funnelFlight', titleKey: 'pipe_step_5', nav: { cat: 'process', sub: 'pipe_5' } },
-  { id: 'transfer', metricKey: 'funnelTransfer', titleKey: 'ops_funnel_transfer', nav: { cat: 'process', sub: 'pipe_6' } },
-  { id: 'transit', metricKey: 'funnelTransit', titleKey: 'ops_transit', nav: { cat: 'staff', sub: 'transit', webCat: 'hired', webSub: 'transit' } },
+  { id: 'transfer', metricKey: 'funnelTransfer', titleKey: 'ops_funnel_transfer', nav: { cat: 'staff', sub: 'arrivals', webCat: 'hired', webSub: 'arrivals' } },
+  { id: 'staff', metricKey: 'hired', titleKey: 'staff_tab_list', nav: { cat: 'staff', sub: 'staff', webCat: 'hired', webSub: 'staff' } },
 ];
 
 /** Filtre id → metrik / i18n. */
@@ -111,7 +110,6 @@ export const FOCUS_DEFS = {
   interview_today: { key: 'interviewsToday', titleKey: 'ops_interview_today', hintKey: 'ops_interview_today_hint', urgent: false },
   chat: { key: 'chatUnread', titleKey: 'ops_chat', hintKey: 'ops_chat_hint', urgent: false, cat: 'messages' },
   transit: { key: 'transit', titleKey: 'ops_transit', hintKey: 'ops_transit_hint', urgent: false },
-  offered_wait: { key: 'offered', titleKey: 'ops_offered', hintKey: 'ops_offered_hint', urgent: false },
 };
 
 export function countForFocus(filterId, metrics = {}, countsByKind = {}) {

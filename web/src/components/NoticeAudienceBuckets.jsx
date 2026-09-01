@@ -58,7 +58,7 @@ export default function NoticeAudienceBuckets({
   const [open, setOpen] = useState({});
   const [dropped, setDropped] = useState({});
   const pickedSet = picked instanceof Set ? picked : new Set(picked || []);
-  const visible = (buckets || []).filter((b) => b.id === 'pool' || b.id === 'fav' || (b.people || []).length);
+  const visible = (buckets || []).filter((b) => b.id === 'fav' || (b.people || []).length);
   if (!visible.length) return null;
 
   const dropOf = (id) => dropped[id] || new Set();
@@ -81,12 +81,12 @@ export default function NoticeAudienceBuckets({
         const total = (b.people || []).length;
         const n = people.length;
         const droppedN = total - n;
-        const isPool = b.id === 'pool';
-        const expanded = !isPool && !!open[b.id];
+        const isFav = b.id === 'fav';
+        const expanded = !!open[b.id];
         const allOn = n > 0 && people.every((p) => pickedSet.has(p.userId));
         const someOn = people.some((p) => pickedSet.has(p.userId));
         return (
-          <div key={b.id} className={`audGroup ${isPool ? 'pool' : ''}`}>
+          <div key={b.id} className="audGroup">
             <div className="audHead">
               {mode === 'pick' ? (
                 <button
@@ -101,11 +101,11 @@ export default function NoticeAudienceBuckets({
               <button
                 type="button"
                 className="audTitle"
-                onClick={() => { if (!isPool) setOpen((p) => ({ ...p, [b.id]: !p[b.id] })); }}
+                onClick={() => setOpen((p) => ({ ...p, [b.id]: !p[b.id] }))}
               >
-                <strong>{b.id === 'fav' ? '★ ' : ''}{t(b.labelKey)}</strong>
+                <strong>{isFav ? '★ ' : ''}{t(b.labelKey)}</strong>
                 <em>{droppedN ? `${n}/${total}` : n}</em>
-                {isPool ? null : <span>{expanded ? '▴' : '▾'}</span>}
+                <span>{expanded ? '▴' : '▾'}</span>
               </button>
               {mode === 'send' ? (
                 <button
@@ -118,7 +118,6 @@ export default function NoticeAudienceBuckets({
                 </button>
               ) : null}
             </div>
-            {isPool ? <p className="audHint">{t('agency_notice_aud_pool_hint')}</p> : null}
             {expanded ? (
               n || droppedN ? (
                 <div className="audPeople">

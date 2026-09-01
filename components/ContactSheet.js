@@ -1,22 +1,23 @@
-// Aday + acente iletişim — WhatsApp / Telegram destek, e-posta, sosyal, web.
-import React from 'react';
+// Aday + acente iletişim — WhatsApp / Telegram destek, e-posta, sosyal, web + SSS.
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, Modal, TouchableOpacity, ScrollView, StyleSheet, Image, Alert, StatusBar,
+  View, Text, Modal, TouchableOpacity, ScrollView, StyleSheet, Alert, StatusBar,
 } from 'react-native';
 import Svg, { Path, Circle, Rect } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
+import { getCandidateFaq } from '../lib/candidateFaq';
 import {
   openTurquzWhatsApp, openTurquzTelegram, openTurquzEmail, openExternal,
   INSTAGRAM_URL, TIKTOK_URL, CAREER_SITE_URL,
 } from '../lib/config';
+import ContactIcon from './ContactIcon';
 
 const NAVY = '#000b18';
 const GOLD = '#c2a25a';
 const PANEL = '#0a1524';
 const PANEL_LINE = 'rgba(90,130,170,0.28)';
 const GOLD_LINE = 'rgba(194,162,90,0.22)';
-const LOGO = require('../assets/icon-dark.png');
 
 function WhatsAppIcon({ color = GOLD, size = 22 }) {
   return (
@@ -98,11 +99,21 @@ function Row({ icon, title, sub, onPress, last }) {
   );
 }
 
-export default function ContactSheet({ visible, onClose, prefill = '', name = '' }) {
-  const { t } = useLanguage();
+export default function ContactSheet({ visible, onClose, prefill = '', name = '', showFaq = true }) {
+  const { t, lang } = useLanguage();
   const insets = useSafeAreaInsets();
   const msg = prefill || t('faq_chat_msg');
   const who = name ? `\n\n${name}` : '';
+  const faqItems = useMemo(() => (showFaq ? getCandidateFaq(lang) : []), [showFaq, lang]);
+  const [faqOpen, setFaqOpen] = useState(false);
+  const [openId, setOpenId] = useState(null);
+
+  useEffect(() => {
+    if (!visible) {
+      setFaqOpen(false);
+      setOpenId(null);
+    }
+  }, [visible]);
 
   const fail = () => Alert.alert(t('contact_title'), t('faq_chat_fail'));
 
@@ -127,8 +138,13 @@ export default function ContactSheet({ visible, onClose, prefill = '', name = ''
         >
           <View style={styles.panel}>
             <View style={styles.panelHead}>
-              <Image source={LOGO} style={styles.logo} resizeMode="cover" />
-              <Text style={styles.panelTitle}>{t('contact_title')}</Text>
+              <View style={styles.panelHeadIcon}>
+                <ContactIcon color={GOLD} size={28} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.panelTitle}>{t('contact_title')}</Text>
+                <Text style={styles.panelSub}>{t('contact_sub')}</Text>
+              </View>
             </View>
 
             <Row
@@ -151,6 +167,42 @@ export default function ContactSheet({ visible, onClose, prefill = '', name = ''
               last
             />
           </View>
+
+          {showFaq && faqItems.length ? (
+            <View style={[styles.panel, { marginTop: 14 }]}>
+              <TouchableOpacity
+                style={styles.faqToggle}
+                onPress={() => setFaqOpen((v) => !v)}
+                activeOpacity={0.85}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.faqToggleTitle}>{t('home_faq')}</Text>
+                  <Text style={styles.faqToggleSub}>{t('home_faq_sub')}</Text>
+                </View>
+                <Text style={styles.faqToggleChev}>{faqOpen ? '▴' : '▾'}</Text>
+              </TouchableOpacity>
+              {faqOpen ? faqItems.map((item, idx) => {
+                const open = openId === item.id;
+                const last = idx === faqItems.length - 1;
+                return (
+                  <View key={item.id} style={!last ? styles.faqBorder : null}>
+                    <TouchableOpacity
+                      style={styles.faqRow}
+                      onPress={() => setOpenId(open ? null : item.id)}
+                      activeOpacity={0.85}
+                    >
+                      <View style={styles.faqMark}>
+                        <Text style={styles.faqMarkText}>?</Text>
+                      </View>
+                      <Text style={styles.faqQ}>{item.q}</Text>
+                      <Text style={styles.faqChev}>{open ? '▾' : '›'}</Text>
+                    </TouchableOpacity>
+                    {open ? <Text style={styles.faqA}>{item.a}</Text> : null}
+                  </View>
+                );
+              }) : null}
+            </View>
+          ) : null}
 
           <View style={[styles.panel, { marginTop: 14 }]}>
             <Text style={styles.socialHead}>{t('set_social')}</Text>
@@ -197,16 +249,18 @@ const styles = StyleSheet.create({
     paddingTop: 6,
   },
   panelHead: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 14,
     paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GOLD_LINE,
   },
-  logo: {
+  panelHeadIcon: {
     width: 44, height: 44, borderRadius: 22,
-    borderWidth: 1.5, borderColor: 'rgba(194,162,90,0.65)',
+    backgroundColor: 'rgba(194,162,90,0.12)', borderWidth: 1, borderColor: 'rgba(194,162,90,0.35)',
+    alignItems: 'center', justifyContent: 'center',
   },
-  panelTitle: { color: '#fff', fontSize: 22, fontWeight: '800', letterSpacing: 0.2 },
+  panelTitle: { color: GOLD, fontSize: 24, fontWeight: '800', letterSpacing: 0.2 },
+  panelSub: { color: '#8fa3bb', fontSize: 13, fontWeight: '500', marginTop: 3, lineHeight: 18 },
   row: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
     paddingVertical: 16, paddingHorizontal: 16,
@@ -222,5 +276,29 @@ const styles = StyleSheet.create({
   socialHead: {
     color: '#dcc187', fontSize: 11.5, fontWeight: '800', letterSpacing: 1.1,
     textTransform: 'uppercase', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4,
+  },
+  faqToggle: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14,
+  },
+  faqToggleTitle: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  faqToggleSub: { color: '#8fa3bb', fontSize: 12.5, fontWeight: '500', marginTop: 3, lineHeight: 17 },
+  faqToggleChev: { color: GOLD, fontSize: 18, fontWeight: '800', paddingLeft: 4 },
+  faqBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: GOLD_LINE },
+  faqRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 14, paddingHorizontal: 16,
+  },
+  faqMark: {
+    width: 26, height: 26, borderRadius: 13,
+    backgroundColor: 'rgba(194,162,90,0.18)', borderWidth: 1, borderColor: 'rgba(194,162,90,0.45)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  faqMarkText: { color: GOLD, fontWeight: '900', fontSize: 13 },
+  faqQ: { flex: 1, color: '#fff', fontSize: 14.5, fontWeight: '700', lineHeight: 20 },
+  faqChev: { color: GOLD, fontSize: 18, fontWeight: '700', width: 18, textAlign: 'center' },
+  faqA: {
+    color: '#a8b8ca', fontSize: 13.5, fontWeight: '500', lineHeight: 20,
+    paddingHorizontal: 16, paddingLeft: 54, paddingBottom: 14,
   },
 });

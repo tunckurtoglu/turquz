@@ -1,5 +1,5 @@
 // components/EmployerPickerSheet.js
-// Sözleşme öncesi: kayıtlı işletmeyi seç, düzenle, sil veya yeni ekle.
+// Sözleşme öncesi: kayıtlı işletmeyi seç, düzenle veya sil.
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Modal, ActivityIndicator, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -44,7 +44,8 @@ export default function EmployerPickerSheet({ visible, agencyId, onSelect, onClo
     if (reason) {
       const msg = reason === 'tax' ? t('employer_need_tax')
         : reason === 'stamp' ? t('employer_need_stamp')
-          : t('employer_need_both');
+          : reason === 'details' ? t('employer_need_details')
+            : t('employer_need_both');
       Alert.alert(t('employer_pick_title'), msg);
       return;
     }
@@ -57,34 +58,34 @@ export default function EmployerPickerSheet({ visible, agencyId, onSelect, onClo
     onClose?.();
   };
 
-  const openNew = () => {
-    setEditing(null);
-    setFormOpen(true);
-  };
-
   const openEdit = (employer) => {
     setEditing(employer);
     setFormOpen(true);
   };
 
   const confirmDelete = (employer) => {
-    Alert.alert(
+    const executeDelete = async () => {
+      try {
+        await deleteEmployer(agencyId, employer.id);
+        await refresh();
+      } catch (e) {
+        Alert.alert(t('employer_delete'), e?.message || t('doc_upload_error'));
+      }
+    };
+    const finalConfirm = () => Alert.alert(
       t('employer_delete'),
-      t('employer_delete_confirm').replace('{name}', employer.name || ''),
+      t('employer_delete_final'),
       [
         { text: t('agency_cancel'), style: 'cancel' },
-        {
-          text: t('employer_delete'),
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteEmployer(agencyId, employer.id);
-              await refresh();
-            } catch (e) {
-              Alert.alert(t('employer_delete'), e?.message || t('doc_upload_error'));
-            }
-          },
-        },
+        { text: t('employer_delete'), style: 'destructive', onPress: executeDelete },
+      ],
+    );
+    Alert.alert(
+      t('employer_delete'),
+      t('employer_delete_warning', { name: employer.name || '' }),
+      [
+        { text: t('agency_cancel'), style: 'cancel' },
+        { text: t('continue_btn') || 'Devam', style: 'destructive', onPress: finalConfirm },
       ],
     );
   };
@@ -95,7 +96,14 @@ export default function EmployerPickerSheet({ visible, agencyId, onSelect, onClo
     refresh().then(() => {
       // Yeni kayıt sonrası otomatik seçme yok — levha + kaşe zorunlu
       if (employerReadyForContract(employer)) pick(employer);
-      else Alert.alert(t('employer_pick_title'), t('employer_need_both'));
+      else {
+        const reason = employerContractBlockReason(employer);
+        const msg = reason === 'tax' ? t('employer_need_tax')
+          : reason === 'stamp' ? t('employer_need_stamp')
+            : reason === 'details' ? t('employer_need_details')
+              : t('employer_need_both');
+        Alert.alert(t('employer_pick_title'), msg);
+      }
     });
   };
 
@@ -155,9 +163,6 @@ export default function EmployerPickerSheet({ visible, agencyId, onSelect, onClo
               {rows.length === 0 ? (
                 <Text style={styles.empty}>{t('employer_pick_empty')}</Text>
               ) : null}
-              <TouchableOpacity style={styles.addBtn} onPress={openNew} activeOpacity={0.85}>
-                <Text style={styles.addText}>+ {t('employer_add_new')}</Text>
-              </TouchableOpacity>
             </ScrollView>
           )}
         </View>
@@ -206,6 +211,4 @@ const styles = StyleSheet.create({
   actionEdit: { fontSize: 13.5, fontWeight: '700', color: INK },
   actionDel: { fontSize: 13.5, fontWeight: '700', color: '#a32d2d' },
   empty: { fontSize: 14, color: '#9aa1ac', textAlign: 'center', marginVertical: 20, lineHeight: 20 },
-  addBtn: { marginTop: 8, backgroundColor: '#eef0f2', borderRadius: 12, paddingVertical: 16, alignItems: 'center', borderWidth: 1, borderColor: '#e6e8ec', borderStyle: 'dashed' },
-  addText: { fontSize: 15, fontWeight: '800', color: INK },
 });

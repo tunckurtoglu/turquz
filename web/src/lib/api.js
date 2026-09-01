@@ -17,7 +17,55 @@ export async function signUp(email, password, { portal = 'agency' } = {}) {
   if (error) throw error;
   return data;
 }
-export async function signOut() { await supabase.auth.signOut(); }
+export async function signOut() {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const uid = session?.user?.id;
+    if (uid) clearCachedRole(uid);
+  } catch { /* ignore */ }
+  await supabase.auth.signOut();
+}
+
+const ROLE_CACHE_KEY = (uid) => `turquz:role:${uid}`;
+const VALID_ROLES = new Set(['candidate', 'agency', 'admin', 'hotel']);
+
+function loadCachedRole(userId) {
+  if (!userId || typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(ROLE_CACHE_KEY(userId));
+    return VALID_ROLES.has(raw) ? raw : null;
+  } catch { return null; }
+}
+
+function cacheRole(userId, role) {
+  if (!userId || !VALID_ROLES.has(role) || typeof localStorage === 'undefined') return;
+  try { localStorage.setItem(ROLE_CACHE_KEY(userId), role); } catch { /* ignore */ }
+}
+
+function clearCachedRole(userId) {
+  if (!userId || typeof localStorage === 'undefined') return;
+  try { localStorage.removeItem(ROLE_CACHE_KEY(userId)); } catch { /* ignore */ }
+}
+
+/** @returns {{ role: string|null, source: string, uncertain: boolean }} */
+export async function resolveRole(userId) {
+  if (!userId) return { role: 'candidate', source: 'default', uncertain: false };
+  const { data, error } = await supabase.from('user_roles').select('role').eq('user_id', userId).maybeSingle();
+  if (error) {
+    console.warn('[role]', error.message);
+    const cached = loadCachedRole(userId);
+    if (cached) return { role: cached, source: 'cache', uncertain: false, error: error.message };
+    return { role: null, source: 'error', uncertain: true, error: error.message };
+  }
+  const role = VALID_ROLES.has(data?.role) ? data.role : 'candidate';
+  cacheRole(userId, role);
+  return { role, source: 'db', uncertain: false };
+}
+
+export async function getRole(userId) {
+  const r = await resolveRole(userId);
+  return r.role;
+}
 
 export async function sendPasswordReset(email) {
   const redirectTo = `${window.location.origin}${window.location.pathname || '/'}`;
@@ -108,11 +156,12 @@ export async function completeAgencySetup(userId, fields) {
   const last = (fields.contactLastName || '').trim();
   const p1 = (fields.phoneAuthorized || '').trim();
   const p2 = (fields.phoneRep || '').trim();
+  const company = (fields.companyName || '').trim();
   const tax = (fields.taxPlatePath || '').trim();
-  if (!first || !last || !p1 || !p2 || !tax) throw new Error('incomplete');
+  if (!company || !first || !last || !p1 || !p2 || !tax) throw new Error('incomplete');
   const row = {
     user_id: userId,
-    company_name: (fields.companyName || '').trim() || null,
+    company_name: company,
     contact_first_name: first,
     contact_last_name: last,
     phone_authorized: p1,
@@ -147,11 +196,6 @@ export async function getSession() {
 export function onAuthChange(cb) {
   // cb(session, event)
   return supabase.auth.onAuthStateChange((event, session) => cb(session, event)).data.subscription;
-}
-export async function getRole(userId) {
-  if (!userId) return 'candidate';
-  const { data } = await supabase.from('user_roles').select('role').eq('user_id', userId).maybeSingle();
-  return data?.role || 'candidate';
 }
 
 // ---- Aday havuzu ----
@@ -199,7 +243,7 @@ export async function listInterviewCandidates(agencyId) {
   if (!agencyId) return [];
   const { data: ivs, error } = await supabase
     .from('interviews')
-    .select('user_id, status, selected_slot, slots, updated_at, call_extra_secs')
+    .select('user_id, status, selected_slot, slots, employer_id, updated_at, call_extra_secs')
     .eq('created_by', agencyId)
     .in('status', ['proposed', 'scheduled']);
   if (error) { console.warn('Mülakatlar okunamadı:', error.message); return []; }
@@ -228,6 +272,7 @@ export async function listInterviewCandidates(agencyId) {
         ivStatus: iv.status,
         ivSlot: iv.selected_slot,
         ivSlots: iv.slots || [],
+        ivEmployerId: iv.employer_id || null,
         ivSortDate: sortDate,
         ivExtraSecs: Number(iv.call_extra_secs) || 0,
         ivMinutes: minutesFor(peers),
@@ -269,7 +314,26 @@ export async function cancelInterview(userId) {
 }
 
 // Teklif/süreç geri çek: durum + belgeler + mülakat temizliği (mobil ile aynı).
-export async function withdrawCandidate(userId) {
+export async function withdrawCandidate(userId, reason = 'agency_cancel', note = null) {
+  try {
+    const { error } = await supabase.rpc('agency_end_process', {
+      p_candidate: userId,
+      p_reason: reason,
+      p_note: note,
+    });
+    if (!error) {
+      await removeAllDocuments(userId).catch(() => {});
+      return;
+    }
+    if (!/agency_end_process|schema cache|PGRST202|does not exist/i.test(`${error.message || ''} ${error.code || ''}`)) {
+      throw error;
+    }
+  } catch (e) {
+    if (!/agency_end_process|schema cache|PGRST202|does not exist/i.test(`${e?.message || ''} ${e?.code || ''}`)) {
+      throw e;
+    }
+  }
+
   await removeAllDocuments(userId).catch(() => {});
   await deleteContract(userId).catch(() => {});
   await deleteFlight(userId).catch(() => {});
@@ -301,9 +365,21 @@ export async function withdrawCandidate(userId) {
   if (error) throw error;
 }
 
+export async function agencyGrantDeadlineExtra(candidateUserId, scope) {
+  const { data, error } = await supabase.rpc('agency_grant_deadline_extra', {
+    p_candidate: candidateUserId,
+    p_scope: scope,
+  });
+  if (error) throw error;
+  return data;
+}
+
 export function isEmploymentNotif(type) {
   const t = String(type || '');
   return t.startsWith('employment_')
+    || t === 'airport_check_confirmed'
+    || t === 'airport_check_warning'
+    || t === 'airport_check_late'
     || t === 'work_start_confirm'
     || t === 'transit_stalled'
     || t === 'rating_required'
@@ -369,8 +445,11 @@ export async function getCandidateEmploymentEpisode(candidateId) {
   return data || null;
 }
 
-export async function listFormerStaff(agencyId = null) {
-  const { data, error } = await supabase.rpc('list_former_staff', { p_agency: agencyId });
+export async function listFormerStaff(agencyId = null, employerId = null) {
+  const { data, error } = await supabase.rpc('list_former_staff', {
+    p_agency: agencyId,
+    p_employer: employerId || null,
+  });
   if (error) { console.warn(error.message); return []; }
   return data || [];
 }
@@ -415,20 +494,50 @@ export async function agencyAnswerBoarding(candidateId, answer) {
   if (error) throw error;
 }
 
+export async function listStaff(agencyId) {
+  if (!agencyId) return [];
+  const baseSelect = 'user_id, title, data, reg_no, nationality, work_end_at, last_seen_at';
+  let { data, error } = await supabase
+    .from('candidate_hired')
+    .select(`${baseSelect}, airport_check_status, airport_check_answered_at`)
+    .eq('accepted_by', agencyId);
+  if (error) {
+    ({ data, error } = await supabase
+      .from('candidate_hired')
+      .select(baseSelect)
+      .eq('accepted_by', agencyId));
+  }
+  if (error) { console.warn(error.message); return []; }
+  return data || [];
+}
+
 export async function listInTransit(agencyId) {
   if (!agencyId) return [];
-  const { data, error } = await supabase
+  const baseSelect = 'user_id, title, data, reg_no, nationality, work_start_at, flight_depart_on, planned_end_on, boarding_status, work_start_asked_at, last_seen_at';
+  const airportSelect = `${baseSelect}, airport_check_status, airport_check_asked_at, airport_check_answered_at, airport_check_last_answer`;
+  let { data, error } = await supabase
     .from('candidate_in_transit')
-    .select('user_id, title, data, reg_no, nationality, work_start_at, flight_depart_on, planned_end_on, boarding_status, work_start_asked_at, last_seen_at')
+    .select(airportSelect)
     .eq('accepted_by', agencyId);
+  if (error) {
+    ({ data, error } = await supabase
+      .from('candidate_in_transit')
+      .select(baseSelect)
+      .eq('accepted_by', agencyId));
+  }
   if (error) { console.warn(error.message); return []; }
-  return (data || []).map((r) => ({ ...r, st: { status: 'in_transit', work_start_at: r.work_start_at, boarding_status: r.boarding_status, flight_depart_on: r.flight_depart_on } }));
+  return (data || []).map((r) => ({ ...r, st: { status: 'in_transit', work_start_at: r.work_start_at, boarding_status: r.boarding_status, flight_depart_on: r.flight_depart_on, airport_check_status: r.airport_check_status, airport_check_asked_at: r.airport_check_asked_at, airport_check_answered_at: r.airport_check_answered_at, airport_check_last_answer: r.airport_check_last_answer } }));
 }
 
 export async function scanEmploymentLifecycle() {
   try {
     const { data, error } = await supabase.rpc('scan_employment_lifecycle');
     if (error) throw error;
+    try {
+      await supabase.rpc('scan_airport_arrival_checks');
+    } catch (e) {
+      console.warn('airport check scan:', e?.message || e);
+    }
     try {
       await supabase.rpc('scan_boarding_missed_remind');
     } catch (e) {
@@ -575,7 +684,9 @@ function contractToRow(f, agencyId) {
   return { title: f.title || null, address: f.address || null, phone: f.phone || null, email: f.email || null,
     contact_phone: f.contactPhone || null, contact_email: f.contactEmail || null, position: f.position || null,
     salary: f.salary || null, consulate: f.consulate || null, issue_date: f.issueDate || null,
-    employer_id: f.employerId || null,
+    employer_id: f.employerId || null, employer_name: f.employerName || null,
+    employer_country: f.employerCountry || null, employer_city: f.employerCity || null,
+    employer_region: f.employerRegion || null, employer_web_url: f.employerWebUrl || null,
     created_by: agencyId || null, updated_at: new Date().toISOString() };
 }
 function contractFromRow(r) {
@@ -585,7 +696,9 @@ function contractFromRow(r) {
     title: r.title || '', address: r.address || '', phone: r.phone || '', email: r.email || '',
     contactPhone: r.contact_phone || '', contactEmail: r.contact_email || '', position: r.position || '',
     salary: r.salary || '', consulate: r.consulate || '', issueDate: r.issue_date || '',
-    employerId: r.employer_id || null,
+    employerId: r.employer_id || null, employerName: r.employer_name || '',
+    employerCountry: r.employer_country || '', employerCity: r.employer_city || '',
+    employerRegion: r.employer_region || '', employerWebUrl: r.employer_web_url || '',
     paymentStatus,
     paidAt: r.paid_at || null,
     isPaid: paymentStatus === 'paid' || paymentStatus === 'waived',
@@ -603,6 +716,14 @@ export async function saveContract(candidateUserId, fields, agencyId) {
 // Sözleşme için adayın özel alanları (passportNo, aile, adres) — süreçteki adayda RPC ile gelir.
 export async function getCandidateContractFields(userId) {
   const { data, error } = await supabase.rpc('get_candidate_contract_fields', { p_user: userId });
+  if (error) { console.warn(error.message); return null; }
+  return data || null;
+}
+
+// Sözleşme ödemesi sonrası CV PII (iletişim, pasaport, aile).
+export async function getCandidateCvReveal(userId) {
+  if (!userId) return null;
+  const { data, error } = await supabase.rpc('get_candidate_cv_reveal', { p_user: userId });
   if (error) { console.warn(error.message); return null; }
   return data || null;
 }
@@ -671,8 +792,12 @@ export async function markChatMessagesReadForCandidate(userId, candidateId) {
 
 // ---- Uçuşlar (karşılama/varış raporu) ----
 export async function listFlights() {
-  const { data } = await supabase.from('flights')
-    .select('user_id, from_city, from_airport, to_city, to_airport, depart_at, arrive_at, flight_no, terminal, airline, pickup_name, pickup_phone, pickup_sent_at');
+  const baseSelect = 'user_id, from_city, from_airport, to_city, to_airport, depart_at, arrive_at, flight_no, terminal, airline, pickup_name, pickup_phone, pickup_sent_at';
+  let { data, error } = await supabase.from('flights')
+    .select(`${baseSelect}, depart_at_ts`);
+  if (error) {
+    ({ data, error } = await supabase.from('flights').select(baseSelect));
+  }
   return data || [];
 }
 

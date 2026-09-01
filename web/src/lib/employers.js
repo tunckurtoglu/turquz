@@ -8,10 +8,14 @@ function fromRow(r) {
     name: r.name || '',
     title: r.title || '',
     address: r.address || '',
+    country: r.country || '',
+    city: r.city || '',
+    region: r.region || '',
     phone: r.phone || '',
     email: r.email || '',
     contactPhone: r.contact_phone || '',
     contactEmail: r.contact_email || '',
+    webUrl: r.web_url || '',
     lastUsedAt: r.last_used_at || null,
     stampImage: r.stamp_image || null,
     stampSignerName: r.stamp_signer_name || '',
@@ -23,6 +27,9 @@ function fromRow(r) {
     taxNo: r.tax_no || '',
     taxOffice: r.tax_office || '',
     taxPlateParsedAt: r.tax_plate_parsed_at || null,
+    hasInfo: !!(r.name?.trim() && r.title?.trim() && r.address?.trim()
+      && r.country?.trim() && r.city?.trim() && r.region?.trim()),
+    hasWebPage: !!r.web_url?.trim(),
   };
 }
 
@@ -32,10 +39,14 @@ function toRow(agencyId, f) {
     name: (f.name || '').trim(),
     title: f.title || null,
     address: f.address || null,
+    country: (f.country || '').trim() || null,
+    city: (f.city || '').trim() || null,
+    region: (f.region || '').trim() || null,
     phone: f.phone || null,
     email: f.email || null,
     contact_phone: f.contactPhone || null,
     contact_email: f.contactEmail || null,
+    web_url: (f.webUrl || '').trim() || null,
     updated_at: new Date().toISOString(),
   };
   if (f.stampImage !== undefined) row.stamp_image = f.stampImage || null;
@@ -58,6 +69,14 @@ export function employerToContractFields(employer) {
   return {
     title: employer.title || '',
     address: employer.address || '',
+    country: employer.country || '',
+    city: employer.city || '',
+    region: employer.region || '',
+    employerName: employer.name || '',
+    employerCountry: employer.country || '',
+    employerCity: employer.city || '',
+    employerRegion: employer.region || '',
+    employerWebUrl: employer.webUrl || '',
     phone: employer.phone || '',
     email: employer.email || '',
     contactPhone: employer.contactPhone || '',
@@ -89,16 +108,36 @@ export function employerStampInfo(employer) {
 
 /** Sözleşme için zorunlu: vergi levhası + kaşe. */
 export function employerReadyForContract(employer) {
-  return !!(employer?.id && employer.hasTaxPlate && employer.hasStamp && employer.stampImage);
+  return !!(
+    employer?.id
+    && employer.hasTaxPlate
+    && employer.hasStamp
+    && employer.stampImage
+    && employer.name?.trim()
+    && employer.title?.trim()
+    && employer.address?.trim()
+    && employer.country?.trim()
+    && employer.city?.trim()
+    && employer.region?.trim()
+    && employer.webUrl?.trim()
+  );
 }
 
 export function employerContractBlockReason(employer) {
   if (!employer?.id) return 'missing';
   const needTax = !employer.hasTaxPlate;
   const needStamp = !employer.hasStamp || !employer.stampImage;
+  const needDetails = !employer.name?.trim()
+    || !employer.title?.trim()
+    || !employer.address?.trim()
+    || !employer.country?.trim()
+    || !employer.city?.trim()
+    || !employer.region?.trim()
+    || !employer.webUrl?.trim();
   if (needTax && needStamp) return 'both';
   if (needTax) return 'tax';
   if (needStamp) return 'stamp';
+  if (needDetails) return 'details';
   return null;
 }
 
@@ -190,14 +229,18 @@ export async function touchEmployer(agencyId, id) {
 
 export async function deleteEmployer(agencyId, id) {
   if (!agencyId || !id) return;
-  const { data, error } = await supabase
-    .from('agency_employers')
-    .delete()
-    .eq('id', id)
-    .eq('agency_id', agencyId)
-    .select('id');
+  const { data, error } = await supabase.rpc('agency_delete_employer', { p_employer: id });
   if (error) throw error;
-  if (!data?.length) throw new Error('delete_failed');
+  const documentPaths = Array.isArray(data?.document_paths) ? data.document_paths.filter(Boolean) : [];
+  if (documentPaths.length) {
+    await supabase.storage.from('documents').remove(documentPaths).catch(() => {});
+  }
+  await supabase.storage.from('agency-docs').remove([
+    `${agencyId}/employers/${id}/vergi_levhasi.pdf`,
+    `${agencyId}/employers/${id}/cover.webp`,
+    `${agencyId}/employers/${id}/cover.png`,
+    `${agencyId}/employers/${id}/cover.jpg`,
+  ]).catch(() => {});
 }
 
 export async function uploadEmployerTaxPlate(agencyId, employerId, base64, mime = 'application/pdf') {

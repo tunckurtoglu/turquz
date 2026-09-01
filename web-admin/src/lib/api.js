@@ -40,6 +40,21 @@ export async function adminListInterventions() {
   return data || [];
 }
 
+export async function adminListAirportChecks(limit = 200) {
+  const { data, error } = await supabase.rpc('admin_list_airport_checks', { p_limit: limit });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function adminAirportCheckAction(candidateId, action, note = null) {
+  const { error } = await supabase.rpc('admin_airport_check_action', {
+    p_candidate: candidateId,
+    p_action: action,
+    p_note: note,
+  });
+  if (error) throw error;
+}
+
 export async function adminInterventionAct(queueId, action, note = null, payload = {}) {
   const { error } = await supabase.rpc('admin_intervention_act', {
     p_queue_id: queueId,
@@ -105,6 +120,17 @@ export async function adminResolveEmployment(episodeId, decision, note = null) {
     p_note: note,
   });
   if (error) throw error;
+}
+
+export async function adminListProcessOps(limit = 200, candidateId = null, agencyId = null, eventType = null) {
+  const { data, error } = await supabase.rpc('admin_list_process_ops', {
+    p_limit: limit,
+    p_candidate: candidateId,
+    p_agency: agencyId,
+    p_event: eventType || null,
+  });
+  if (error) throw error;
+  return data || [];
 }
 
 export async function adminListProcessChats(limit = 200) {
@@ -198,64 +224,93 @@ export async function signedUrl(bucket, path, expires = 3600) {
   return data?.signedUrl || null;
 }
 
-const CERT_KIND = 'success_certificate';
-const CERT_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' };
+const CERT_BUCKET = 'certificate-awards';
 
-/** Admin: sezon sonu başarı sertifikasını yükle (aday/acente 7. adımda görür). */
-export async function uploadSuccessCertificate(userId, file) {
-  if (!userId || !file) throw new Error('missing');
-  const mime = file.type || 'application/pdf';
-  const ext = CERT_EXT[mime] || (String(file.name || '').toLowerCase().endsWith('.pdf') ? 'pdf' : 'jpg');
-  const path = `${userId}/${CERT_KIND}_${Date.now()}.${ext}`;
-  const now = new Date().toISOString();
-
-  const { data: prev } = await supabase
-    .from('user_documents')
-    .select('storage_path')
-    .eq('user_id', userId)
-    .eq('kind', CERT_KIND)
-    .maybeSingle();
-
-  const { error: upErr } = await supabase.storage.from('documents').upload(path, file, {
-    contentType: mime,
-    upsert: true,
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const raw = String(reader.result || '');
+      resolve(raw.includes(',') ? raw.split(',')[1] : raw);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
   });
-  if (upErr) throw upErr;
-
-  const { error } = await supabase.from('user_documents').upsert(
-    {
-      user_id: userId,
-      kind: CERT_KIND,
-      storage_path: path,
-      mime_type: mime,
-      status: 'uploaded',
-      submitted_at: now,
-      updated_at: now,
-    },
-    { onConflict: 'user_id,kind' },
-  );
-  if (error) {
-    await supabase.storage.from('documents').remove([path]).catch(() => {});
-    throw error;
-  }
-  if (prev?.storage_path && prev.storage_path !== path) {
-    supabase.storage.from('documents').remove([prev.storage_path]).catch(() => {});
-  }
 }
 
-export async function removeSuccessCertificate(userId) {
-  if (!userId) throw new Error('missing');
-  const { data: row } = await supabase
-    .from('user_documents')
-    .select('storage_path')
-    .eq('user_id', userId)
-    .eq('kind', CERT_KIND)
-    .maybeSingle();
-  if (row?.storage_path) {
-    await supabase.storage.from('documents').remove([row.storage_path]).catch(() => {});
-  }
-  const { error } = await supabase.from('user_documents').delete().eq('user_id', userId).eq('kind', CERT_KIND);
+function certSnapshotFromDetail(detail, episode) {
+  const cv = detail?.data || {};
+  return {
+    candidateName: detail?.full_name || [cv.firstName, cv.lastName].filter(Boolean).join(' '),
+    employerTitle: episode?.employer_title || episode?.employer_name,
+    position: episode?.position,
+    startAt: episode?.work_start_at || episode?.hired_at,
+    endAt: episode?.ended_at,
+  };
+}
+
+/** Admin: PDF oluştur, kalıcı kayda al, e-posta + bildirim gönder. */
+export async function generateAndPublishSuccessCertificate(userId, detail) {
+  if (!userId || !detail) throw new Error('missing');
+  const { completedEpisodeFromDetail, certificatePdfBlobFromDetail } = await import('./successCertificate');
+  const episode = completedEpisodeFromDetail(detail);
+  if (!episode?.id) throw new Error('completed_episode_required');
+  const blob = await certificatePdfBlobFromDetail(detail);
+  const pdfBase64 = await blobToBase64(blob);
+  const snapshot = certSnapshotFromDetail(detail, episode);
+  const { data, error } = await supabase.functions.invoke('admin-issue-certificate', {
+    body: { episodeId: episode.id, candidateUserId: userId, pdfBase64, snapshot },
+  });
   if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+export async function listPendingCertificates(limit = 200) {
+  const { data, error } = await supabase.rpc('admin_list_pending_certificates', { p_limit: limit });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function removeSuccessCertificate(userId, awardId = null) {
+  if (!userId && !awardId) throw new Error('missing');
+  let award = null;
+  if (awardId) {
+    const { data } = await supabase.from('certificate_awards').select('id, storage_path, candidate_id').eq('id', awardId).maybeSingle();
+    award = data;
+  } else {
+    const { data } = await supabase
+      .from('certificate_awards')
+      .select('id, storage_path, candidate_id')
+      .eq('candidate_id', userId)
+      .order('issued_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    award = data;
+  }
+  if (!award?.id) {
+    // Eski user_documents taslağı varsa temizle
+    const { data: row } = await supabase
+      .from('user_documents')
+      .select('storage_path')
+      .eq('user_id', userId)
+      .eq('kind', 'success_certificate')
+      .maybeSingle();
+    if (row?.storage_path) {
+      await supabase.storage.from('documents').remove([row.storage_path]).catch(() => {});
+    }
+    await supabase.from('user_documents').delete().eq('user_id', userId).eq('kind', 'success_certificate');
+    return;
+  }
+  if (award.storage_path) {
+    await supabase.storage.from(CERT_BUCKET).remove([award.storage_path]).catch(() => {});
+  }
+  const { error } = await supabase.rpc('admin_revoke_certificate', { p_award: award.id });
+  if (error) throw error;
+}
+
+export async function signedCertificateUrl(path, expires = 3600) {
+  return signedUrl(CERT_BUCKET, path, expires);
 }
 
 /** Admin: adayın tüm acente puanları */

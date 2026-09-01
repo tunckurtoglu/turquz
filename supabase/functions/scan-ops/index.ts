@@ -13,10 +13,14 @@ import {
 } from '../_shared/pushTexts.ts';
 
 const LIFECYCLE_TYPES = [
+  'airport_check', 'airport_check_confirmed', 'airport_check_warning', 'airport_check_late',
   'boarding_check', 'boarding_no_response', 'boarding_confirmed', 'boarding_missed',
   'work_start_confirm', 'work_start_remind', 'employment_started', 'employment_end_remind',
   'flight_ticket_ready', 'flight_ticket_sent', 'transit_stalled',
   'employment_term_due', 'employment_term_remind', 'employment_term_stalled', 'employment_term_voted', 'employment_restored',
+  'employment_end_requested', 'employment_end_requested_ack', 'employment_end_undone',
+  'employment_completed', 'employment_early_exit', 'employment_disputed', 'employment_continued',
+  'process_ended', 'reupload',
   'rating_required', 'rating_remind',
 ];
 
@@ -81,7 +85,7 @@ async function pushLifecycleNotifs(admin: Admin): Promise<number> {
         to,
         title: txt.title,
         body: txt.body,
-        priority: type === 'boarding_check' ? 'high' : 'default',
+        priority: type === 'boarding_check' || type === 'airport_check' ? 'high' : 'default',
         sound: 'notify.wav',
         channelId: 'default',
         data: {
@@ -116,6 +120,8 @@ Deno.serve(async (req) => {
     if (want.has('lifecycle')) {
       const { data, error } = await admin.rpc('scan_employment_lifecycle');
       out.lifecycle = error ? { error: error.message } : data;
+      const { data: airportChecks, error: airportError } = await admin.rpc('scan_airport_arrival_checks');
+      out.airportChecks = airportError ? { error: airportError.message } : airportChecks;
       const { data: missedRemind, error: mErr } = await admin.rpc('scan_boarding_missed_remind');
       out.boardingMissedRemind = mErr ? { error: mErr.message } : { count: missedRemind };
       const { data: ratings, error: rErr } = await admin.rpc('scan_pending_ratings');

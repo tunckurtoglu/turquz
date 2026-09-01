@@ -7,7 +7,7 @@ export const SITE = {
   brand: 'TURQUZ',
 
   // İletişim — kendi bilgilerinle değiştir
-  email: 'info@turquz.app',
+  email: 'info@turquz.com',
   emailAgency: 'partners@turquz.app', // acente/otel başvuruları (boşsa 'email' kullanılır)
   phone: '+90 000 000 00 00',
   // Ana site WhatsApp numarası (sağlık sitesinden AYRI).

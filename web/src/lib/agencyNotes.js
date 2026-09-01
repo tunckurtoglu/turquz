@@ -1,15 +1,16 @@
 import { supabase } from './supabase';
 
-const localKey = (id) => `turquz.deskNotes.v1.${id}`;
+const deskKey = (id) => `turquz.deskNotes.v1.${id}`;
+const empKey = (agencyId, employerId) => `turquz.empNotes.v1.${agencyId}.${employerId}`;
 
 function missingTable(err) {
   const m = `${err?.message || ''} ${err?.code || ''} ${err?.details || ''}`;
-  return /schema cache|does not exist|agency_desk_notes|42P01|PGRST205/i.test(m);
+  return /schema cache|does not exist|agency_desk_notes|agency_employer_notes|42P01|PGRST205/i.test(m);
 }
 
-function readLocal(agencyId) {
+function readLocal(key) {
   try {
-    const raw = localStorage.getItem(localKey(agencyId));
+    const raw = localStorage.getItem(key);
     const rows = raw ? JSON.parse(raw) : [];
     return Array.isArray(rows) ? rows : [];
   } catch {
@@ -17,9 +18,9 @@ function readLocal(agencyId) {
   }
 }
 
-function writeLocal(agencyId, rows) {
+function writeLocal(key, rows) {
   try {
-    localStorage.setItem(localKey(agencyId), JSON.stringify((rows || []).slice(0, 40)));
+    localStorage.setItem(key, JSON.stringify((rows || []).slice(0, 40)));
   } catch { /* ignore quota */ }
 }
 
@@ -41,11 +42,11 @@ export async function listDeskNotes(agencyId) {
     .limit(40);
   if (!error) {
     const rows = data || [];
-    writeLocal(agencyId, rows);
+    writeLocal(deskKey(agencyId), rows);
     return rows;
   }
   console.warn('desk notes:', error.message);
-  return readLocal(agencyId);
+  return readLocal(deskKey(agencyId));
 }
 
 export async function addDeskNote(agencyId, body) {
@@ -57,23 +58,75 @@ export async function addDeskNote(agencyId, body) {
     .select('id, body, created_at')
     .single();
   if (!error && data) {
-    writeLocal(agencyId, [data, ...readLocal(agencyId).filter((n) => n.id !== data.id)]);
+    writeLocal(deskKey(agencyId), [data, ...readLocal(deskKey(agencyId)).filter((n) => n.id !== data.id)]);
     return data;
   }
   if (error) console.warn('desk note insert:', error.message);
   const row = localRow(text);
-  writeLocal(agencyId, [row, ...readLocal(agencyId)]);
+  writeLocal(deskKey(agencyId), [row, ...readLocal(deskKey(agencyId))]);
   return row;
 }
 
 export async function removeDeskNote(agencyId, noteId) {
   if (!agencyId || !noteId) return;
-  writeLocal(agencyId, readLocal(agencyId).filter((n) => n.id !== noteId));
+  writeLocal(deskKey(agencyId), readLocal(deskKey(agencyId)).filter((n) => n.id !== noteId));
   if (String(noteId).startsWith('local-')) return;
   const { error } = await supabase
     .from('agency_desk_notes')
     .delete()
     .eq('agency_id', agencyId)
+    .eq('id', noteId);
+  if (error && !missingTable(error)) throw error;
+}
+
+export async function listEmployerNotes(agencyId, employerId) {
+  if (!agencyId || !employerId) return [];
+  const key = empKey(agencyId, employerId);
+  const { data, error } = await supabase
+    .from('agency_employer_notes')
+    .select('id, body, created_at')
+    .eq('agency_id', agencyId)
+    .eq('employer_id', employerId)
+    .order('created_at', { ascending: false })
+    .limit(40);
+  if (!error) {
+    const rows = data || [];
+    writeLocal(key, rows);
+    return rows;
+  }
+  console.warn('employer notes:', error.message);
+  return readLocal(key);
+}
+
+export async function addEmployerNote(agencyId, employerId, body) {
+  const text = String(body || '').trim().slice(0, 400);
+  if (!agencyId || !employerId || !text) return null;
+  const key = empKey(agencyId, employerId);
+  const { data, error } = await supabase
+    .from('agency_employer_notes')
+    .insert({ agency_id: agencyId, employer_id: employerId, body: text })
+    .select('id, body, created_at')
+    .single();
+  if (!error && data) {
+    writeLocal(key, [data, ...readLocal(key).filter((n) => n.id !== data.id)]);
+    return data;
+  }
+  if (error) console.warn('employer note insert:', error.message);
+  const row = localRow(text);
+  writeLocal(key, [row, ...readLocal(key)]);
+  return row;
+}
+
+export async function removeEmployerNote(agencyId, employerId, noteId) {
+  if (!agencyId || !employerId || !noteId) return;
+  const key = empKey(agencyId, employerId);
+  writeLocal(key, readLocal(key).filter((n) => n.id !== noteId));
+  if (String(noteId).startsWith('local-')) return;
+  const { error } = await supabase
+    .from('agency_employer_notes')
+    .delete()
+    .eq('agency_id', agencyId)
+    .eq('employer_id', employerId)
     .eq('id', noteId);
   if (error && !missingTable(error)) throw error;
 }

@@ -133,7 +133,7 @@ table.adminTable { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .empty { padding: 40px; text-align: center; color: var(--muted); }
 
 .detail {
-  display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 16px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;
 }
 @media (max-width: 980px) { .detail { grid-template-columns: 1fr; } }
 .card {
@@ -154,6 +154,24 @@ table.adminTable { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .interventionFilters .ghostBtn.on {
   background: rgba(194,162,90,0.15); border-color: var(--gold-d); color: var(--navy);
 }
+.airportOpsHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.airportOpsHead h2 { margin: 0 0 8px; color: var(--navy); }
+.airportOpsHead p { margin: 0; max-width: 760px; line-height: 1.5; }
+.airportTable { min-width: 1120px; }
+.airportTable tr.airportCritical td { background: #fff8f6; }
+.airportTable tr.airportCritical:hover td { background: #fff2ef; }
+.airportCountdown { color: var(--gold-d); font-weight: 800; font-size: 12px; margin-top: 3px; }
+.airportLastAction { color: var(--gold-d); font-weight: 700; margin-top: 5px; }
+.airportActions { min-width: 245px; }
+.airportActions .input { padding: 8px 10px; font-size: 12px; margin-bottom: 7px; }
+.airportActionBtns { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.airportActionBtns .ghostBtn, .airportResolveBtn { margin: 0; padding: 7px 9px; font-size: 11.5px; }
+.airportResolveBtn { width: auto; }
+.airportEmpty {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 48px 20px; color: var(--muted); text-align: center;
+}
+.airportEmpty strong { color: var(--navy); font-size: 16px; }
 .linkish {
   background: none; border: none; padding: 0; color: var(--navy); font-weight: 800;
   cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
@@ -259,6 +277,19 @@ table.adminTable { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .modal h3 { margin: 0 0 8px; color: var(--navy); }
 .modal p { margin: 0 0 16px; color: var(--muted); font-size: 14px; line-height: 1.45; }
 .modalActions { display: flex; gap: 10px; justify-content: flex-end; }
+.certPreviewModal {
+  background: #fff; border-radius: 16px; width: min(960px, 96vw); max-height: 92vh;
+  display: flex; flex-direction: column; padding: 18px 18px 16px;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.25);
+}
+.certPreviewHead {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px;
+}
+.certPreviewHead h3 { margin: 0; color: var(--navy); }
+.certPreviewFrame {
+  width: 100%; height: min(62vh, 520px); border: 1px solid var(--line); border-radius: 12px; background: #e9ebee;
+}
+.certPreviewActions { margin-top: 14px; }
 
 /* ---- Filtre (acente paneli ile aynı mantık) ---- */
 .catTabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }

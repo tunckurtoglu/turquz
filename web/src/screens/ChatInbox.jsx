@@ -138,7 +138,7 @@ export default function ChatInbox({ agencyId, onOpen }) {
                     const p = th.profile;
                     const code = candidateCode(p.nationality, p.reg_no);
                     const name = maskedName(p.data);
-                    const photo = p.data?.photoClose || p.data?.photo || p.data?.photoFull;
+                    const photo = p.data?.photo || p.data?.photoClose || p.data?.photoFull;
                     const flag = flagUrl(p.nationality);
                     const unread = !th.closed && th.count > 0;
                     const hist = sec.key === 'history' || th.closed;

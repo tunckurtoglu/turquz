@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="turquzFrameGold" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E4B35D"/>
+      <stop offset=".45" stop-color="#C2A25A"/>
+      <stop offset="1" stop-color="#9A7B38"/>
+    </linearGradient>
+  </defs>
+  <!-- Large hollow diamond frame around the two-V mark. -->
+  <path
+    d="M60 6 114 60 60 114 6 60 60 6Zm0 8L14 60l46 46 46-46L60 14Z"
+    fill="url(#turquzFrameGold)"
+    fill-rule="evenodd"
+  />
+  <g transform="translate(22 22) scale(.6333333333)">
+    <path d="M30 36 60 66 90 36v13L60 79 30 49V36Z" fill="url(#turquzFrameGold)"/>
+    <path d="M20 57 60 97l40-40v14l-40 40-40-40V57Z" fill="url(#turquzFrameGold)"/>
+    <path d="m60 10 19 18-19 18-19-18L60 10Zm0 11 8 7-8 7-8-7 8-7Z" fill="url(#turquzFrameGold)" fill-rule="evenodd"/>
+    <circle cx="60" cy="28" r="2.4" fill="#4AB8C7"/>
+    <circle cx="60" cy="28" r="1" fill="#8EC8DC" fill-opacity=".85"/>
+  </g>
+</svg>

@@ -87,6 +87,9 @@ export default function Login({ loggedInButNotStaff, onLogout }) {
       console.warn(e);
     }
     const role = await getRole(session.user.id);
+    if (role == null) {
+      throw new Error(t('role_verify_failed') || '');
+    }
     if (role !== 'agency' && role !== 'admin') {
       await signOut();
       throw new Error(t('auth_err_agency_create') || '');

@@ -7,8 +7,8 @@ import { buildArrivalsHtml } from '../../../cv/buildArrivalsHtml';
 import { useLang } from '../i18n.jsx';
 
 const FILTERS = [
-  { id: 'upcoming', key: 'arr_upcoming' },
   { id: 'today', key: 'arr_today' },
+  { id: 'upcoming', key: 'arr_upcoming' },
   { id: 'week', key: 'arr_week' },
   { id: 'all', key: 'arr_all' },
 ];
@@ -18,7 +18,7 @@ const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); retur
 export default function Arrivals({ candidates }) {
   const { t, lang } = useLang();
   const [flights, setFlights] = useState(null);
-  const [filter, setFilter] = useState('upcoming');
+  const [filter, setFilter] = useState('today');
 
   useEffect(() => { let a = true; listFlights().then((f) => { if (a) setFlights(f); }); return () => { a = false; }; }, []);
 
@@ -46,6 +46,8 @@ export default function Arrivals({ candidates }) {
           pickupPhone: String(f.pickup_phone || '').trim(),
           pickupSent: !!f.pickup_sent_at,
           transit: c.arrivalStatus === 'transit' || c.st?.status === 'in_transit',
+          airportCheckStatus: c.airport_check_status || c.st?.airport_check_status || '',
+          airportCheckAnsweredAt: c.airport_check_answered_at || c.st?.airport_check_answered_at || '',
           dt: p?.dt || null,
           date: p?.date || '—',
           time: p?.time || '—',
@@ -140,7 +142,20 @@ export default function Arrivals({ candidates }) {
                   <td>{r.flightNo}</td>
                   <td>{r.airline || '—'}</td>
                   <td className={missing ? 'hot' : ''}>{missing ? t('arr_unassigned') : r.pickupName}{r.pickupPhone && !missing ? <span className="muted"> · {r.pickupPhone}</span> : null}</td>
-                  <td>{s ? <span className={`arrTag ${s.c}`}>{s.txt}</span> : '—'}</td>
+                  <td>
+                    {r.airportCheckStatus === 'confirmed' ? (
+                      <span className="arrTag green">
+                        ✓ {t('airport_check_agency_confirmed') || 'Havaalanına geldi'}
+                        {r.airportCheckAnsweredAt ? ` · ${new Date(r.airportCheckAnsweredAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}` : ''}
+                      </span>
+                    ) : r.airportCheckStatus === 'missed' || r.airportCheckStatus === 'no_response' ? (
+                      <span className="arrTag red">{t('airport_check_agency_late') || 'Uçuşa geç kaldı'}</span>
+                    ) : r.airportCheckStatus === 'pending' ? (
+                      <span className="arrTag gold">{t('airport_check_agency_pending') || 'Havaalanı teyidi bekleniyor'}</span>
+                    ) : s ? (
+                      <span className={`arrTag ${s.c}`}>{s.txt}</span>
+                    ) : '—'}
+                  </td>
                 </tr>
               ); })}
             </tbody>
