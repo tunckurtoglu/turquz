@@ -109,11 +109,6 @@ export const UI = {
   fav_clear: { tr:'Filtreyi kapat', en:'Clear filter', ru:'Сбросить', kk:'Сүзгіні жабу', ky:'Чыпканы жабуу', uz:'Filtrni yopish', tk:'Filtri ýap', de:'Filter aus', th:'ปิดตัวกรอง', fa:'بستن فیلتر' },
 
   set_account: { tr:'Hesap', en:'Account', ru:'Аккаунт', kk:'Аккаунт', ky:'Аккаунт', uz:'Hisob', tk:'Hasap', de:'Konto', th:'บัญชี', fa:'حساب' },
-  ota_section: { tr:'Uygulama güncellemesi', en:'App update', ru:'Обновление', kk:'Жаңарту', ky:'Жаңыртуу', uz:'Yangilash', tk:'Täzelenme', de:'App-Update', th:'อัปเดตแอป', fa:'به‌روزرسانی' },
-  ota_apply: { tr:'Güncellemeyi yükle', en:'Load update', ru:'Загрузить обновление', kk:'Жаңартуды жүктеу', ky:'Жаңыртууну жүктөө', uz:'Yangilanishni yuklash', tk:'Täzelenmäni ýükle', de:'Update laden', th:'โหลดอัปเดต', fa:'بارگذاری به‌روزرسانی' },
-  ota_apply_desc: { tr:'Tasarım eski görünüyorsa dokunun — en son sürüm yüklenir.', en:'Tap if the design looks outdated — loads the latest version.', ru:'Нажмите, если интерфейс устарел.', kk:'Дизайн ескірген болса басыңыз.', de:'Tippen, wenn das Design veraltet wirkt.', th:'แตะหาก UI ดูเก่า', uz:'Dizayn eski ko‘rinsa bosing.', fa:'اگر ظاهر قدیمی است بزنید.', ky:'Дизайн эскиче болсо басыңыз.', tk:'Dizaýn köne görünse basyň.' },
-  ota_busy: { tr:'Güncelleniyor…', en:'Updating…', ru:'Обновление…', kk:'Жаңарту…', ky:'Жаңыртууда…', uz:'Yangilanmoqda…', tk:'Täzelenýär…', de:'Wird aktualisiert…', th:'กำลังอัปเดต…', fa:'در حال به‌روزرسانی…' },
-  ota_version: { tr:'Sürüm: {id}', en:'Version: {id}', ru:'Версия: {id}', kk:'Нұсқа: {id}', de:'Version: {id}', th:'เวอร์ชัน: {id}', uz:'Versiya: {id}', fa:'نسخه: {id}', ky:'Version: {id}', tk:'Wersiýa: {id}' },
   set_edit_profile: { tr:'Bilgilerimi düzenle', en:'Edit my profile', ru:'Редактировать профиль', kk:'Профильді өңдеу', ky:'Профилди түзөө', uz:'Profilimni tahrirlash', tk:'Profilimi üýtget', de:'Profil bearbeiten', th:'แก้ไขโปรไฟล์', fa:'ویرایش پروفایل' },
   set_social: { tr:'Bizi takip edin', en:'Follow us', ru:'Мы в соцсетях', kk:'Бізді қадағалаңыз', ky:'Бизди ээрчиңиз', uz:'Bizni kuzating', tk:'Bizi yzarlaň', de:'Folgen Sie uns', th:'ติดตามเรา', fa:'ما را دنبال کنید' },
   set_logout: { tr:'Çıkış yap', en:'Log out', ru:'Выйти', kk:'Шығу', de:'Abmelden', th:'ออกจากระบบ', uz:'Chiqish', fa:'خروج', ky:'Чыгуу', tk:'Çykmak' },
