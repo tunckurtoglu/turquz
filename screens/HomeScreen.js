@@ -519,13 +519,7 @@ export default function HomeScreen({ data, userId, onPreview, onEdit, onOpenSett
     Alert.alert(title, body, [
       { text: t('consent_cancel'), style: 'cancel' },
       { text: title, style: answer === 'ok' ? 'default' : 'destructive', onPress: async () => {
-          try {
-            await answerEmploymentTerm(episode.id, answer);
-            await loadStatus();
-            if (answer === 'problem') {
-              Alert.alert(t('emp_term_problem'), t('emp_term_problem_done'));
-            }
-          }
+          try { await answerEmploymentTerm(episode.id, answer); await loadStatus(); }
           catch (e) { Alert.alert(title, e?.message || 'error'); }
         } },
     ]);
