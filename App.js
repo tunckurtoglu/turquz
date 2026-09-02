@@ -16,17 +16,18 @@ import { resolveDeviceLang } from './i18n/languages';
 import LanguageSelect from './screens/LanguageSelect';
 import AuthScreen from './screens/AuthScreen';
 import ResetPasswordScreen from './screens/ResetPasswordScreen';
-import WelcomeScreen from './screens/WelcomeScreen';
-import ThankYouScreen from './screens/ThankYouScreen';
-import HomeScreen from './screens/HomeScreen';
-import SettingsScreen from './screens/SettingsScreen';
-import LanguageSettings from './screens/LanguageSettings';
 import PortalScreen from './screens/PortalScreen';
-import DocumentsScreen from './screens/DocumentsScreen';
-import CvWizard from './wizard/CvWizard';
+// Ağır ekranlar açılışta yüklenmez — build 10'da statik import native çökme riski.
+const WelcomeScreen = lazy(() => import('./screens/WelcomeScreen'));
+const ThankYouScreen = lazy(() => import('./screens/ThankYouScreen'));
+const HomeScreen = lazy(() => import('./screens/HomeScreen'));
+const SettingsScreen = lazy(() => import('./screens/SettingsScreen'));
+const LanguageSettings = lazy(() => import('./screens/LanguageSettings'));
+const DocumentsScreen = lazy(() => import('./screens/DocumentsScreen'));
+const CvWizard = lazy(() => import('./wizard/CvWizard'));
 const AgencyHomeScreen = lazy(() => import('./screens/AgencyHomeScreen'));
-import AgencySetupScreen from './screens/AgencySetupScreen';
-import AgencyCandidateScreen from './screens/AgencyCandidateScreen';
+const AgencySetupScreen = lazy(() => import('./screens/AgencySetupScreen'));
+const AgencyCandidateScreen = lazy(() => import('./screens/AgencyCandidateScreen'));
 import { getSession, onAuthChange, signOut } from './lib/auth';
 import {
   createSessionFromUrl, getInitialAuthUrl, isAuthCallbackUrl, subscribeAuthUrls,
@@ -36,12 +37,19 @@ import { resolveRole, loadCachedRole, getCandidateById } from './lib/roles';
 import { isAgencySetupComplete } from './lib/agencyProfile';
 import { registerForPush, notifyNewCandidate, scanOps, scheduleDailyActivityNudge, cancelDailyActivityNudge } from './lib/push';
 import { startLastSeenTracking } from './lib/lastSeen';
-import { checkForOtaUpdate } from './lib/updates';
 import { withTimeout } from './lib/bootstrap';
 import { registerPrivacyOpener } from './lib/config';
 import PrivacyNoticeSheet from './components/PrivacyNoticeSheet';
 import ConsentSheet from './components/ConsentSheet';
 import { getLatestConsent, saveConsent, hasAccountConsent } from './lib/consent';
+
+function ScreenFallback() {
+  return (
+    <View style={{ flex: 1, backgroundColor: '#1b2533', justifyContent: 'center', alignItems: 'center' }}>
+      <ActivityIndicator color="#c2a25a" size="large" />
+    </View>
+  );
+}
 
 // Akış aşamaları
 const STAGE = {
@@ -94,11 +102,8 @@ function Root() {
     DancingScript_700Bold,
   });
 
-  // OTA: arka planda indir; açılışı bloklamaz, reloadAsync yok.
-  useEffect(() => {
-    const t = setTimeout(() => { checkForOtaUpdate(); }, 4000);
-    return () => clearTimeout(t);
-  }, []);
+  // OTA: açılışta ASLA kontrol etme (build 10/11). Bozuk OTA indirme → sonraki açılışta çökme.
+  // Güncelleme yalnızca yeni TestFlight binary veya ileride manuel ayar ile.
 
   // Acente kurulum kapısı
   useEffect(() => {
@@ -584,94 +589,110 @@ function Root() {
       );
 
     case STAGE.WELCOME:
-      return <WelcomeScreen fontsReady={fontsReady} onStart={() => goForm(0, STAGE.WELCOME, false, STAGE.THANKS)} onBack={() => setStage(STAGE.LANG)} />;
+      return (
+        <Suspense fallback={<ScreenFallback />}>
+          <WelcomeScreen fontsReady={fontsReady} onStart={() => goForm(0, STAGE.WELCOME, false, STAGE.THANKS)} onBack={() => setStage(STAGE.LANG)} />
+        </Suspense>
+      );
 
     case STAGE.FORM:
       return (
-        <CvWizard
-          key={startStep}
-          data={data}
-          startStep={startStep}
-          previewOnly={previewOnly}
-          onChange={update}
-          onExit={() => setStage(formExit)}
-          onEdit={() => goForm(0, STAGE.HOME, false, STAGE.HOME)}
-          onFinish={() => {
-            if (finishTo === STAGE.THANKS) setStage(STAGE.THANKS);
-            else { persist(data); setHasCv(true); setStage(finishTo); }
-          }}
-        />
+        <Suspense fallback={<ScreenFallback />}>
+          <CvWizard
+            key={startStep}
+            data={data}
+            startStep={startStep}
+            previewOnly={previewOnly}
+            onChange={update}
+            onExit={() => setStage(formExit)}
+            onEdit={() => goForm(0, STAGE.HOME, false, STAGE.HOME)}
+            onFinish={() => {
+              if (finishTo === STAGE.THANKS) setStage(STAGE.THANKS);
+              else { persist(data); setHasCv(true); setStage(finishTo); }
+            }}
+          />
+        </Suspense>
       );
 
     case STAGE.THANKS:
       return (
-        <ThankYouScreen
-          fontsReady={fontsReady}
-          onSubmit={handleSubmit}
-          onBack={() => setStage(STAGE.FORM)}
-        />
+        <Suspense fallback={<ScreenFallback />}>
+          <ThankYouScreen
+            fontsReady={fontsReady}
+            onSubmit={handleSubmit}
+            onBack={() => setStage(STAGE.FORM)}
+          />
+        </Suspense>
       );
 
     case STAGE.HOME:
       return (
-        <HomeScreen
-          fontsReady={fontsReady}
-          data={data}
-          userId={session?.user?.id}
-          openJourney={homeJourneyOpen}
-          onJourneyOpened={() => setHomeJourneyOpen(false)}
-          onPreview={() => goForm(7, STAGE.HOME, true, STAGE.HOME)}
-          onEdit={() => goForm(0, STAGE.HOME, false, STAGE.HOME)}
-          onOpenSettings={() => setStage(STAGE.SETTINGS)}
-          onOpenDocs={(opts) => {
-            setDocsOpenChat(!!opts?.openChat);
-            setDocsScrollStep(opts?.scrollToStep || null);
-            setDocsReturnJourney(!!opts?.returnToJourney);
-            setStage(STAGE.DOCS);
-          }}
-          onLogout={handleLogout}
-          onSaveData={(patch) => { const nd = { ...data, ...patch }; setData(nd); persist(nd); }}
-        />
+        <Suspense fallback={<ScreenFallback />}>
+          <HomeScreen
+            fontsReady={fontsReady}
+            data={data}
+            userId={session?.user?.id}
+            openJourney={homeJourneyOpen}
+            onJourneyOpened={() => setHomeJourneyOpen(false)}
+            onPreview={() => goForm(7, STAGE.HOME, true, STAGE.HOME)}
+            onEdit={() => goForm(0, STAGE.HOME, false, STAGE.HOME)}
+            onOpenSettings={() => setStage(STAGE.SETTINGS)}
+            onOpenDocs={(opts) => {
+              setDocsOpenChat(!!opts?.openChat);
+              setDocsScrollStep(opts?.scrollToStep || null);
+              setDocsReturnJourney(!!opts?.returnToJourney);
+              setStage(STAGE.DOCS);
+            }}
+            onLogout={handleLogout}
+            onSaveData={(patch) => { const nd = { ...data, ...patch }; setData(nd); persist(nd); }}
+          />
+        </Suspense>
       );
 
     case STAGE.DOCS:
       return (
-        <DocumentsScreen
-          fontsReady={fontsReady}
-          data={data}
-          userId={session?.user?.id}
-          initialChatOpen={docsOpenChat}
-          initialScrollStep={docsScrollStep}
-          onBack={() => {
-            const reopenJourney = docsReturnJourney;
-            setDocsOpenChat(false);
-            setDocsScrollStep(null);
-            setDocsReturnJourney(false);
-            setHomeJourneyOpen(reopenJourney);
-            setStage(STAGE.HOME);
-          }}
-        />
+        <Suspense fallback={<ScreenFallback />}>
+          <DocumentsScreen
+            fontsReady={fontsReady}
+            data={data}
+            userId={session?.user?.id}
+            initialChatOpen={docsOpenChat}
+            initialScrollStep={docsScrollStep}
+            onBack={() => {
+              const reopenJourney = docsReturnJourney;
+              setDocsOpenChat(false);
+              setDocsScrollStep(null);
+              setDocsReturnJourney(false);
+              setHomeJourneyOpen(reopenJourney);
+              setStage(STAGE.HOME);
+            }}
+          />
+        </Suspense>
       );
 
     case STAGE.SETTINGS:
       return (
-        <SettingsScreen
-          fontsReady={fontsReady}
-          notifications={notifications}
-          onToggleNotifications={setNotifications}
-          isAgency={role === 'agency' || role === 'admin'}
-          onBack={() => setStage(role === 'agency' || role === 'admin' ? STAGE.AGENCY : STAGE.HOME)}
-          onChangeLanguage={() => setStage(STAGE.LANG_SETTINGS)}
-          onLogout={handleLogout}
-        />
+        <Suspense fallback={<ScreenFallback />}>
+          <SettingsScreen
+            fontsReady={fontsReady}
+            notifications={notifications}
+            onToggleNotifications={setNotifications}
+            isAgency={role === 'agency' || role === 'admin'}
+            onBack={() => setStage(role === 'agency' || role === 'admin' ? STAGE.AGENCY : STAGE.HOME)}
+            onChangeLanguage={() => setStage(STAGE.LANG_SETTINGS)}
+            onLogout={handleLogout}
+          />
+        </Suspense>
       );
 
     case STAGE.LANG_SETTINGS:
       return (
-        <LanguageSettings
-          fontsReady={fontsReady}
-          onBack={() => setStage(STAGE.SETTINGS)}
-        />
+        <Suspense fallback={<ScreenFallback />}>
+          <LanguageSettings
+            fontsReady={fontsReady}
+            onBack={() => setStage(STAGE.SETTINGS)}
+          />
+        </Suspense>
       );
 
     case STAGE.AGENCY: {
@@ -686,24 +707,21 @@ function Root() {
         }
         if (!agencySetupOk) {
           return (
-            <AgencySetupScreen
-              user={session.user}
-              onDone={(u) => {
-                setSession((s) => ({ ...s, user: u }));
-                setAgencySetupOk(true);
-              }}
-              onLogout={handleLogout}
-            />
+            <Suspense fallback={<ScreenFallback />}>
+              <AgencySetupScreen
+                user={session.user}
+                onDone={(u) => {
+                  setSession((s) => ({ ...s, user: u }));
+                  setAgencySetupOk(true);
+                }}
+                onLogout={handleLogout}
+              />
+            </Suspense>
           );
         }
       }
       return (
-        <Suspense fallback={(
-          <View style={[styles.flex, styles.center]}>
-            <ActivityIndicator color="#c2a25a" />
-          </View>
-        )}
-        >
+        <Suspense fallback={<ScreenFallback />}>
           <AgencyHomeScreen
             fontsReady={fontsReady}
             userId={session?.user?.id}
@@ -728,24 +746,26 @@ function Root() {
 
     case STAGE.AGENCY_CANDIDATE:
       return (
-        <AgencyCandidateScreen
-          fontsReady={fontsReady}
-          candidate={selectedCandidate?.c}
-          agencyUserId={session?.user?.id}
-          accepted={!!selectedCandidate?.st?.docs_unlocked || selectedCandidate?.st?.status === 'hired' || selectedCandidate?.st?.status === 'in_transit'}
-          offered={selectedCandidate?.st?.status === 'offered'}
-          hired={selectedCandidate?.st?.status === 'hired'}
-          inTransit={selectedCandidate?.st?.status === 'in_transit'}
-          openIvJoin={!!selectedCandidate?.st?._openIvJoin}
-          openInterview={!!selectedCandidate?.st?._openInterview}
-          openQuickOffer={!!selectedCandidate?.st?._quickOffer}
-          openChat={!!selectedCandidate?.st?._openChat}
-          openWorkStart={!!selectedCandidate?.st?._openWorkStart}
-          openHireConfirm={!!selectedCandidate?.st?._openHireConfirm || selectedCandidate?.st?.status === 'in_transit'}
-          openRate={!!selectedCandidate?.st?.openRate || !!selectedCandidate?.st?._openRate}
-          onBack={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
-          onAccepted={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
-        />
+        <Suspense fallback={<ScreenFallback />}>
+          <AgencyCandidateScreen
+            fontsReady={fontsReady}
+            candidate={selectedCandidate?.c}
+            agencyUserId={session?.user?.id}
+            accepted={!!selectedCandidate?.st?.docs_unlocked || selectedCandidate?.st?.status === 'hired' || selectedCandidate?.st?.status === 'in_transit'}
+            offered={selectedCandidate?.st?.status === 'offered'}
+            hired={selectedCandidate?.st?.status === 'hired'}
+            inTransit={selectedCandidate?.st?.status === 'in_transit'}
+            openIvJoin={!!selectedCandidate?.st?._openIvJoin}
+            openInterview={!!selectedCandidate?.st?._openInterview}
+            openQuickOffer={!!selectedCandidate?.st?._quickOffer}
+            openChat={!!selectedCandidate?.st?._openChat}
+            openWorkStart={!!selectedCandidate?.st?._openWorkStart}
+            openHireConfirm={!!selectedCandidate?.st?._openHireConfirm || selectedCandidate?.st?.status === 'in_transit'}
+            openRate={!!selectedCandidate?.st?.openRate || !!selectedCandidate?.st?._openRate}
+            onBack={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
+            onAccepted={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
+          />
+        </Suspense>
       );
 
     case STAGE.LANG:
