@@ -36,7 +36,6 @@ import { resolveRole, loadCachedRole, getCandidateById } from './lib/roles';
 import { isAgencySetupComplete } from './lib/agencyProfile';
 import { registerForPush, notifyNewCandidate, scanOps, scheduleDailyActivityNudge, cancelDailyActivityNudge } from './lib/push';
 import { startLastSeenTracking } from './lib/lastSeen';
-import { checkForOtaUpdate } from './lib/updates';
 import { syncAppIconTheme, watchAppIconTheme } from './lib/appIcon';
 import { withTimeout } from './lib/bootstrap';
 import { registerPrivacyOpener } from './lib/config';
@@ -94,11 +93,6 @@ function Root() {
     Cinzel_700Bold,
     DancingScript_700Bold,
   });
-
-  // Release build: OTA (arka planda indir; açılışı bloklamaz).
-  useEffect(() => {
-    checkForOtaUpdate();
-  }, []);
 
   // Gece/gündüz ikon — oturum hazır olduktan sonra (açılışı yavaşlatmasın).
   useEffect(() => {
