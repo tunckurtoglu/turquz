@@ -1,7 +1,7 @@
 // App.js
 // Akış: dil seçimi -> (oturum yoksa) giriş/kayıt -> karşılama -> form -> teşekkür -> home.
 // Oturum Supabase'te tutulur; uygulama açılışında okunur, değişimi dinlenir.
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { View, StyleSheet, StatusBar, ActivityIndicator, Text, TouchableOpacity, Alert } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Localization from 'expo-localization';
@@ -24,7 +24,7 @@ import LanguageSettings from './screens/LanguageSettings';
 import PortalScreen from './screens/PortalScreen';
 import DocumentsScreen from './screens/DocumentsScreen';
 import CvWizard from './wizard/CvWizard';
-import AgencyHomeScreen from './screens/AgencyHomeScreen';
+const AgencyHomeScreen = lazy(() => import('./screens/AgencyHomeScreen'));
 import AgencySetupScreen from './screens/AgencySetupScreen';
 import AgencyCandidateScreen from './screens/AgencyCandidateScreen';
 import { getSession, onAuthChange, signOut } from './lib/auth';
@@ -36,7 +36,7 @@ import { resolveRole, loadCachedRole, getCandidateById } from './lib/roles';
 import { isAgencySetupComplete } from './lib/agencyProfile';
 import { registerForPush, notifyNewCandidate, scanOps, scheduleDailyActivityNudge, cancelDailyActivityNudge } from './lib/push';
 import { startLastSeenTracking } from './lib/lastSeen';
-import { syncAppIconTheme, watchAppIconTheme } from './lib/appIcon';
+import { checkForOtaUpdate } from './lib/updates';
 import { withTimeout } from './lib/bootstrap';
 import { registerPrivacyOpener } from './lib/config';
 import PrivacyNoticeSheet from './components/PrivacyNoticeSheet';
@@ -94,14 +94,13 @@ function Root() {
     DancingScript_700Bold,
   });
 
-  // Gece/gündüz ikon — oturum hazır olduktan sonra (açılışı yavaşlatmasın).
+  // OTA: arka planda indir; açılışı bloklamaz, reloadAsync yok.
   useEffect(() => {
-    if (!authReady) return undefined;
-    syncAppIconTheme();
-    return watchAppIconTheme();
-  }, [authReady]);
+    const t = setTimeout(() => { checkForOtaUpdate(); }, 4000);
+    return () => clearTimeout(t);
+  }, []);
 
-  // Acente kurulum kapısı (vergi levhası + 2 telefon + yetkili)
+  // Acente kurulum kapısı
   useEffect(() => {
     let cancelled = false;
     if (role !== 'agency' || !session?.user?.id) {
@@ -699,24 +698,31 @@ function Root() {
         }
       }
       return (
-        <AgencyHomeScreen
-          fontsReady={fontsReady}
-          userId={session?.user?.id}
-          agencyReturn={agencyReturn}
-          onAgencyReturnConsumed={() => setAgencyReturn(null)}
-          onOpenCandidate={(c, st) => {
-            setAgencyReturn(st?._returnToHotels ? {
-              view: 'hotels',
-              employerId: st._returnEmployerId || null,
-              employerName: st._returnEmployerName || '',
-              department: st._returnDepartment || null,
-              coverUrl: st._returnCoverUrl || null,
-            } : null);
-            setSelectedCandidate({ c, st });
-            setStage(STAGE.AGENCY_CANDIDATE);
-          }}
-          onLogout={handleLogout}
-        />
+        <Suspense fallback={(
+          <View style={[styles.flex, styles.center]}>
+            <ActivityIndicator color="#c2a25a" />
+          </View>
+        )}
+        >
+          <AgencyHomeScreen
+            fontsReady={fontsReady}
+            userId={session?.user?.id}
+            agencyReturn={agencyReturn}
+            onAgencyReturnConsumed={() => setAgencyReturn(null)}
+            onOpenCandidate={(c, st) => {
+              setAgencyReturn(st?._returnToHotels ? {
+                view: 'hotels',
+                employerId: st._returnEmployerId || null,
+                employerName: st._returnEmployerName || '',
+                department: st._returnDepartment || null,
+                coverUrl: st._returnCoverUrl || null,
+              } : null);
+              setSelectedCandidate({ c, st });
+              setStage(STAGE.AGENCY_CANDIDATE);
+            }}
+            onLogout={handleLogout}
+          />
+        </Suspense>
       );
     }
 
