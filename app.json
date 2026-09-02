@@ -8,13 +8,8 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
     "updates": {
-      "url": "https://u.expo.dev/5d338e85-b28e-4fb7-84f6-80afc00ebb54",
-      "checkAutomatically": "NEVER",
-      "fallbackToCacheTimeout": 0
+      "enabled": false
     },
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -24,7 +19,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.turquz.app",
-      "buildNumber": "11",
+      "buildNumber": "12",
       "infoPlist": {
         "NSCameraUsageDescription": "Görüntülü mülakat için kameraya erişim gerekir.",
         "NSMicrophoneUsageDescription": "Görüntülü mülakat için mikrofona erişim gerekir.",
