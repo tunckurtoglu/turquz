@@ -48,6 +48,7 @@ import { listRatingStats } from '../lib/ratings';
 import RatingBadge from '../components/RatingBadge';
 import { listFavoriteCandidates, removeFavorite, addFavorite, hasFavoriteSlot, listAllFavoritedCandidateIds } from '../lib/favorites';
 import FavoriteEmployerSheet from '../components/FavoriteEmployerSheet';
+import { getOtaInfo, applyOtaUpdateNow } from '../lib/updates';
 import {
   readAgencyHomeUi, writeAgencyHomeUi, resetAgencyHomeUi,
   PIPELINE_PHASES, phaseOfPipelineStage,
@@ -465,6 +466,8 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const filterKey = JSON.stringify(advFilters);
   const activeCount = countFilters(advFilters);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [otaBusy, setOtaBusy] = useState(false);
+  const otaInfo = getOtaInfo();
   const [langOpen, setLangOpen] = useState(false);
   const [agencyProfile, setAgencyProfile] = useState(null);
   const [agencyPhotoUrl, setAgencyPhotoUrl] = useState('');
@@ -2285,6 +2288,34 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
                   />
                 </View>
               </View>
+
+              {otaInfo.enabled ? (
+                <>
+                  <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('ota_section')}</Text>
+                  <TouchableOpacity
+                    style={[styles.actionRow, { marginTop: 8, opacity: otaBusy ? 0.6 : 1 }]}
+                    disabled={otaBusy}
+                    onPress={async () => {
+                      setOtaBusy(true);
+                      try {
+                        const r = await applyOtaUpdateNow();
+                        if (!r.ok) Alert.alert(t('ota_section'), r.error || t('err_generic'));
+                      } finally {
+                        setOtaBusy(false);
+                      }
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.settingsHotelsIcon}><Text style={styles.settingsHotelsIconText}>↻</Text></View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.settingsHotelsTitle}>{otaBusy ? t('ota_busy') : t('ota_apply')}</Text>
+                      <Text style={styles.settingsHotelsDesc}>{t('ota_apply_desc')}</Text>
+                      <Text style={[styles.settingsHotelsDesc, { marginTop: 4 }]}>{t('ota_version', { id: otaInfo.shortId })}</Text>
+                    </View>
+                    <Text style={styles.menuLogoutHint}>›</Text>
+                  </TouchableOpacity>
+                </>
+              ) : null}
 
               <Text style={[styles.menuSection, { marginTop: 18 }]}>{t('set_account')}</Text>
               <TouchableOpacity
