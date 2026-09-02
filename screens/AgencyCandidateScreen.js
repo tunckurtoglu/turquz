@@ -987,7 +987,7 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
       setArriveAt(nextArrive);
       if (pickPdf) {
         const DocumentPicker = await import('expo-document-picker');
-        const { File } = await import('expo-file-system');
+        const { readFileBase64 } = await import('../lib/readFileBase64');
         const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf'], copyToCacheDirectory: true, multiple: false });
         if (res.canceled || !res.assets || !res.assets.length) {
           setFlightSheet(null);
@@ -997,7 +997,7 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
         const isPdf = (a.mimeType || '').includes('pdf') || (a.name || '').toLowerCase().endsWith('.pdf');
         if (!isPdf) { Alert.alert(t('doc_flight_ticket'), t('doc_pdf_only')); return; }
         setUploading('flight_ticket');
-        const base64 = await new File(a.uri).base64();
+        const base64 = await readFileBase64(a.uri);
         const row = await uploadDocument(candidate.user_id, 'flight_ticket', base64, 'application/pdf');
         setDocs((m) => ({ ...m, flight_ticket: row }));
       } else {
@@ -1072,14 +1072,14 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
         onPress: async () => {
           try {
             const DocumentPicker = await import('expo-document-picker');
-            const { File } = await import('expo-file-system');
+            const { readFileBase64 } = await import('../lib/readFileBase64');
             const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf'], copyToCacheDirectory: true, multiple: false });
             if (res.canceled || !res.assets?.length) return;
             const a = res.assets[0];
             const isPdf = (a.mimeType || '').includes('pdf') || (a.name || '').toLowerCase().endsWith('.pdf');
             if (!isPdf) { Alert.alert(t('doc_flight_ticket'), t('doc_pdf_only')); return; }
             setUploading('flight_ticket');
-            const base64 = await new File(a.uri).base64();
+            const base64 = await readFileBase64(a.uri);
             const row = await replaceSubmittedDocument(candidate.user_id, 'flight_ticket', base64, 'application/pdf');
             setDocs((m) => ({ ...m, flight_ticket: row }));
             notifyDocument(candidate.user_id, 'flight_ticket_updated');

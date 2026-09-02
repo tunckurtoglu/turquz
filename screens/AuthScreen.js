@@ -73,6 +73,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   const [rememberMe, setRememberMe] = useState(true);
   const [consentGeneral, setConsentGeneral] = useState(false);
   const [consentCross, setConsentCross] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const emailRef = useRef(null);
   const passRef = useRef(null);
   const pass2Ref = useRef(null);
@@ -80,7 +81,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   const candidateSignup = !agencyMode && mode === 'signup';
   const signupConsentOk = consentGeneral && consentCross;
 
-  // iOS AutoFill + Fabric: TextInput unmount sırasında şifre-kaydet UI çökertiyor.
+  // iOS AutoFill + unmount: formu önce kaldır, sonra navigate.
   const handOffSession = useCallback(async (session) => {
     try {
       Keyboard.dismiss();
@@ -88,7 +89,8 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
       passRef.current?.blur?.();
       pass2Ref.current?.blur?.();
     } catch { /* yoksay */ }
-    await new Promise((r) => setTimeout(r, 280));
+    setLeaving(true);
+    await new Promise((r) => setTimeout(r, 450));
     onAuthed?.(session);
   }, [onAuthed]);
 
@@ -265,6 +267,21 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
     }
   };
 
+  if (leaving) {
+    return (
+      <View style={[styles.flex, styles.center]}>
+        <LinearGradient
+          colors={['#101820', '#1b2533', '#2a3545']}
+          locations={[0, 0.45, 1]}
+          start={{ x: 0.1, y: 0 }}
+          end={{ x: 0.9, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <ActivityIndicator color={GOLD} size="large" />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.flex}>
       <LinearGradient
@@ -329,9 +346,9 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
-            textContentType="username"
-            autoComplete="username"
-            importantForAutofill="yes"
+            textContentType="none"
+            autoComplete="off"
+            importantForAutofill="no"
           />
           <Field
             label={t('auth_password')}
@@ -342,9 +359,9 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
             placeholder="••••••••"
             secureTextEntry
             autoCapitalize="none"
-            textContentType="password"
-            autoComplete="password"
-            importantForAutofill="yes"
+            textContentType="none"
+            autoComplete="off"
+            importantForAutofill="no"
           />
 
           {mode === 'signup' ? (
@@ -358,8 +375,9 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
                 placeholder="••••••••"
                 secureTextEntry
                 autoCapitalize="none"
-                textContentType="newPassword"
-                autoComplete="password-new"
+                textContentType="none"
+                autoComplete="off"
+                importantForAutofill="no"
               />
               {passMismatch ? (
                 <Text style={[styles.warn, ta]}>{t('auth_err_pass_match')}</Text>
@@ -504,6 +522,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: NAVY },
+  center: { justifyContent: 'center', alignItems: 'center' },
   glowA: {
     position: 'absolute', top: -80, left: -60, width: 280, height: 280, borderRadius: 140,
     backgroundColor: 'rgba(194,162,90,0.16)',

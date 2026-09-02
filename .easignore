@@ -1,0 +1,5 @@
+.deploy-cache/
+dist/
+.expo/
+node_modules/
+.git/

@@ -50,7 +50,7 @@ export default function AgencySetupScreen({ user, onDone, onLogout }) {
     setErr('');
     try {
       const DocumentPicker = await import('expo-document-picker');
-      const { File } = await import('expo-file-system');
+      const { readFileBase64 } = await import('../lib/readFileBase64');
       const res = await DocumentPicker.getDocumentAsync({
         type: ['application/pdf'],
         copyToCacheDirectory: true,
@@ -61,7 +61,7 @@ export default function AgencySetupScreen({ user, onDone, onLogout }) {
       const isPdf = (asset.mimeType || '').includes('pdf') || (asset.name || '').toLowerCase().endsWith('.pdf');
       if (!isPdf) { setErr('Yalnızca PDF yükleyin.'); return; }
       setBusy(true);
-      const base64 = await new File(asset.uri).base64();
+      const base64 = await readFileBase64(asset.uri);
       const path = await uploadAgencyTaxPlate(uid, base64);
       setTaxPath(path);
       setTaxName(asset.name || 'vergi_levhasi.pdf');

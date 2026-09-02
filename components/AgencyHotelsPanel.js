@@ -10,8 +10,8 @@ import HotelCoverArt from './HotelCoverArt';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { File } from 'expo-file-system';
 import { useLanguage } from '../i18n/LanguageContext';
+import { readFileBase64 } from '../lib/readFileBase64';
 import {
   listEmployers, saveEmployer, deleteEmployer, getEmployer,
   uploadEmployerTaxPlate, getEmployerTaxPlateUrl, parseEmployerTaxPlate,
@@ -346,7 +346,7 @@ export default function AgencyHotelsPanel({
       const isPdf = (a.mimeType || '').includes('pdf') || (a.name || '').toLowerCase().endsWith('.pdf');
       if (!isPdf) { Alert.alert(t('hotels_title'), t('doc_pdf_only')); return; }
       setBusy(true);
-      const base64 = await new File(a.uri).base64();
+      const base64 = await readFileBase64(a.uri);
       let row = await uploadEmployerTaxPlate(agencyId, selected.id, base64, 'application/pdf');
       setSelected(row);
       setF(row);

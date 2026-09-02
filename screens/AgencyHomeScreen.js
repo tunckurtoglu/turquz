@@ -583,7 +583,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const pickTaxPdf = async () => {
     try {
       const DocumentPicker = await import('expo-document-picker');
-      const { File } = await import('expo-file-system');
+      const { readFileBase64 } = await import('../lib/readFileBase64');
       const res = await DocumentPicker.getDocumentAsync({
         type: ['application/pdf'],
         copyToCacheDirectory: true,
@@ -594,7 +594,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
       const isPdf = (asset.mimeType || '').includes('pdf') || (asset.name || '').toLowerCase().endsWith('.pdf');
       if (!isPdf) { Alert.alert(t('agency_tax_section'), t('agency_tax_pdf_only') || 'Yalnızca PDF yükleyin.'); return; }
       setTaxBusy(true);
-      const base64 = await new File(asset.uri).base64();
+      const base64 = await readFileBase64(asset.uri);
       await saveAgencyTaxPlate(userId, base64);
       await refreshAgencyProfile();
     } catch (e) {

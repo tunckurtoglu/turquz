@@ -553,36 +553,41 @@ function Root() {
           portal={authPortal}
           onBack={() => setStage(STAGE.PORTAL)}
           onAuthed={async (s) => {
-            setSession(s);
-            let resolved;
             try {
-              resolved = await withTimeout(resolveRole(s.user.id), 8_000, 'role');
-            } catch {
-              const cached = await loadCachedRole(s.user.id);
-              resolved = cached
-                ? { role: cached, source: 'cache', uncertain: false }
-                : { role: null, source: 'error', uncertain: true };
-            }
-            if (resolved.uncertain || !resolved.role) {
-              setRoleBlocked(true);
-              setRoleReady(false);
-              return;
-            }
-            setRoleBlocked(false);
-            setRole(resolved.role);
-            setRoleReady(true);
-            if (resolved.role === 'agency' || resolved.role === 'admin') {
-              setStage(STAGE.AGENCY);
-            } else {
-              const saved = await loadProfile(s.user.id);
-              if (saved) {
-                setData(saved);
-                setHasCv(true);
-                setStage(STAGE.HOME);
-              } else {
-                setLangReturn(STAGE.WELCOME);
-                setStage(STAGE.LANG);
+              setSession(s);
+              let resolved;
+              try {
+                resolved = await withTimeout(resolveRole(s.user.id), 8_000, 'role');
+              } catch {
+                const cached = await loadCachedRole(s.user.id);
+                resolved = cached
+                  ? { role: cached, source: 'cache', uncertain: false }
+                  : { role: null, source: 'error', uncertain: true };
               }
+              if (resolved.uncertain || !resolved.role) {
+                setRoleBlocked(true);
+                setRoleReady(false);
+                return;
+              }
+              setRoleBlocked(false);
+              setRole(resolved.role);
+              setRoleReady(true);
+              if (resolved.role === 'agency' || resolved.role === 'admin') {
+                setStage(STAGE.AGENCY);
+              } else {
+                const saved = await loadProfile(s.user.id).catch(() => null);
+                if (saved) {
+                  setData(saved);
+                  setHasCv(true);
+                  setStage(STAGE.HOME);
+                } else {
+                  setLangReturn(STAGE.WELCOME);
+                  setStage(STAGE.LANG);
+                }
+              }
+            } catch (e) {
+              console.warn('[onAuthed]', e?.message || e);
+              Alert.alert('Turquz', e?.message || 'Giriş sonrası hata');
             }
           }}
         />

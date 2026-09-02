@@ -442,14 +442,14 @@ export default function DocumentsScreen({ userId, onBack, fontsReady, initialCha
   const pickPdf = async (docKey) => {
     try {
       const DocumentPicker = await import('expo-document-picker');
-      const { File } = await import('expo-file-system');
+      const { readFileBase64 } = await import('../lib/readFileBase64');
       const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf'], copyToCacheDirectory: true, multiple: false });
       if (res.canceled || !res.assets || !res.assets.length) return;
       const a = res.assets[0];
       const isPdf = (a.mimeType || '').includes('pdf') || (a.name || '').toLowerCase().endsWith('.pdf');
       if (!isPdf) { Alert.alert(t('docs_title'), t('doc_pdf_only')); return; }
       setUploading(docKey);
-      const base64 = await new File(a.uri).base64();
+      const base64 = await readFileBase64(a.uri);
       const row = await uploadDocument(userId, docKey, base64, 'application/pdf');
       setDocs((m) => ({ ...m, [docKey]: row }));
       setUploading(null);
