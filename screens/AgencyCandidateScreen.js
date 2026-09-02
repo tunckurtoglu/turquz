@@ -2256,7 +2256,11 @@ export default function AgencyCandidateScreen({ candidate, agencyUserId, accepte
                   Alert.alert(t('emp_term_problem'), t('emp_term_problem_confirm'), [
                     { text: t('consent_cancel'), style: 'cancel' },
                     { text: t('emp_term_problem'), style: 'destructive', onPress: async () => {
-                        try { await answerEmploymentTerm(episode.id, 'problem'); await refreshEpisode(); }
+                        try {
+                          await answerEmploymentTerm(episode.id, 'problem');
+                          await refreshEpisode();
+                          Alert.alert(t('emp_term_problem'), t('emp_term_problem_done'));
+                        }
                         catch (e) { Alert.alert(t('emp_term_problem'), e?.message || 'error'); }
                       } },
                   ]);

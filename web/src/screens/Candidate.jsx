@@ -402,6 +402,9 @@ export default function Candidate({ sel, detailTab = 'cv', onDetailTabChange, on
       ]);
       setEpisode(ep);
       if (next) setSt(next);
+      if (answer === 'problem') {
+        window.alert(t('emp_term_problem_done') || '');
+      }
     } catch (e) { setMsg(e?.message || t('err_generic') || 'Hata'); } finally { setBusy(false); }
   };
 
