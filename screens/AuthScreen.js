@@ -3,10 +3,10 @@
 // - E-posta + şifre ile giriş ve kayıt (kayıtta şifre iki kez + eşleşme kontrolü)
 // - Şifremi unuttum → e-posta linki turquz://reset-password (App.js recovery ekranı)
 // - Google / Apple: Supabase OAuth (in-app tarayıcı) → register_as_* ile portal kilidi
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Platform,
+  ActivityIndicator, Platform, Keyboard,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -45,11 +45,12 @@ function ConsentCheck({ checked, onToggle, label, requiredLabel }) {
   );
 }
 
-function Field({ label, ta, ...inputProps }) {
+function Field({ label, ta, inputRef, ...inputProps }) {
   return (
     <View style={styles.field}>
       <Text style={[styles.label, ta]}>{label}</Text>
       <TextInput
+        ref={inputRef}
         style={[styles.input, ta]}
         placeholderTextColor="#a0a7b2"
         {...inputProps}
@@ -72,9 +73,24 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   const [rememberMe, setRememberMe] = useState(true);
   const [consentGeneral, setConsentGeneral] = useState(false);
   const [consentCross, setConsentCross] = useState(false);
+  const emailRef = useRef(null);
+  const passRef = useRef(null);
+  const pass2Ref = useRef(null);
   const agencyMode = portal === 'agency';
   const candidateSignup = !agencyMode && mode === 'signup';
   const signupConsentOk = consentGeneral && consentCross;
+
+  // iOS AutoFill + Fabric: TextInput unmount sırasında şifre-kaydet UI çökertiyor.
+  const handOffSession = useCallback(async (session) => {
+    try {
+      Keyboard.dismiss();
+      emailRef.current?.blur?.();
+      passRef.current?.blur?.();
+      pass2Ref.current?.blur?.();
+    } catch { /* yoksay */ }
+    await new Promise((r) => setTimeout(r, 280));
+    onAuthed?.(session);
+  }, [onAuthed]);
 
   useEffect(() => {
     let live = true;
@@ -119,7 +135,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
       setMsg({ type: 'err', text: t('auth_err_not_agency') });
       return false;
     }
-    onAuthed?.(session);
+    await handOffSession(session);
     return true;
   };
 
@@ -160,7 +176,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
         console.warn('signup consent:', e?.message);
       }
     }
-    onAuthed?.(session);
+    await handOffSession(session);
     return true;
   };
 
@@ -306,18 +322,21 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
           <Field
             label={t('auth_email')}
             ta={ta}
+            inputRef={emailRef}
             value={email}
             onChangeText={(v) => { setEmail(v); clearMsg(); }}
             placeholder={t('auth_email_ph')}
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
-            textContentType="emailAddress"
-            autoComplete="email"
+            textContentType="username"
+            autoComplete="username"
+            importantForAutofill="yes"
           />
           <Field
             label={t('auth_password')}
             ta={ta}
+            inputRef={passRef}
             value={pass}
             onChangeText={(v) => { setPass(v); clearMsg(); }}
             placeholder="••••••••"
@@ -325,6 +344,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
             autoCapitalize="none"
             textContentType="password"
             autoComplete="password"
+            importantForAutofill="yes"
           />
 
           {mode === 'signup' ? (
@@ -332,11 +352,14 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
               <Field
                 label={t('auth_password2')}
                 ta={ta}
+                inputRef={pass2Ref}
                 value={pass2}
                 onChangeText={(v) => { setPass2(v); clearMsg(); }}
                 placeholder="••••••••"
                 secureTextEntry
                 autoCapitalize="none"
+                textContentType="newPassword"
+                autoComplete="password-new"
               />
               {passMismatch ? (
                 <Text style={[styles.warn, ta]}>{t('auth_err_pass_match')}</Text>

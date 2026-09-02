@@ -7,7 +7,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "updates": {
       "enabled": false
     },
@@ -19,7 +19,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.turquz.app",
-      "buildNumber": "12",
+      "buildNumber": "13",
       "infoPlist": {
         "NSCameraUsageDescription": "Görüntülü mülakat için kameraya erişim gerekir.",
         "NSMicrophoneUsageDescription": "Görüntülü mülakat için mikrofona erişim gerekir.",
