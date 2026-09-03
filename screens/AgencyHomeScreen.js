@@ -58,7 +58,105 @@ import { supabase } from '../lib/supabase';
 import { listFlights, parseArriveAt } from '../lib/flights';
 import ProcessChatSheet from '../components/ProcessChatSheet';
 import { C } from '../lib/theme';
-import FavoriteEmployerSheet from '../components/FavoriteEmployerSheet';
+import { loadDefaultExport } from '../lib/loadDefaultExport';
+
+// Ağır FavoriteEmployerSheet panel açılışını kırabiliyor.
+// İşletme sekmesi: hafif liste (agency_employers). Favori ekleme modalı ayrı.
+let _liteComp = null;
+let _litePromise = null;
+function warmEmployersLite() {
+  if (typeof _liteComp === 'function') return Promise.resolve(_liteComp);
+  if (!_litePromise) {
+    _litePromise = loadDefaultExport(
+      () => require('../components/AgencyEmployersLite'),
+      'İşletme listesi',
+    ).then((C) => { _liteComp = C; return C; })
+      .catch((e) => { _litePromise = null; throw e; });
+  }
+  return _litePromise;
+}
+
+let _hubComp = null;
+let _hubPromise = null;
+function warmFavoriteHub() {
+  if (typeof _hubComp === 'function') return Promise.resolve(_hubComp);
+  if (!_hubPromise) {
+    _hubPromise = loadDefaultExport(
+      () => require('../components/FavoriteEmployerSheet'),
+      'İşletme merkezi',
+    ).then((C) => { _hubComp = C; return C; })
+      .catch((e) => { _hubPromise = null; throw e; });
+  }
+  return _hubPromise;
+}
+
+function LazyEmployersLite(props) {
+  const [Comp, setComp] = useState(() => (typeof _liteComp === 'function' ? _liteComp : null));
+  const [err, setErr] = useState('');
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (typeof Comp === 'function') return undefined;
+    let live = true;
+    warmEmployersLite()
+      .then((C) => { if (live) setComp(() => C); })
+      .catch((e) => { if (live) setErr(String(e?.message || e)); });
+    return () => { live = false; };
+  }, [Comp, tick]);
+  if (err) {
+    return (
+      <View style={{ padding: 24, alignItems: 'center' }}>
+        <Text style={{ color: '#8E98A8', textAlign: 'center', marginBottom: 14 }}>{err}</Text>
+        <TouchableOpacity
+          onPress={() => { setErr(''); setComp(null); setTick((n) => n + 1); }}
+          style={{ backgroundColor: '#c2a25a', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10 }}
+        >
+          <Text style={{ color: '#0e141c', fontWeight: '800' }}>Tekrar dene</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+  if (typeof Comp !== 'function') {
+    return <View style={{ paddingTop: 48 }}><ActivityIndicator color="#c2a25a" /></View>;
+  }
+  return <Comp {...props} />;
+}
+
+function LazyFavoriteHub(props) {
+  const [Sheet, setSheet] = useState(() => (typeof _hubComp === 'function' ? _hubComp : null));
+  const [hubErr, setHubErr] = useState('');
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (typeof Sheet === 'function') return undefined;
+    let live = true;
+    warmFavoriteHub()
+      .then((C) => { if (live) setSheet(() => C); })
+      .catch((e) => { if (live) setHubErr(String(e?.message || e)); });
+    return () => { live = false; };
+  }, [Sheet, tick]);
+
+  if (hubErr) {
+    return (
+      <View style={{ padding: 24, alignItems: 'center' }}>
+        <Text style={{ color: '#8E98A8', textAlign: 'center', marginBottom: 14 }}>{hubErr}</Text>
+        <TouchableOpacity
+          onPress={() => { setHubErr(''); setSheet(null); setTick((n) => n + 1); }}
+          style={{ backgroundColor: '#c2a25a', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10 }}
+        >
+          <Text style={{ color: '#0e141c', fontWeight: '800' }}>Tekrar dene</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+  if (typeof Sheet !== 'function') {
+    return (
+      <View style={{ paddingTop: 48 }}>
+        <ActivityIndicator color="#c2a25a" />
+      </View>
+    );
+  }
+  return <Sheet {...props} />;
+}
 
 const PAGE = 24;
 const FOOTER_CONTENT_PAD = 78;
@@ -497,6 +595,12 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   }, [userId]);
 
   useEffect(() => { refreshAgencyProfile(); }, [refreshAgencyProfile]);
+
+  // İşletme listesini panel açıldıktan sonra ısıt
+  useEffect(() => {
+    const t = setTimeout(() => { warmEmployersLite().catch(() => {}); }, 800);
+    return () => clearTimeout(t);
+  }, []);
 
   const openSettings = () => {
     setLangOpen(false);
@@ -2458,29 +2562,16 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
           }}
         />
       ) : view === 'hotels' ? (
-        <FavoriteEmployerSheet
-          embedded
-          visible
-          light
+        <LazyEmployersLite
           agencyId={userId}
-          purpose="filter"
-          initialEmployerId={agencyReturn?.view === 'hotels' ? agencyReturn.employerId : null}
-          initialEmployerName={agencyReturn?.view === 'hotels' ? agencyReturn.employerName : ''}
-          initialDepartment={agencyReturn?.view === 'hotels' ? agencyReturn.department : null}
-          initialCoverUrl={agencyReturn?.view === 'hotels' ? agencyReturn.coverUrl : null}
-          initialHubTab={hotelsInitialTab}
-          onInitialHubTabConsumed={() => setHotelsInitialTab(null)}
           contentPadBottom={insets.bottom + FOOTER_CONTENT_PAD}
           onClose={() => setView('ops')}
-          onInitialRestoreConsumed={onAgencyReturnConsumed}
-          candidateStatuses={statuses}
           onOpenPipeline={(emp) => {
             setPipelineEmployerFilter({ id: emp.id, name: emp.name || '' });
             setView('pipeline');
             setPipelineStage('staff');
             setPipeStepFilter(null);
           }}
-          onOpenCandidate={(c, st) => onOpenCandidate(c, { ...(statuses[c.user_id] || {}), ...(st || {}) })}
         />
       ) : footerTab === 'announcements' && !hubCompose ? (
         <AnnouncementsListSheet
@@ -3044,7 +3135,8 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         </Pressable>
       </Modal>
 
-      <FavoriteEmployerSheet
+      {favPickOpen ? (
+      <LazyFavoriteHub
         visible={favPickOpen}
         light
         agencyId={userId}
@@ -3054,6 +3146,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
         onSelect={onFavFilterPick}
         onClose={() => { setFavPickOpen(false); setPendingFavIds([]); }}
       />
+      ) : null}
 
       {/* Tarih aralığı seçici */}
       <Modal visible={rangeOpen} transparent animationType="fade" onRequestClose={() => setRangeOpen(false)}>

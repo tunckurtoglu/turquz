@@ -1,0 +1,13 @@
+---
+description: GitHub'a yalnızca kullanıcı açıkça isterse yedekle/push
+alwaysApply: true
+---
+
+# GitHub yedek — yalnızca komutla
+
+**Kullanıcı standing instruction:** Acente paneli / OTA felaketi sonrası (Eyl 2026).
+
+- `git push`, PR oluşturma, remote yedek **yalnızca** kullanıcı o mesajda açıkça isterse.
+- OTA yayınlamak GitHub push değildir; OTA kuralları ayrı kalır.
+- Commit de yalnızca kullanıcı isterse (mevcut commit kuralları).
+- Oturum sonunda / “iyi çalışıyor” sonrası **otomatik** GitHub yedekleme **yasak**.

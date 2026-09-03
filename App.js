@@ -20,13 +20,13 @@ import PortalScreen from './screens/PortalScreen';
 import { deferScreen } from './lib/DeferredScreen';
 // React.lazy / elle require().default YOK (RN19 + OTA'da undefined fatal).
 // Aday: deferScreen. Acente: ESM import — Metro inlineRequires ilk kullanıma kadar eval etmez.
-const WelcomeScreen = deferScreen(() => import('./screens/WelcomeScreen'), 'Karşılama');
-const ThankYouScreen = deferScreen(() => import('./screens/ThankYouScreen'), 'Teşekkür');
-const HomeScreen = deferScreen(() => import('./screens/HomeScreen'), 'Ana sayfa');
-const SettingsScreen = deferScreen(() => import('./screens/SettingsScreen'), 'Ayarlar');
-const LanguageSettings = deferScreen(() => import('./screens/LanguageSettings'), 'Dil');
-const DocumentsScreen = deferScreen(() => import('./screens/DocumentsScreen'), 'Belgeler');
-const CvWizard = deferScreen(() => import('./wizard/CvWizard'), 'CV');
+const WelcomeScreen = deferScreen(() => require('./screens/WelcomeScreen'), 'Karşılama');
+const ThankYouScreen = deferScreen(() => require('./screens/ThankYouScreen'), 'Teşekkür');
+const HomeScreen = deferScreen(() => require('./screens/HomeScreen'), 'Ana sayfa');
+const SettingsScreen = deferScreen(() => require('./screens/SettingsScreen'), 'Ayarlar');
+const LanguageSettings = deferScreen(() => require('./screens/LanguageSettings'), 'Dil');
+const DocumentsScreen = deferScreen(() => require('./screens/DocumentsScreen'), 'Belgeler');
+const CvWizard = deferScreen(() => require('./wizard/CvWizard'), 'CV');
 import {
   AgencyHomeScreen, AgencySetupScreen, AgencyCandidateScreen, preloadAgencyScreens,
 } from './lib/agencyScreens';

@@ -1,0 +1,24 @@
+---
+description: Güncel acente UI tek doğru tasarım; eski mockup/tasarıma geri dönüş yok
+alwaysApply: true
+---
+
+# Güncel tasarım — eskiye dönüş yok
+
+**Kullanıcı standing instruction (Eyl 2026):** İki aylık cehennem sonrası çalışan sürüm = tek görsel kaynak.
+
+## Yasak
+
+- Aylar önce / “eski mockup” / “önceki turkuaz kart” / arşiv UI’ye **yanlışlıkla veya “geri yükleme”** ile dönmek.
+- Alakasız bir bugfix’te eski layout, renk şeması, sekme düzeni veya işletme merkezi tasarımını restore etmek.
+- “Eski çalışan tasarım vardı” diye git history’den görsel sistemi geri çekmek (kullanıcı istemeden).
+
+## Doğru
+
+- **Şu an production’da açılan acente paneli** (Bugün / Adaylar / Havuz / İşletme merkezi + alt bar) güncel tasarımdır.
+- İşletme merkezi: hafif liste (`AgencyEmployersLite` / `agency_employers`) şu an kabul edilen çözüm; kapak görselleri sonra eklenebilir — eski hub’ı panel açılışını bozacak şekilde geri dayatma.
+- Yeni UI işi: mevcut ekranın üstüne inşa et; geçmiş sprint’lerin görselini “daha iyiydi” diye dayatma.
+
+## Hatırlatma
+
+Veri (`agency_employers`, `agency_favorites`) silinmedi; UI yükleme hatalarını veri kaybı sanma. Panel açılışını bozan statik ağır import’lara (özellikle `FavoriteEmployerSheet` → `AgencyHomeScreen`) geri dönme.
