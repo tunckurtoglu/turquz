@@ -38,6 +38,7 @@ import { isAgencySetupComplete } from './lib/agencyProfile';
 import { registerForPush, notifyNewCandidate, scanOps, scheduleDailyActivityNudge, cancelDailyActivityNudge } from './lib/push';
 import { startLastSeenTracking } from './lib/lastSeen';
 import { withTimeout } from './lib/bootstrap';
+import { checkForOtaUpdate } from './lib/updates';
 import { registerPrivacyOpener } from './lib/config';
 import PrivacyNoticeSheet from './components/PrivacyNoticeSheet';
 import ConsentSheet from './components/ConsentSheet';
@@ -102,8 +103,13 @@ function Root() {
     DancingScript_700Bold,
   });
 
-  // OTA: açılışta ASLA kontrol etme (build 10/11). Bozuk OTA indirme → sonraki açılışta çökme.
-  // Güncelleme yalnızca yeni TestFlight binary veya ileride manuel ayar ile.
+  // OTA: açılışta değil — panel açıldıktan sonra arka planda indir (reload yok).
+  useEffect(() => {
+    if (stage !== STAGE.HOME && stage !== STAGE.AGENCY) return undefined;
+    if (!authReady || !roleReady || roleBlocked) return undefined;
+    const t = setTimeout(() => { checkForOtaUpdate().catch(() => {}); }, 8_000);
+    return () => clearTimeout(t);
+  }, [stage, authReady, roleReady, roleBlocked]);
 
   // Acente kurulum kapısı
   useEffect(() => {
