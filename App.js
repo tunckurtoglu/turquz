@@ -1,7 +1,7 @@
 // App.js
 // Akış: dil seçimi -> (oturum yoksa) giriş/kayıt -> karşılama -> form -> teşekkür -> home.
 // Oturum Supabase'te tutulur; uygulama açılışında okunur, değişimi dinlenir.
-import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import { View, StyleSheet, StatusBar, ActivityIndicator, Text, TouchableOpacity, Alert } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Localization from 'expo-localization';
@@ -17,17 +17,20 @@ import LanguageSelect from './screens/LanguageSelect';
 import AuthScreen from './screens/AuthScreen';
 import ResetPasswordScreen from './screens/ResetPasswordScreen';
 import PortalScreen from './screens/PortalScreen';
-// Ağır ekranlar açılışta yüklenmez — build 10'da statik import native çökme riski.
-const WelcomeScreen = lazy(() => import('./screens/WelcomeScreen'));
-const ThankYouScreen = lazy(() => import('./screens/ThankYouScreen'));
-const HomeScreen = lazy(() => import('./screens/HomeScreen'));
-const SettingsScreen = lazy(() => import('./screens/SettingsScreen'));
-const LanguageSettings = lazy(() => import('./screens/LanguageSettings'));
-const DocumentsScreen = lazy(() => import('./screens/DocumentsScreen'));
-const CvWizard = lazy(() => import('./wizard/CvWizard'));
-const AgencyHomeScreen = lazy(() => import('./screens/AgencyHomeScreen'));
-const AgencySetupScreen = lazy(() => import('./screens/AgencySetupScreen'));
-const AgencyCandidateScreen = lazy(() => import('./screens/AgencyCandidateScreen'));
+import { deferScreen } from './lib/DeferredScreen';
+// React.lazy / elle require().default YOK (RN19 + OTA'da undefined fatal).
+// Aday: deferScreen. Acente: ESM import — Metro inlineRequires ilk kullanıma kadar eval etmez.
+const WelcomeScreen = deferScreen(() => import('./screens/WelcomeScreen'), 'Karşılama');
+const ThankYouScreen = deferScreen(() => import('./screens/ThankYouScreen'), 'Teşekkür');
+const HomeScreen = deferScreen(() => import('./screens/HomeScreen'), 'Ana sayfa');
+const SettingsScreen = deferScreen(() => import('./screens/SettingsScreen'), 'Ayarlar');
+const LanguageSettings = deferScreen(() => import('./screens/LanguageSettings'), 'Dil');
+const DocumentsScreen = deferScreen(() => import('./screens/DocumentsScreen'), 'Belgeler');
+const CvWizard = deferScreen(() => import('./wizard/CvWizard'), 'CV');
+import {
+  AgencyHomeScreen, AgencySetupScreen, AgencyCandidateScreen, preloadAgencyScreens,
+} from './lib/agencyScreens';
+
 import { getSession, onAuthChange, signOut } from './lib/auth';
 import {
   createSessionFromUrl, getInitialAuthUrl, isAuthCallbackUrl, subscribeAuthUrls,
@@ -38,11 +41,68 @@ import { isAgencySetupComplete } from './lib/agencyProfile';
 import { registerForPush, notifyNewCandidate, scanOps, scheduleDailyActivityNudge, cancelDailyActivityNudge } from './lib/push';
 import { startLastSeenTracking } from './lib/lastSeen';
 import { withTimeout } from './lib/bootstrap';
-import { checkForOtaUpdate } from './lib/updates';
+import { checkForOtaUpdate, applyOtaAndReload } from './lib/updates';
 import { registerPrivacyOpener } from './lib/config';
 import PrivacyNoticeSheet from './components/PrivacyNoticeSheet';
 import ConsentSheet from './components/ConsentSheet';
 import { getLatestConsent, saveConsent, hasAccountConsent } from './lib/consent';
+
+/** JS fatal’i ekranda göster — abort yerine. */
+class CrashGate extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null, otaBusy: false, otaMsg: '' };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('[CrashGate]', error?.message || error, info?.componentStack);
+    checkForOtaUpdate({ autoReload: true }).catch(() => {});
+  }
+
+  applyUpdate = async () => {
+    this.setState({ otaBusy: true, otaMsg: 'Güncelleme kontrol ediliyor…' });
+    const res = await applyOtaAndReload();
+    // reloadAsync başarılıysa buraya gelinmez; geldiysek hata var.
+    if (!res.ok) {
+      this.setState({ otaBusy: false, otaMsg: res.reason || 'Güncelleme yok / başarısız' });
+    }
+  };
+
+  render() {
+    const { error, otaBusy, otaMsg } = this.state;
+    if (error) {
+      const msg = String(error?.message || error);
+      const stack = String(error?.stack || '').slice(0, 500);
+      return (
+        <View style={{ flex: 1, backgroundColor: '#1b2533', justifyContent: 'center', padding: 24 }}>
+          <Text style={{ color: '#e7dcc4', fontSize: 17, fontWeight: '800', marginBottom: 10, textAlign: 'center' }}>
+            Bir hata oluştu
+          </Text>
+          <Text style={{ color: '#f0ece4', fontSize: 13, lineHeight: 19, marginBottom: 12 }} selectable>{msg}</Text>
+          {stack ? <Text style={{ color: '#9aa3b0', fontSize: 10, lineHeight: 14 }} selectable>{stack}</Text> : null}
+          {otaMsg ? <Text style={{ color: '#c2a25a', fontSize: 12, textAlign: 'center', marginTop: 10 }}>{otaMsg}</Text> : null}
+          <TouchableOpacity
+            onPress={this.applyUpdate}
+            disabled={otaBusy}
+            style={{ marginTop: 18, alignSelf: 'center', backgroundColor: '#c2a25a', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, opacity: otaBusy ? 0.6 : 1 }}
+          >
+            {otaBusy
+              ? <ActivityIndicator color="#0e141c" />
+              : <Text style={{ color: '#0e141c', fontWeight: '800' }}>Güncellemeyi yükle</Text>}
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => this.setState({ error: null })} style={{ marginTop: 12, alignSelf: 'center', padding: 10 }}>
+            <Text style={{ color: '#9aa3b0', fontWeight: '700' }}>Tekrar dene</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function ScreenFallback() {
   return (
@@ -79,6 +139,7 @@ function Root() {
   const [roleBlocked, setRoleBlocked] = useState(false); // rol doğrulanamadı — aday paneline düşme
   const [roleRetrying, setRoleRetrying] = useState(false);
   const [agencySetupOk, setAgencySetupOk] = useState(null); // null=yükleniyor, true/false
+  const [agencyBooting, setAgencyBooting] = useState(false); // acente modülleri ön yükleniyor
   const [selectedCandidate, setSelectedCandidate] = useState(null); // acente: seçili aday
   const [agencyReturn, setAgencyReturn] = useState(null);
   const [docsOpenChat, setDocsOpenChat] = useState(false); // aday: bildirimden belgeleri+chat aç
@@ -92,6 +153,17 @@ function Root() {
   const enterAfterAuthRef = useRef(null);
   const update = (patch) => setData((d) => ({ ...d, ...patch }));
 
+  const goAgencyStage = useCallback((cancelled) => {
+    setAgencyBooting(true);
+    preloadAgencyScreens()
+      .catch((e) => console.warn('[agency preload]', e?.message || e))
+      .finally(() => {
+        if (cancelled?.()) return;
+        setAgencyBooting(false);
+        setStage(STAGE.AGENCY);
+      });
+  }, []);
+
   const [fontsReady] = useFonts({
     PlayfairDisplay_400Regular,
     PlayfairDisplay_700Bold,
@@ -103,13 +175,21 @@ function Root() {
     DancingScript_700Bold,
   });
 
-  // OTA: açılışta değil — panel açıldıktan sonra arka planda indir (reload yok).
+  // OTA: açılışta hemen indir (beyaz ekranda bile). reloadAsync yok.
   useEffect(() => {
-    if (stage !== STAGE.HOME && stage !== STAGE.AGENCY) return undefined;
-    if (!authReady || !roleReady || roleBlocked) return undefined;
-    const t = setTimeout(() => { checkForOtaUpdate().catch(() => {}); }, 8_000);
+    checkForOtaUpdate().catch(() => {});
+    const t = setTimeout(() => { checkForOtaUpdate().catch(() => {}); }, 3_000);
     return () => clearTimeout(t);
-  }, [stage, authReady, roleReady, roleBlocked]);
+  }, []);
+
+  // OTA: portal/auth’ta da dene
+  useEffect(() => {
+    if (stage !== STAGE.PORTAL && stage !== STAGE.AUTH && stage !== STAGE.HOME && stage !== STAGE.AGENCY) {
+      return undefined;
+    }
+    const t = setTimeout(() => { checkForOtaUpdate().catch(() => {}); }, 2_000);
+    return () => clearTimeout(t);
+  }, [stage]);
 
   // Acente kurulum kapısı
   useEffect(() => {
@@ -163,7 +243,7 @@ function Root() {
       setRole(resolved.role);
       setRoleReady(true);
       if (resolved.role === 'agency' || resolved.role === 'admin') {
-        setStage(STAGE.AGENCY);
+        goAgencyStage(() => cancelled);
       } else {
         const saved = await withTimeout(loadProfile(session.user.id), 8_000, 'profile').catch(() => null);
         if (cancelled) return;
@@ -449,7 +529,7 @@ function Root() {
     setRoleBlocked(false);
     setRole(resolved.role);
     setRoleReady(true);
-    if (resolved.role === 'agency' || resolved.role === 'admin') setStage(STAGE.AGENCY);
+    if (resolved.role === 'agency' || resolved.role === 'admin') goAgencyStage();
     else {
       const saved = await loadProfile(session.user.id).catch(() => null);
       if (saved) { setData(saved); setHasCv(true); }
@@ -462,6 +542,15 @@ function Root() {
     return (
       <View style={[styles.flex, styles.center]}>
         <ActivityIndicator color="#c2a25a" size="large" />
+      </View>
+    );
+  }
+
+  if (agencyBooting) {
+    return (
+      <View style={[styles.flex, styles.center]}>
+        <ActivityIndicator color="#c2a25a" size="large" />
+        <Text style={{ color: '#9aa3b0', marginTop: 14, fontWeight: '600' }}>Acente paneli hazırlanıyor…</Text>
       </View>
     );
   }
@@ -579,7 +668,7 @@ function Root() {
               setRole(resolved.role);
               setRoleReady(true);
               if (resolved.role === 'agency' || resolved.role === 'admin') {
-                setStage(STAGE.AGENCY);
+                goAgencyStage();
               } else {
                 const saved = await loadProfile(s.user.id).catch(() => null);
                 if (saved) {
@@ -718,50 +807,45 @@ function Root() {
         }
         if (!agencySetupOk) {
           return (
-            <Suspense fallback={<ScreenFallback />}>
-              <AgencySetupScreen
-                user={session.user}
-                onDone={(u) => {
-                  setSession((s) => ({ ...s, user: u }));
-                  setAgencySetupOk(true);
-                }}
-                onLogout={handleLogout}
-              />
-            </Suspense>
+            <AgencySetupScreen
+              user={session.user}
+              onDone={(u) => {
+                setSession((s) => ({ ...s, user: u }));
+                setAgencySetupOk(true);
+              }}
+              onLogout={handleLogout}
+            />
           );
         }
       }
       return (
-        <Suspense fallback={<ScreenFallback />}>
-          <AgencyHomeScreen
-            fontsReady={fontsReady}
-            userId={session?.user?.id}
-            agencyReturn={agencyReturn}
-            onAgencyReturnConsumed={() => setAgencyReturn(null)}
-            onOpenCandidate={(c, st) => {
-              setAgencyReturn(st?._returnToHotels ? {
-                view: 'hotels',
-                employerId: st._returnEmployerId || null,
-                employerName: st._returnEmployerName || '',
-                department: st._returnDepartment || null,
-                coverUrl: st._returnCoverUrl || null,
-              } : null);
-              setSelectedCandidate({ c, st });
-              setStage(STAGE.AGENCY_CANDIDATE);
-            }}
-            onLogout={handleLogout}
-          />
-        </Suspense>
+        <AgencyHomeScreen
+          fontsReady={fontsReady}
+          userId={session?.user?.id}
+          agencyReturn={agencyReturn}
+          onAgencyReturnConsumed={() => setAgencyReturn(null)}
+          onOpenCandidate={(c, st) => {
+            setAgencyReturn(st?._returnToHotels ? {
+              view: 'hotels',
+              employerId: st._returnEmployerId || null,
+              employerName: st._returnEmployerName || '',
+              department: st._returnDepartment || null,
+              coverUrl: st._returnCoverUrl || null,
+            } : null);
+            setSelectedCandidate({ c, st });
+            setStage(STAGE.AGENCY_CANDIDATE);
+          }}
+          onLogout={handleLogout}
+        />
       );
     }
 
     case STAGE.AGENCY_CANDIDATE:
       return (
-        <Suspense fallback={<ScreenFallback />}>
-          <AgencyCandidateScreen
-            fontsReady={fontsReady}
-            candidate={selectedCandidate?.c}
-            agencyUserId={session?.user?.id}
+        <AgencyCandidateScreen
+          fontsReady={fontsReady}
+          candidate={selectedCandidate?.c}
+          agencyUserId={session?.user?.id}
             accepted={!!selectedCandidate?.st?.docs_unlocked || selectedCandidate?.st?.status === 'hired' || selectedCandidate?.st?.status === 'in_transit'}
             offered={selectedCandidate?.st?.status === 'offered'}
             hired={selectedCandidate?.st?.status === 'hired'}
@@ -776,7 +860,6 @@ function Root() {
             onBack={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
             onAccepted={() => { setSelectedCandidate(null); setStage(STAGE.AGENCY); }}
           />
-        </Suspense>
       );
 
     case STAGE.LANG:
@@ -812,7 +895,9 @@ export default function App() {
       <LanguageProvider initialLang={deviceLang}>
         <View style={styles.flex}>
           <StatusBar barStyle="light-content" />
-          <Root />
+          <CrashGate>
+            <Root />
+          </CrashGate>
           <PrivacyNoticeHost />
         </View>
       </LanguageProvider>

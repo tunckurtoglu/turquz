@@ -1,6 +1,6 @@
 // components/InterviewModal.js
 // Mülakat: acente TEK gün + 3 dilimde serbest saat önerir; aday birini seçer.
-import React, { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView, ActivityIndicator, Alert, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -18,7 +18,22 @@ import { callWindow, getCallWindowOpts } from '../lib/livekitCall';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 
 const IS_EXPO_GO = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
-const InterviewCall = React.lazy(() => import('../screens/InterviewCall'));
+
+function DeferredInterviewCall(props) {
+  const [Comp, setComp] = useState(null);
+  useEffect(() => {
+    let live = true;
+    import('../screens/InterviewCall')
+      .then((m) => {
+        if (!live || typeof m?.default !== 'function') return;
+        setComp(() => m.default);
+      })
+      .catch((e) => console.warn('[InterviewCall]', e?.message || e));
+    return () => { live = false; };
+  }, []);
+  if (!Comp) return null;
+  return <Comp {...props} />;
+}
 
 const INK = '#1b2533';
 const GOLD = '#c2a25a';
@@ -495,9 +510,7 @@ export default function InterviewModal({ visible, onClose, role, userId, agencyI
         </ScrollView>
       </View>
       {callOpen ? (
-        <Suspense fallback={null}>
-          <InterviewCall visible={callOpen} candidateUserId={userId} candidateLabel={candidateLabel} slotISO={iv?.selectedSlot || ''} onClose={closeCall} />
-        </Suspense>
+        <DeferredInterviewCall visible={callOpen} candidateUserId={userId} candidateLabel={candidateLabel} slotISO={iv?.selectedSlot || ''} onClose={closeCall} />
       ) : null}
 
       <TimeWheelSheet

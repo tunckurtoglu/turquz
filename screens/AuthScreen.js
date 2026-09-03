@@ -81,7 +81,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
   const candidateSignup = !agencyMode && mode === 'signup';
   const signupConsentOk = consentGeneral && consentCross;
 
-  // iOS AutoFill + unmount: formu önce kaldır, sonra navigate.
+  // iOS AutoFill: şifre alanını ÖNCE unmount et, sonra navigate (SIGSEGV / JS fatal).
   const handOffSession = useCallback(async (session) => {
     try {
       Keyboard.dismiss();
@@ -89,9 +89,18 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
       passRef.current?.blur?.();
       pass2Ref.current?.blur?.();
     } catch { /* yoksay */ }
+    setBusy(true);
     setLeaving(true);
-    await new Promise((r) => setTimeout(r, 450));
-    onAuthed?.(session);
+    // TextInput unmount + AutoFill save bitsin
+    await new Promise((r) => setTimeout(r, 650));
+    try {
+      await onAuthed?.(session);
+    } catch (e) {
+      console.warn('[handOff]', e?.message || e);
+      setLeaving(false);
+      setBusy(false);
+      setMsg({ type: 'err', text: String(e?.message || e).slice(0, 180) });
+    }
   }, [onAuthed]);
 
   useEffect(() => {
@@ -207,13 +216,23 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
         const { data, error } = await signInWithEmail(email, pass);
         if (error) { setMsg({ type: 'err', text: error.message }); return; }
         if (data?.session) {
-          if (rememberMe) await saveRememberedLogin(portal, { email, password: pass });
-          else await clearRememberedLogin(portal);
+          // Şifreyi AsyncStorage'a yazmayı geciktir — Keychain/AutoFill çakışmasın
+          const remember = rememberMe;
+          const rememberEmail = email;
+          const rememberPass = pass;
           if (agencyMode) {
-            await finishAgencySession(data.session);
+            const ok = await finishAgencySession(data.session);
+            if (ok) {
+              if (remember) saveRememberedLogin(portal, { email: rememberEmail, password: rememberPass }).catch(() => {});
+              else clearRememberedLogin(portal).catch(() => {});
+            }
             return;
           }
-          await finishCandidateSession(data.session);
+          const ok = await finishCandidateSession(data.session);
+          if (ok) {
+            if (remember) saveRememberedLogin(portal, { email: rememberEmail, password: rememberPass }).catch(() => {});
+            else clearRememberedLogin(portal).catch(() => {});
+          }
         }
       }
     } catch (e) {
@@ -267,6 +286,7 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
     }
   };
 
+  // iOS AutoFill: TextInput'ları kaldır, native save bitsin.
   if (leaving) {
     return (
       <View style={[styles.flex, styles.center]}>
@@ -501,8 +521,9 @@ export default function AuthScreen({ onAuthed, portal = 'candidate', onBack, fon
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
-              textContentType="emailAddress"
-              autoComplete="email"
+              textContentType="none"
+              autoComplete="off"
+              importantForAutofill="no"
             />
             {msg && showReset ? (
               <Text style={[msg.type === 'err' ? styles.warn : styles.ok, ta, { marginTop: 8 }]}>{msg.text}</Text>

@@ -9,7 +9,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '../i18n/LanguageContext';
-import { listCandidates, listCandidateIds, listStatuses, listCandidatesWithDocs, offerCandidate, findCandidateByCode, findCandidatesByName, listInterviewCandidates, listStaff, listInProcess, listInTransit, declineInterview, getCandidateById } from '../lib/roles';
+import { listCandidates, listCandidateIds, listStatuses, offerCandidate, findCandidateByCode, findCandidatesByName, listInterviewCandidates, listStaff, listInProcess, listInTransit, declineInterview, getCandidateById } from '../lib/roles';
 import { listFormerStaff, scanEmploymentLifecycle, isEmploymentNotif, candidateIdFromNotif } from '../lib/employment';
 import { updateMyProfile, getSession } from '../lib/auth';
 import { candidateCode, parseCode, maskedName } from '../lib/candidateCode';
@@ -47,7 +47,6 @@ import { unreadAnnouncementCount } from '../lib/notifications';
 import { listRatingStats } from '../lib/ratings';
 import RatingBadge from '../components/RatingBadge';
 import { listFavoriteCandidates, removeFavorite, addFavorite, hasFavoriteSlot, listAllFavoritedCandidateIds } from '../lib/favorites';
-import FavoriteEmployerSheet from '../components/FavoriteEmployerSheet';
 import {
   readAgencyHomeUi, writeAgencyHomeUi, resetAgencyHomeUi,
   PIPELINE_PHASES, phaseOfPipelineStage,
@@ -59,6 +58,7 @@ import { supabase } from '../lib/supabase';
 import { listFlights, parseArriveAt } from '../lib/flights';
 import ProcessChatSheet from '../components/ProcessChatSheet';
 import { C } from '../lib/theme';
+import FavoriteEmployerSheet from '../components/FavoriteEmployerSheet';
 
 const PAGE = 24;
 const FOOTER_CONTENT_PAD = 78;
@@ -429,7 +429,6 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const { height: winH } = useWindowDimensions();
   const [items, setItems] = useState([]);
   const [statuses, setStatuses] = useState({});
-  const [docIds, setDocIds] = useState(new Set()); // kendi belgesini yüklemiş aday user_id'leri
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -498,14 +497,6 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   }, [userId]);
 
   useEffect(() => { refreshAgencyProfile(); }, [refreshAgencyProfile]);
-
-  useEffect(() => {
-    const show = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hide = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const s1 = Keyboard.addListener(show, () => setKbOpen(true));
-    const s2 = Keyboard.addListener(hide, () => setKbOpen(false));
-    return () => { s1.remove(); s2.remove(); };
-  }, []);
 
   const openSettings = () => {
     setLangOpen(false);
@@ -629,6 +620,15 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
     if (agencyReturn?.view === 'hotels') setView('hotels');
   }, [agencyReturn]);
   const [kbOpen, setKbOpen] = useState(false);
+
+  useEffect(() => {
+    const show = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hide = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const s1 = Keyboard.addListener(show, () => setKbOpen(true));
+    const s2 = Keyboard.addListener(hide, () => setKbOpen(false));
+    return () => { s1.remove(); s2.remove(); };
+  }, []);
+
   const [pipelineStage, setPipelineStage] = useState(() => normalizePipelineStage(savedUi.pipelineStage, savedUi));
   const [ivList, setIvList] = useState([]);
   const [inProcessList, setInProcessList] = useState([]);
@@ -725,7 +725,7 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   }, [userId]);
 
   const reloadOffered = useCallback(async () => {
-    const st = await listStatuses();
+    const st = await listStatuses(userId);
     setStatuses(st);
     const ids = Object.keys(st).filter((id) => st[id]?.status === 'offered' && st[id]?.accepted_by === userId);
     if (!ids.length) { setOfferedList([]); return; }
@@ -858,42 +858,48 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   }, [items, poolSearchActive]);
 
   useEffect(() => {
+    // Havuz sekmesi açık değilken ağır listeyi çekme — giriş/açılış OOM çökmesi.
+    if (view !== 'pool') return undefined;
     let alive = true;
     (async () => {
       if (!poolSearchActiveRef.current) setLoading(true);
-      let rows;
-      if (favOn && favEmployerId && favDepartment) {
-        rows = await listFavoriteCandidates(userId, favEmployerId, favDepartment);
-        const [st, dids] = await Promise.all([listStatuses(), listCandidatesWithDocs()]);
-        if (!alive) return;
-        poolSnapshotRef.current = rows;
-        if (poolSearchActiveRef.current) {
-          const q = String(codeInputRef.current || '').trim();
-          setItems(q ? rows.filter((r) => matchesCandidateQuery(r, q)) : rows);
-          setStatuses(st); setDocIds(dids); setHasMore(false); setLoading(false);
+      try {
+        let rows;
+        if (favOn && favEmployerId && favDepartment) {
+          rows = await listFavoriteCandidates(userId, favEmployerId, favDepartment);
+          const ids = (rows || []).map((r) => r.user_id);
+          const st = await listStatuses(userId, { forUserIds: ids });
+          if (!alive) return;
+          poolSnapshotRef.current = rows;
+          if (poolSearchActiveRef.current) {
+            const q = String(codeInputRef.current || '').trim();
+            setItems(q ? rows.filter((r) => matchesCandidateQuery(r, q)) : rows);
+            setStatuses(st); setHasMore(false); setLoading(false);
+            return;
+          }
+          setItems(rows); setStatuses(st); setPage(0); setHasMore(false); setLoading(false);
           return;
         }
-        setItems(rows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(false); setLoading(false);
-        return;
+        const poolRows = await listCandidates({ filters: advFilters, from: 0, to: PAGE - 1, sort: poolSort });
+        const ids = (poolRows || []).map((r) => r.user_id);
+        const st = await listStatuses(userId, { forUserIds: ids });
+        if (!alive) return;
+        poolSnapshotRef.current = poolRows;
+        if (poolSearchActiveRef.current) {
+          const q = String(codeInputRef.current || '').trim();
+          setItems(q ? poolRows.filter((r) => matchesCandidateQuery(r, q)) : poolRows);
+          setStatuses(st); setLoading(false);
+          return;
+        }
+        setItems(poolRows); setStatuses(st); setPage(0); setHasMore(poolRows.length === PAGE); setLoading(false);
+      } catch (e) {
+        console.warn('[pool]', e?.message || e);
+        if (alive) setLoading(false);
       }
-      const [poolRows, st, dids] = await Promise.all([
-        listCandidates({ filters: advFilters, from: 0, to: PAGE - 1, sort: poolSort }),
-        listStatuses(),
-        listCandidatesWithDocs(),
-      ]);
-      if (!alive) return;
-      poolSnapshotRef.current = poolRows;
-      if (poolSearchActiveRef.current) {
-        const q = String(codeInputRef.current || '').trim();
-        setItems(q ? poolRows.filter((r) => matchesCandidateQuery(r, q)) : poolRows);
-        setStatuses(st); setDocIds(dids); setLoading(false);
-        return;
-      }
-      setItems(poolRows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(poolRows.length === PAGE); setLoading(false);
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKey, poolSort, favOn, favEmployerId, favDepartment, userId]);
+  }, [view, filterKey, poolSort, favOn, favEmployerId, favDepartment, userId]);
 
   // Havuz + süreç listelerindeki adayların açık puan özeti
   useEffect(() => {
@@ -926,22 +932,18 @@ export default function AgencyHomeScreen({ userId, onOpenCandidate, onLogout, fo
   const onRefresh = async () => {
     setRefreshing(true);
     if (favOn && favEmployerId && favDepartment) {
-      const [rows, st, dids] = await Promise.all([
-        listFavoriteCandidates(userId, favEmployerId, favDepartment),
-        listStatuses(),
-        listCandidatesWithDocs(),
-      ]);
-      setItems(rows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(false);
+      const rows = await listFavoriteCandidates(userId, favEmployerId, favDepartment);
+      const ids = (rows || []).map((r) => r.user_id);
+      const st = await listStatuses(userId, { forUserIds: ids });
+      setItems(rows); setStatuses(st); setPage(0); setHasMore(false);
       poolSnapshotRef.current = rows;
       setRefreshing(false);
       return;
     }
-    const [rows, st, dids] = await Promise.all([
-      listCandidates({ filters: advFilters, from: 0, to: PAGE - 1, sort: poolSort }),
-      listStatuses(),
-      listCandidatesWithDocs(),
-    ]);
-    setItems(rows); setStatuses(st); setDocIds(dids); setPage(0); setHasMore(rows.length === PAGE);
+    const rows = await listCandidates({ filters: advFilters, from: 0, to: PAGE - 1, sort: poolSort });
+    const ids = (rows || []).map((r) => r.user_id);
+    const st = await listStatuses(userId, { forUserIds: ids });
+    setItems(rows); setStatuses(st); setPage(0); setHasMore(rows.length === PAGE);
     poolSnapshotRef.current = rows;
     setRefreshing(false);
   };

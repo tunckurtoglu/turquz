@@ -1,0 +1,13 @@
+---
+description: Mobile fixes via OTA only — no EAS build unless user asks
+alwaysApply: true
+---
+
+# No unsolicited native builds
+
+**User standing instruction:** Do **not** run `eas build` / TestFlight submit unless the user explicitly asks for a new build in that message.
+
+- Fix Expo mobile JS/UI with **OTA only**: `CI=1 npx eas-cli update --channel production --message "..." --non-interactive`
+- Prefer `deferScreen` / dynamic import over `React.lazy` (React 19 undefined-default fatals).
+- Do not static-import heavy screens (`AgencyHomeScreen`, etc.) at App boot — causes white screen.
+- Native build only when user says so (or binary/config truly requires it, and then ask first).
