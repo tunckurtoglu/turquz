@@ -24,7 +24,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.turquz.app",
-      "buildNumber": "18",
+      "buildNumber": "19",
       "infoPlist": {
         "NSCameraUsageDescription": "Görüntülü mülakat için kameraya erişim gerekir.",
         "NSMicrophoneUsageDescription": "Görüntülü mülakat için mikrofona erişim gerekir.",
